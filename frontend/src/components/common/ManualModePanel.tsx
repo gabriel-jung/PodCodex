@@ -10,7 +10,7 @@ import BatchReconcileModal from "@/components/common/BatchReconcileModal";
 interface ManualModePanelProps {
   batchMinutes: number;
   generatePrompts: (batchMinutes: number) => Promise<PromptBatch[]>;
-  applyCorrections: (corrections: unknown[]) => Promise<unknown>;
+  applyCorrections: (corrections: Record<string, unknown>[]) => Promise<unknown>;
   onApplied?: () => void;
 }
 
@@ -28,7 +28,7 @@ export default function ManualModePanel({
 }: ManualModePanelProps) {
   const [prompts, setPrompts] = useState<PromptBatch[] | null>(null);
   const [currentBatch, setCurrentBatch] = useState(0);
-  const [batchResults, setBatchResults] = useState<Record<number, unknown[]>>({});
+  const [batchResults, setBatchResults] = useState<Record<number, Record<string, unknown>[]>>({});
   const [pastedText, setPastedText] = useState("");
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
@@ -48,7 +48,7 @@ export default function ManualModePanel({
   const applyMutation = useMutation({
     mutationFn: () => {
       // Combine all batch results in order
-      const allCorrections: unknown[] = [];
+      const allCorrections: Record<string, unknown>[] = [];
       for (let i = 0; i < prompts!.length; i++) {
         const batch = batchResults[i];
         if (batch) allCorrections.push(...batch);
@@ -84,7 +84,7 @@ export default function ManualModePanel({
   );
 
   /** Record a validated batch and advance to the next unfinished one. */
-  const storeBatch = (objs: unknown[]) => {
+  const storeBatch = (objs: Record<string, unknown>[]) => {
     const next = { ...batchResults, [currentBatch]: objs };
     setBatchResults(next);
     setPastedText("");

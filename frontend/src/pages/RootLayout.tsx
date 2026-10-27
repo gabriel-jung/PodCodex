@@ -21,6 +21,7 @@ import { PlatformProvider } from "@/platform";
 import { useGlobalShortcuts } from "@/hooks/useGlobalShortcuts";
 import { useVersions } from "@/hooks/useVersions";
 import { useLayoutStore } from "@/stores";
+import { useGpuDownloadWatcher } from "@/hooks/useGpuDownload";
 
 // Labels for the boot banner. The shell renders immediately now, so these
 // annotate a backend still coming up behind a usable UI rather than gating
@@ -64,6 +65,7 @@ function pickPhaseLabel(elapsedMs: number): string {
 
 export default function RootLayout() {
   useGlobalShortcuts();
+  useGpuDownloadWatcher();
   // The one navigation guard. Every navigate() and <Link> in the app goes
   // through the router's history, so blocking here covers step switches,
   // prev/next, sidebar, breadcrumbs, the command palette and Settings tabs

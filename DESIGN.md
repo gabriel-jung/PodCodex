@@ -12,6 +12,7 @@
 - `frontend/src/lib/stageClasses.ts`: stage palette (`STAGE_CLASSES[stage]`: `bg`, `text`, `border`, `borderL`, `dot`)
 - `frontend/src/lib/stepStatus.ts`: `PanelStatus` (`"ready"|"review"|"none"`) + `reviewStatus` / `plainStatus` / `translationsStatus` / `isEdited`
 - `frontend/src/lib/showCounts.ts`: episode count label formatting
+- `frontend/src/lib/episodeRef.ts`: `getEpisodeSourceRef` for every per-episode query key, `getEpisodeBatchPath` for batch keys
 
 ## 1. Visual Theme & Atmosphere
 
@@ -150,7 +151,7 @@ bg (canvas)  →  card  →  popover  →  (elevated dialog uses popover + ring 
 - Radius: `rounded-lg` (8px)
 - Padding: `p-4` (compact), `p-6` (standard)
 - Shadow: none by default; `shadow-sm` only on floating popovers
-- Hover (when interactive): `hover:bg-accent`; never elevate via shadow
+- Hover (when interactive): `hover:border-muted-foreground/30` (border tint); never elevate via shadow, translate or scale. Rows use `hover:bg-accent`.
 
 ### Inputs
 Use the `.input` utility from `index.css`:
@@ -169,7 +170,7 @@ Use the `.input` utility from `index.css`:
 - No alternating zebra stripes; borders or no separator at all
 - Active/selected: `bg-accent` persistent + `text-foreground`
 - Mono columns (timestamps, IDs, hashes): `font-mono tabular-nums`; de-emphasize with `text-muted-foreground/60` rather than introducing a new color
-- Status pills inside rows: `text-2xs` weight 500, `bg-{role}/20 text-{role}` (e.g. `bg-primary/20 text-primary` for "show", `bg-warning/20 text-warning` for "audio"). Never `bg-success text-white`.
+- Status pills inside rows: `text-2xs` weight 500, `bg-{role}/15 text-{role}` (e.g. `bg-primary/15 text-primary` for "show", `bg-warning/15 text-warning` for "audio"). Never `bg-success text-white`.
 
 ### Badges / pills
 - Status (indexed, pending, error): inline dot or filled pill
@@ -198,7 +199,7 @@ Don't pair `text-2xs` with `w-3.5 h-3.5` icons or `text-xs` with `w-4 h-4` icons
 - Radius: `rounded-lg` (never `rounded-xl`)
 - Shadow: `shadow-lg` (never `shadow-2xl`)
 - Backdrop: `bg-black/50` (shadcn `DialogOverlay` default; match across custom modals too)
-- Two-column layout for settings: label column 1/3, control column 2/3
+- Two-column layout for settings: `FormGrid` (`sm:grid-cols-[auto_1fr]`), label column sized to content, control column takes the rest
 
 ### Audio player (`AudioBar`)
 - **No waveform.** Seek bar is a simple horizontal track + thumb. Waveform visualizations are decorative noise here.
@@ -214,9 +215,9 @@ Don't pair `text-2xs` with `w-3.5 h-3.5` icons or `text-xs` with `w-4 h-4` icons
 - Page rhythm: `py-8`, `py-12`; page padding
 
 ### Grid
-- Sidebar (left nav): `w-56` to `w-64`; fixed, dense
-- Main column: flexible, `max-w-5xl` for content-heavy pages (transcript reader); full-width for data tables
-- Settings: two columns at `md:` breakpoint, single column on mobile
+- Sidebar (left nav): `w-14` collapsed, `w-48` expanded; fixed, dense. The width comes from `lib/sidebar.ts` (shared with the content padding in `RootLayout`).
+- Main column: flexible; full width for lists and the transcript editor; `max-w-3xl` for the settings page
+- Settings: `FormGrid`, two columns from `sm:`, single column below
 - Episode lists: full-width single column with right-aligned metadata
 - Card grids (library, episode tiles): `repeat(auto-fill, minmax(<min>, 1fr))`, NOT `repeat(N, 1fr)`. Wider viewports add columns once a full new column fits; leftover width between thresholds is absorbed by mild stretch so the grid never leaves an empty right-edge gap. Plain `repeat(N, 1fr)` (no min) lets cards grow into billboards on wide screens, which the user explicitly rejected.
 
@@ -235,10 +236,10 @@ PodCodex uses **luminance step**, not box-shadow, for elevation. On the cream ca
 |-------|-----------|-----|
 | Canvas (0) | `bg-background` | Page background |
 | Surface (1) | `bg-card` + `border-border` | Cards, panels |
-| Floating (2) | `bg-popover` + `border-border` | Dropdowns, popovers, tooltips |
-| Dialog (3) | `bg-popover` + `border-border` + `shadow-lg` over `bg-background/80 backdrop-blur-sm` backdrop | Modals only |
+| Floating (2) | `bg-popover` + `border-border` + `shadow-sm` | Dropdowns, popovers, tooltips (`ui/dropdown-menu`, `ui/popover`) |
+| Dialog (3) | `bg-background` + `border-border` + `shadow-lg` over a `bg-black/50` backdrop | Modals only, always through `ui/dialog` |
 
-Shadow used only on dialog level; `shadow-lg` is the cap. Never `shadow-2xl`. Tooltips/dropdowns rely on the popover background + border alone. Decorative `shadow-lg` on overlay buttons (e.g. play/download hover overlays on cards) is forbidden; use border or background tint instead.
+Shadows only on floating layers (`shadow-sm`) and dialogs (`shadow-lg`, the cap). Never `shadow-xl` or `shadow-2xl`. Decorative `shadow-lg` on overlay buttons (e.g. play/download hover overlays on cards) is forbidden; use border or background tint instead.
 
 ## 7. Do's and Don'ts
 
@@ -250,14 +251,14 @@ Shadow used only on dialog level; `shadow-lg` is the cap. Never `shadow-2xl`. To
 - Apply `font-feature-settings` correctly: Inter gets `cv11, ss01, ss03` (set on body), Fraunces gets `ss01, onum` (set on h1/h2)
 - Use `oklch()` when introducing new color tokens; match perceptual luminance steps of the existing scale
 - Two-column settings: label left, control right
-- Hover with `hover:bg-accent` (warm tint), not with shadow or scale
+- Hover rows with `hover:bg-accent` and cards with a border tint, never with shadow or scale
 - Omit defaults and absent values in labels (don't render "Speaker: -" when there's no speaker)
 
 ### Don't
 - Don't use pure white (`#ffffff`) or pure black (`#000000`); both fight the warm canvas
 - Don't use `uppercase` or `tracking-wider`. Period. Use weight 500–600 if you need emphasis.
 - Don't add waveform visualizations to the AudioBar
-- Don't introduce a second chromatic accent; gold-leaf is the only chromatic color
+- Don't introduce a second accent; gold-leaf is the only accent color. Stage hues (`STAGE_CLASSES`) and speaker hues (`lib/speakerColor.ts`) are identity colors, not accents, and stay inside their facilities.
 - Don't use Fraunces in body text, buttons, captions, or labels
 - Don't elevate cards with `shadow-md`/`shadow-lg` on the canvas; use `border` + `bg-card` instead
 - Don't apply zebra-striped lists; rows separate by border or hover only
@@ -277,6 +278,8 @@ Pipeline stages get distinct hues for quick recognition. Tokens defined in `inde
 | Indexed | `--warning` | `bg-warning/15 text-warning` | 82° (amber, reuses semantic token) |
 
 Each stage chip uses the `bg-{stage}/15 text-{stage}` pattern. **Always read tokens through `STAGE_CLASSES` from `lib/stageClasses.ts`**; never hand-roll `text-stage-*` strings in components. If new stages are added, extend `index.css`, `STAGE_CLASSES`, and this table; don't reach for raw Tailwind colors.
+
+Speaker colors come from `lib/speakerColor.ts`: eleven fixed hues at `oklch(0.62 0.17 h)`, picked by a stable hash of the name. Never pick a speaker color anywhere else.
 
 ### Pipeline status vocabulary
 Three review states are surfaced consistently across StageCard (Overview hub), `PipelinePanel` headers, and `StatusChips` suffix copy. Derive via `reviewStatus` / `plainStatus` / `translationsStatus` from `lib/stepStatus.ts`; never hand-roll the present+edited check.
@@ -314,9 +317,8 @@ These never appear on theme surfaces. If you find one on a card or panel without
 - Episode rows: `py-2` minimum row height
 
 ### Collapsing strategy
-- Sidebar collapses to icons-only at `md` and below; popover label on hover
+- Sidebar collapses to icons only by user toggle (persisted in `layoutStore`), not by breakpoint; icon buttons carry the label as a title.
 - Settings two-column → single column at `<md`
-- Transcript reader: `max-w-3xl` mobile → `max-w-5xl` desktop
 - Modals: full-width sheet on mobile, centered card from `md` up
 
 ## 9. Agent Prompt Guide
@@ -339,9 +341,9 @@ These never appear on theme surfaces. If you find one on a card or panel without
 
 ### Example prompts
 - "Add a settings row with a label `Embedding model` left and a select right. Use two-column at `md`. Label `text-sm font-medium`, helper text `text-xs text-muted-foreground` below the label. Select uses the `.input` utility."
-- "Build an episode row: `flex gap-2 py-2 hover:bg-accent rounded-md`. Episode number in `text-xs text-muted-foreground w-8 text-right`, title in `text-sm flex-1 truncate`, date and duration in `text-xs text-muted-foreground` right-aligned. No zebra."
+- "Build an episode row: `flex gap-2 py-2 hover:bg-accent rounded`. Episode number in `text-xs text-muted-foreground w-8 text-right`, title in `text-xs flex-1 truncate`, date and duration in `text-xs text-muted-foreground` right-aligned. No zebra."
 - "Status pill for indexed episode: `inline-flex items-center gap-1 rounded-full bg-success/15 text-success text-2xs font-medium px-2 py-0.5`. Lowercase label `indexed`. No uppercase, no tracking-wider."
-- "Modal: `bg-popover border border-border rounded-lg shadow-lg` over `bg-background/80 backdrop-blur-sm` backdrop. Title in `font-display text-2xl` (Fraunces). Body in `text-sm`. Footer right-aligned with `outline` cancel and `default` confirm."
+- "Modal: shadcn `<Dialog>` from `ui/dialog`. `DialogTitle` renders an `h2`, so it is Fraunces through the global heading rule; size it with a class (`text-lg font-semibold` by default). Body in `text-sm`. Footer right-aligned with `outline` cancel and `default` confirm."
 
 ### Iteration guide
 1. If colors feel cold or harsh, the warm hue (`oklch H ≈ 55–80`) was lost; re-derive from the existing oklch scale, don't add raw hex
@@ -367,5 +369,5 @@ Promote to shared utilities when a second hub adopts these.
 Pipeline panels (`TranscribePanel`, `SynthesizePanel`, etc.) carry per-episode local state that must not bleed across episodes.
 
 - **Remount on episode switch.** `EpisodePage` mounts each step's component with `<Panel key={"${step}|${episode.id}"} />`. The composite key forces React to unmount and re-init when either the active step or the active episode changes. Don't try to sync this with effects; the key is the single source of truth.
-- **Parent-owned refs survive panel unmount.** If a panel hides while a background job runs (e.g. assemble running while the user looks elsewhere), state local to the panel is lost on remount. Anything that must persist through a panel unmount (current source-segment selection, in-flight job stamps, scroll-restore anchors) lives in a `useRef` owned by the parent page and passed in as a prop. `SynthesizePanel`'s `selectionStampRef` is the canonical example.
+- **Parent-owned refs survive subcomponent unmount.** If part of a panel hides while a background job runs (e.g. the source-segment picker while a synth task runs), state local to that part is lost on remount. Keep it in a `useRef` in the panel above it. `SynthesizePanel`'s `sourceSelectionStampRef` is the canonical example. Panels themselves take no props and remount on episode switch, so nothing survives that by design.
 - **Source-aware queries.** Synth queries (`voice-samples`, `generated-segments`, `versions`, `status`) cache-key on the value returned by `getEpisodeSourceRef` (`frontend/src/lib/episodeRef.ts`): `audio_path` when present, else `output_dir`. YouTube subtitle-only episodes have no source audio, so keying on `audio_path` alone makes their cache invalidation silently miss. Always destructure through `getEpisodeSourceRef`; never reach for `episode.audio_path` directly in a query key.

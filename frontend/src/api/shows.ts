@@ -19,8 +19,19 @@ import type {
   VersionEntry,
 } from "./types";
 import type {
+  CreateFromRSSRequest,
+  CreateFromYouTubeRequest,
+  CreateLocalShowRequest,
+  DeleteEpisodeRequest,
   DeleteEpisodeResponse,
+  DeleteShowRequest,
+  FfmpegValidateRequest,
   FfmpegValidateResponse,
+  FilesImportRequest,
+  MoveShowRequest,
+  RegisterShowRequest,
+  YouTubeDownloadRequest,
+  YouTubeSubsRequest,
 } from "./generated-types";
 import { ApiError, json, rawFetch } from "./client";
 
@@ -55,7 +66,7 @@ export const validateFfmpegPath = (path: string) =>
   json<FfmpegValidateResponse>("/api/config/validate-ffmpeg", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path } satisfies FfmpegValidateRequest),
   });
 
 // ── Podcast search ──────────────────────────
@@ -71,28 +82,28 @@ export const createFromRSS = (rssUrl: string, savePath: string, folderName?: str
   json<CreateFromRSSResponse>("/api/shows/from-rss", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rss_url: rssUrl, save_path: savePath, folder_name: folderName || "", artwork_url: artworkUrl || "", name: name || "", language: language || "" }),
+    body: JSON.stringify({ rss_url: rssUrl, save_path: savePath, folder_name: folderName || "", artwork_url: artworkUrl || "", name: name || "", language: language || "" } satisfies CreateFromRSSRequest),
   });
 
 export const registerShow = (path: string) =>
   json<{ status: string; path: string }>("/api/shows/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path } satisfies RegisterShowRequest),
   });
 
 export const importLocalFile = (filePath: string, name?: string, folder?: string) =>
   json<FilesImportResponse>("/api/shows/files/import", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ file_path: filePath, name: name ?? null, folder: folder ?? null }),
+    body: JSON.stringify({ file_path: filePath, name: name ?? null, folder: folder ?? null } satisfies FilesImportRequest),
   });
 
 export const createLocalShow = (name: string) =>
   json<CreateLocalShowResponse>("/api/shows/create-local", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name } satisfies CreateLocalShowRequest),
   });
 
 /** The suggested free name from an import-collision 409, else null. */
@@ -166,7 +177,7 @@ export const moveShow = (folder: string, newPath: string, moveFiles: boolean) =>
   json<{ status: string; new_path: string; warning?: string }>(`/api/shows/${enc(folder)}/move`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ new_path: newPath, move_files: moveFiles }),
+    body: JSON.stringify({ new_path: newPath, move_files: moveFiles } satisfies MoveShowRequest),
   });
 
 /** Outcome of a whole-episode delete, per store.
@@ -185,7 +196,7 @@ export const deleteEpisode = (folder: string, stem: string) =>
   json<DeleteEpisodeResult>(`/api/shows/${enc(folder)}/episodes/delete`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ stem }),
+    body: JSON.stringify({ stem } satisfies DeleteEpisodeRequest),
   });
 
 /** `warning` is set when the files were deleted but the show's search index
@@ -194,7 +205,7 @@ export const deleteShow = (folder: string, deleteFiles = false) =>
   json<{ status: string; files_deleted: boolean; warning?: string }>(`/api/shows/${enc(folder)}/delete`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ delete_files: deleteFiles }),
+    body: JSON.stringify({ delete_files: deleteFiles } satisfies DeleteShowRequest),
   });
 
 // ── Episodes (unified: local + RSS merged) ──
@@ -244,7 +255,7 @@ export const createFromYouTube = (
       artwork_url: artworkUrl || "",
       name: name || "",
       language: language || "",
-    }),
+    } satisfies CreateFromYouTubeRequest),
   });
 
 export const refreshYouTube = (folder: string) =>
@@ -268,7 +279,7 @@ export const downloadYouTubeEpisodes = (
         video_ids: videoIds ?? null,
         import_subs: importSubs,
         sub_lang: subLang,
-      }),
+      } satisfies YouTubeDownloadRequest),
     },
   );
 
@@ -280,5 +291,5 @@ export const importYouTubeSubs = (
   json<TaskResponse>(`/api/shows/${enc(folder)}/youtube/import-subs`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ video_ids: videoIds, lang }),
+    body: JSON.stringify({ video_ids: videoIds, lang } satisfies YouTubeSubsRequest),
   });

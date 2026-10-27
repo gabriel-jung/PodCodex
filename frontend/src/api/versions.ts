@@ -74,9 +74,19 @@ export function createVersionApi(step: string) {
   };
 }
 
+/** Request body types of one LLM step's endpoints, from generated-types.ts,
+ *  so a renamed or newly required backend field fails the typecheck instead
+ *  of surfacing as a runtime 422. */
+interface LLMStepRequests {
+  start: object;
+  manualPrompts: object;
+  applyManual: object;
+  applyBatches: object;
+}
+
 /** Extended factory for LLM pipeline steps (correct, translate) that also
  *  have start, manual-prompts, and apply-manual endpoints. */
-export function createLLMPipelineApi(step: string) {
+export function createLLMPipelineApi<R extends LLMStepRequests>(step: string) {
   const post = <T>(path: string, body: unknown) =>
     json<T>(`/api/${step}/${path}`, {
       method: "POST",
@@ -87,18 +97,18 @@ export function createLLMPipelineApi(step: string) {
   return {
     ...createVersionApi(step),
 
-    start: (req: Record<string, unknown>) =>
+    start: (req: R["start"]) =>
       post<TaskResponse>("start", req),
 
-    getManualPrompts: (params: Record<string, unknown>) =>
+    getManualPrompts: (params: R["manualPrompts"]) =>
       post<{ batch_index: number; prompt: string; segment_count: number }[]>(
         "manual-prompts", params,
       ),
 
-    applyManual: (params: Record<string, unknown>) =>
+    applyManual: (params: R["applyManual"]) =>
       post<{ status: string; count: number }>("apply-manual", params),
 
-    applyBatches: (params: Record<string, unknown>) =>
+    applyBatches: (params: R["applyBatches"]) =>
       post<{ status: string; count: number; rejected: number }>(
         "apply-batches", params,
       ),

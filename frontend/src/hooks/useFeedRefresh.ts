@@ -12,6 +12,8 @@ import { useIsMutating, useMutation } from "@tanstack/react-query";
 import { refreshRSS, refreshYouTube } from "@/api/client";
 import { mutationKeys, queryKeys } from "@/api/queryKeys";
 import type { ShowSummary } from "@/api/types";
+import { useMutationErrorStore } from "@/stores/mutationErrorStore";
+import { errorMessage } from "@/lib/utils";
 
 /** True while any feed refresh (single-show or refresh-all) is in flight. */
 export function useFeedRefreshing(): boolean {
@@ -50,14 +52,24 @@ export function useFeedRefreshAll(rssShows: ShowSummary[], ytShows: ShowSummary[
       invalidates: [queryKeys.shows(), queryKeys.showMetaAll(), queryKeys.episodesAll()],
     },
     mutationFn: async () => {
-      const targets: Array<() => Promise<unknown>> = [
-        ...rssShows.map((s) => () => refreshRSS(s.path)),
-        ...ytShows.map((s) => () => refreshYouTube(s.path)),
+      const targets: Array<{ name: string; run: () => Promise<unknown> }> = [
+        ...rssShows.map((s) => ({ name: s.name || s.path, run: () => refreshRSS(s.path) })),
+        ...ytShows.map((s) => ({ name: s.name || s.path, run: () => refreshYouTube(s.path) })),
       ];
       setProgress({ done: 0, total: targets.length });
       const tick = <T,>(p: Promise<T>) =>
         p.finally(() => setProgress((prev) => prev && { ...prev, done: prev.done + 1 }));
-      await Promise.allSettled(targets.map((run) => tick(run())));
+      const outcomes = await Promise.allSettled(targets.map((t) => tick(t.run())));
+      // Resolve anyway, so the shows that did refresh are invalidated (meta
+      // invalidates run on success only), and report the ones that did not.
+      const failed = outcomes.flatMap((o, i) =>
+        o.status === "rejected" ? [`${targets[i].name} (${errorMessage(o.reason)})`] : [],
+      );
+      if (failed.length > 0) {
+        useMutationErrorStore.getState().report(
+          new Error(`Could not refresh ${failed.length} of ${targets.length} feeds: ${failed.join("; ")}`),
+        );
+      }
     },
   });
   // Progress label only while OUR mutation runs; a refresh started elsewhere

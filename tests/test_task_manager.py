@@ -109,10 +109,13 @@ def test_cancel_keeps_the_lock_until_the_worker_finishes(tm):
     # Still locked, and still not stamped as finished.
     assert info.finished_at is None
     assert tm.get_active("/ep.mp3") is info
+    # Clients see the lock as `stopping`, so they wait before a re-run.
+    assert info.snapshot()["stopping"] is True
 
     release.set()
     _run_to_completion(tm, info)
     assert tm.get_active("/ep.mp3") is None
+    assert info.snapshot()["stopping"] is False
 
 
 def test_cancel_is_idempotent_and_unknown_ids_are_false(tm):
@@ -286,6 +289,10 @@ def test_cancel_while_queued_skips_the_work_and_frees_the_lock(solo):
     assert started.wait(5.0)
     second = solo.submit("transcribe", "/shows/B/ep.mp3", lambda _cb: ran_second.set())
     assert solo.cancel(second.task_id)
+    # Settled at once, while the worker is still busy: a client waiting on
+    # `stopping` must not wait for an unrelated task to finish.
+    assert second.snapshot()["stopping"] is False
+    assert solo.get_active("/shows/B/ep.mp3") is None
 
     release.set()
     _run_to_completion(solo, second)

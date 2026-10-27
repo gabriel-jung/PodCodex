@@ -62,7 +62,7 @@ export function highlightText(text: string, query: string): ReactNode {
     nodes.push(
       <mark
         key={idx}
-        className="bg-yellow-200/80 dark:bg-yellow-700/50 text-inherit rounded-sm px-px"
+        className="bg-warning/25 text-inherit rounded-sm px-px"
       >
         {text.slice(origStart, origEnd)}
       </mark>,

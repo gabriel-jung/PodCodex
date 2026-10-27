@@ -6,6 +6,7 @@ import type {
   OllamaCheckResponse,
   TaskResponse,
 } from "./types";
+import type { InstallExtraRequest } from "./generated-types";
 import { json } from "./client";
 // From the leaf, not the barrel: this is read at module scope and
 // `client.ts` re-exports this module, so going through the barrel is a
@@ -63,20 +64,22 @@ export const installExtra = (extra: string) =>
   json<TaskResponse>("/api/system/install-extra", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ extra }),
+    body: JSON.stringify({ extra } satisfies InstallExtraRequest),
   });
 
 export const removeExtra = (extra: string) =>
   json<TaskResponse>("/api/system/remove-extra", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ extra }),
+    body: JSON.stringify({ extra } satisfies InstallExtraRequest),
   });
 
 export const getTaskStatus = (taskId: string) =>
   json<{
     task_id: string;
     status: string;
+    /** Cancelled, work still winding down (see `TaskInfo.snapshot`). */
+    stopping?: boolean;
     progress: number;
     message: string;
     steps?: string[];

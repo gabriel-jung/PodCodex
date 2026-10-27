@@ -1,5 +1,5 @@
 import { json, rawFetch } from "./client";
-import type { ShowAccess, ShowPasswordSet } from "./generated-types";
+import type { SetPasswordRequest, ShowAccess, ShowPasswordSet } from "./generated-types";
 
 export type { ShowAccess, ShowPasswordSet };
 
@@ -17,7 +17,7 @@ export const setShowPassword = (showId: string, password?: string) =>
   json<ShowPasswordSet>(`/api/bot-access/password?${new URLSearchParams({ show_id: showId })}`, {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify(password ? { password } : {}),
+    body: JSON.stringify((password ? { password } : {}) satisfies SetPasswordRequest),
   });
 
 export async function deleteShowPassword(showId: string): Promise<void> {

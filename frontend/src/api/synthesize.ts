@@ -7,6 +7,7 @@ import type {
   VersionEntry,
   VoiceSample,
 } from "./types";
+import type { ExtractSelectedRequest } from "./generated-types";
 import { json, rawFetch } from "./client";
 
 function synthVersionsQuery(audioPath: string | null | undefined, outputDir?: string | null): string {
@@ -71,7 +72,7 @@ export const extractSelectedSamples = (
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ audio_path: audioPath, output_dir: outputDir, selections }),
+      body: JSON.stringify({ audio_path: audioPath, output_dir: outputDir, selections } satisfies ExtractSelectedRequest),
     },
   );
 

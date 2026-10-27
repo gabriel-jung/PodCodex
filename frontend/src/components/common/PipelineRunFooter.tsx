@@ -55,7 +55,7 @@ export default function PipelineRunFooter({
         <span className="text-xs text-muted-foreground">
           {verifiedThisStep
             ? "Verified version exists. New run creates a draft alongside; verified unchanged."
-            : "Saves a new version — previous ones stay in History."}
+            : "Saves a new version; previous ones stay in History."}
         </span>
       )}
       {mutationError != null && (

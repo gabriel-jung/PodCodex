@@ -10,6 +10,24 @@ export interface TaskProgress {
   log?: string[];
   result?: Record<string, unknown>;
   error?: string;
+  /** Cancelled, but the work has not stopped yet and the episode is still
+   *  locked: a re-run started now is refused. */
+  stopping?: boolean;
+}
+
+/** Cancelled, with the work still winding down and the episode locked. */
+/** Anything with a task status: the live progress, or a `getTaskStatus` read. */
+type TaskState = { status: string; stopping?: boolean };
+
+export function isStopping(p: TaskState | null | undefined): boolean {
+  return p?.status === "cancelled" && !!p.stopping;
+}
+
+/** Ended for good: completed, failed, or cancelled and stopped. The one rule
+ *  for when a strip or panel may offer dismiss or a re-run. */
+export function isSettled(p: TaskState | null | undefined): boolean {
+  if (!p) return false;
+  return (p.status === "completed" || p.status === "failed" || p.status === "cancelled") && !p.stopping;
 }
 
 type Listener = (data: TaskProgress) => void;
@@ -90,15 +108,15 @@ class ProgressManager {
 const manager = new ProgressManager();
 
 export function useProgress(taskId: string | null): TaskProgress | null {
-  const [state, setState] = useState<TaskProgress | null>(null);
+  // Tagged with the task it belongs to: when the id changes from one task to
+  // another, the previous task's finished state must not read as the new
+  // task's (a caller would act on "completed" before the new run started).
+  const [tagged, setTagged] = useState<{ taskId: string; data: TaskProgress | null } | null>(null);
   const lastWsUpdateRef = useRef<number>(0);
 
   useEffect(() => {
-    if (!taskId) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- clear progress when the task id clears
-      setState(null);
-      return;
-    }
+    if (!taskId) return;
+    const setState = (data: TaskProgress | null) => setTagged({ taskId, data });
 
     const unsubscribe = manager.subscribe(taskId, (data) => {
       lastWsUpdateRef.current = Date.now();
@@ -132,5 +150,5 @@ export function useProgress(taskId: string | null): TaskProgress | null {
     };
   }, [taskId]);
 
-  return state;
+  return taskId && tagged?.taskId === taskId ? tagged.data : null;
 }

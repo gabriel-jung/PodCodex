@@ -707,9 +707,20 @@ def load_episode_meta(episode_dir: Path) -> RSSEpisode | None:
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
+def html_to_text(raw: str) -> str:
+    """Plain text of a feed description: tags become spaces (so words on
+    either side stay apart), every HTML entity is decoded, whitespace is
+    collapsed. The frontend's `stripHtml` (`frontend/src/lib/utils.ts`) does
+    the same, so a context built on either side reads the same."""
+    import html
+
+    return " ".join(html.unescape(_HTML_TAG_RE.sub(" ", raw)).split())
+
+
 def clean_description(raw: str, max_chars: int = 500) -> str:
-    """Strip HTML and soft-truncate at the nearest word boundary."""
-    desc = _HTML_TAG_RE.sub("", raw).strip()
+    """Plain text (:func:`html_to_text`), soft-truncated at the nearest word
+    boundary."""
+    desc = html_to_text(raw)
     if len(desc) > max_chars:
         desc = desc[:max_chars].rsplit(" ", 1)[0] + "…"
     return desc

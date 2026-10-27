@@ -9,9 +9,11 @@ interface Props {
   destructive?: boolean;
 }
 
-/** Row-level confirmation strip — replaces the row content until resolved.
- *  Esc cancels, Enter confirms. Keeps destructive actions explicit without
- *  pulling in a modal. */
+/** Row-level confirmation strip: replaces the row content until resolved.
+ *  Esc cancels. The confirm button takes focus, so Enter confirms through the
+ *  button's own click; a document-level Enter handler would also fire when
+ *  focus sits on the cancel button. Keeps destructive actions explicit
+ *  without pulling in a modal. */
 export default function InlineConfirm({
   message,
   confirmLabel = "Delete",
@@ -26,11 +28,10 @@ export default function InlineConfirm({
     confirmRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();
-      else if (e.key === "Enter") onConfirm();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onCancel, onConfirm]);
+  }, [onCancel]);
 
   return (
     <div className="flex items-center gap-2 w-full text-xs">

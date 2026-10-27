@@ -12,7 +12,7 @@ import type { LucideIcon } from "lucide-react";
 
 import { sidebarWidth } from "@/lib/sidebar";
 import { useVersions } from "@/hooks/useVersions";
-import type { PanelStatus } from "@/lib/stepStatus";
+import { PANEL_STATUS_META, type PanelStatus } from "@/lib/stepStatus";
 
 export interface SidebarItem {
   key: string;
@@ -24,9 +24,6 @@ export interface SidebarItem {
 export interface SidebarSection {
   items: SidebarItem[];
 }
-
-/** Spoken form of the status dot; same vocabulary as the StageCards. */
-const STATUS_TEXT = { ready: "ready", review: "needs review", none: "not started" } as const;
 
 export default function AppSidebar({ parentLabel, onParent, pageSections, activeItem, onItemClick }: {
   /** Optional parent link shown between Back and Home (e.g. "Show name" on episode pages). */
@@ -71,7 +68,7 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
                 key={key}
                 onClick={() => onItemClick?.(key)}
                 title={expanded ? undefined : label}
-                aria-label={status && status !== "none" ? `${label}, ${STATUS_TEXT[status]}` : label}
+                aria-label={status && status !== "none" ? `${label}, ${PANEL_STATUS_META[status].text}` : label}
                 aria-current={activeItem === key ? "page" : undefined}
                 className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm transition ${
                   activeItem === key

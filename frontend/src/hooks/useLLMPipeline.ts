@@ -5,6 +5,7 @@ import { getAllVersions } from "@/api/search";
 import { getBestSegments } from "@/api/segments";
 import { queryKeys } from "@/api/queryKeys";
 import { buildDefaultContext } from "@/lib/utils";
+import { llmRunFields } from "@/lib/runRequests";
 import { filterVersionsForStep, sortVersionsForDefault, type PipelineInputStep } from "@/lib/pipelineInputs";
 import type { LLMConfig, LLMPresetKey } from "@/stores/pipelineConfigStore";
 import type { Episode, ShowMeta, Segment } from "@/api/types";
@@ -86,13 +87,7 @@ export function buildLLMRequest(ref: EpisodeSourceRef, config: LLMConfig) {
     // episode, and it is what the run's lock is taken on.
     audio_path: ref.taskKey ?? "",
     output_dir: ref.outputDir ?? undefined,
-    mode: config.mode === "api" ? "api" : "ollama",
-    provider_profile: config.providerProfile || undefined,
-    key_name: config.keyName || undefined,
-    model: config.model,
-    context: config.context,
-    source_lang: config.sourceLang,
-    batch_minutes: config.batchMinutes,
+    ...llmRunFields(config),
   } as const;
 }
 
@@ -116,12 +111,12 @@ export function batchCountFor(
  * duration is unknown.
  */
 export function useBatchCount(
-  episode: Episode,
+  episode: Episode | undefined,
   config: LLMConfig,
   patch: (p: Partial<LLMConfig>) => void,
 ) {
-  const episodeMinutes = episode.duration ? episode.duration / 60 : null;
-  const batchCount = batchCountFor(episode, config.batchMinutes) ?? 1;
+  const episodeMinutes = episode?.duration ? episode.duration / 60 : null;
+  const batchCount = (episode && batchCountFor(episode, config.batchMinutes)) ?? 1;
   const setBatchCount = (count: number) => {
     if (!episodeMinutes) return;
     const n = Math.max(1, Math.floor(count) || 1);
@@ -144,8 +139,8 @@ export function useLLMBackendStatus(activePreset: LLMPresetKey) {
     (activePreset === "cloud" && !hasOpenAI);
   const disabledTitle = backendMissing
     ? activePreset === "local"
-      ? "Install Ollama to run locally — or switch to Cloud/Manual"
-      : "Install the openai package to use cloud providers — or switch to Manual"
+      ? "Install Ollama to run locally, or switch to Cloud or Manual"
+      : "Install the openai package to use cloud providers, or switch to Manual"
     : undefined;
   return { hasOllama, hasOpenAI, hasLLM, backendMissing, disabledTitle };
 }

@@ -20,6 +20,7 @@ make dev                  # FastAPI + Vite + Tauri, hot-reload
 - **Run frontend tests:** `cd frontend && npm test` (vitest; `npm run test:watch` while working). Config in `frontend/vitest.config.ts`, kept separate from `vite.config.ts` because Vitest bundles its own Vite and merging the two breaks `tsc -b`.
 - **Lint frontend:** `cd frontend && npm run lint` (runs with `--max-warnings 0`; fails CI on any warning)
 - **Type-check frontend:** `cd frontend && npx tsc -b` (strict mode is on and clean; fails CI on any error)
+- **Dead-code check frontend:** `cd frontend && npm run knip` (config in `frontend/knip.json`; fails CI on unused files, exports or dependencies)
 
 ## Conventions
 
@@ -29,6 +30,6 @@ make dev                  # FastAPI + Vite + Tauri, hot-reload
 
 ## Pull requests
 
-- Run `make test` and the relevant smoke items from [`deploy/SMOKE.md`](deploy/SMOKE.md) before opening
+- Run `make test` (Python) and, for frontend changes, `npx tsc -b`, `npm run lint`, `npm test` and `npm run knip` in `frontend/` (all four block CI); then the relevant smoke items from [`deploy/SMOKE.md`](deploy/SMOKE.md) before opening
 - Reference the ROADMAP item or issue in the PR description when applicable
 - Frontend changes: include a screenshot or short clip when behavior is visual

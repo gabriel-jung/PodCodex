@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { SlidersHorizontal } from "lucide-react";
 import { useEpisodeStore } from "@/stores";
 import { langLabel } from "@/lib/utils";
@@ -67,21 +68,19 @@ export default function FilterDropdown({ languages = [] }: { languages?: string[
   };
 
   return (
-    <div className="relative">
-      <Button
-        onClick={() => setOpen(!open)}
-        variant={activeCount > 0 ? "secondary" : "ghost"}
-        size="sm"
-        className="text-xs h-7 px-2 gap-1"
-      >
-        <SlidersHorizontal className="w-3 h-3" />
-        Filters
-        {activeCount > 0 && <span className="bg-primary text-primary-foreground rounded-full px-1 text-2xs">{activeCount}</span>}
-      </Button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg p-3 min-w-[240px] space-y-3">
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant={activeCount > 0 ? "secondary" : "ghost"}
+          size="sm"
+          className="text-xs h-7 px-2 gap-1"
+        >
+          <SlidersHorizontal className="w-3 h-3" />
+          Filters
+          {activeCount > 0 && <span className="bg-primary text-primary-foreground rounded-full px-1 text-2xs">{activeCount}</span>}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="min-w-[240px] space-y-3">
             <div className="space-y-2">
               <span className="text-xs font-medium">Duration</span>
               <div className="flex items-center gap-2">
@@ -175,9 +174,7 @@ export default function FilterDropdown({ languages = [] }: { languages?: string[
                 Clear all filters
               </Button>
             )}
-          </div>
-        </>
-      )}
-    </div>
+      </PopoverContent>
+    </Popover>
   );
 }

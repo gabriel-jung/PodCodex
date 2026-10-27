@@ -10,7 +10,7 @@ import { useRef, useEffect, useState, useMemo, useCallback } from "react";
 import { skipToken, useMutation, useQuery } from "@tanstack/react-query";
 import type { Segment, VersionEntry } from "@/api/types";
 import { saveExportFile } from "@/api/client";
-import { useDirtyEdit } from "@/lib/dirtyEdits";
+import { confirmDiscard, useDirtyEdit } from "@/lib/dirtyEdits";
 import { useBulkSelection } from "./useBulkSelection";
 import { useFollowPlayback } from "./useFollowPlayback";
 import { usePlatform } from "@/platform";
@@ -30,6 +30,12 @@ const REF_DEFAULT = "default";
 type RefChoice = typeof REF_NONE | typeof REF_DEFAULT | string;
 import { BREAK_SPEAKER, isSoloDefaultSpeaker } from "@/lib/speakers";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ErrorAlert } from "@/components/ui/error-alert";
 import {
   Dialog,
@@ -64,28 +70,16 @@ function ExportDropdown({
   versionId?: string;
   filename?: string;
 }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
   const platform = usePlatform();
 
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
-
   const formats: { label: string; ext: "txt" | "srt" | "vtt" }[] = [
-    { label: "Plain Text", ext: "txt" },
-    { label: "SRT Subtitles", ext: "srt" },
-    { label: "WebVTT Subtitles", ext: "vtt" },
+    { label: "Plain text", ext: "txt" },
+    { label: "SRT subtitles", ext: "srt" },
+    { label: "WebVTT subtitles", ext: "vtt" },
   ];
 
-  const handleExport = (ext: "txt" | "srt" | "vtt") => {
-    setOpen(false);
-    return saveExportFile(platform, {
+  const handleExport = (ext: "txt" | "srt" | "vtt") =>
+    saveExportFile(platform, {
       audioPath,
       outputDir,
       source,
@@ -93,34 +87,23 @@ function ExportDropdown({
       format: ext,
       defaultName: `${filename || "export"}.${ext}`,
     });
-  };
 
   return (
-    <div className="relative" ref={ref}>
-      <Button
-        variant="outline"
-        size="sm"
-        className="text-xs h-7"
-        onClick={() => setOpen(!open)}
-      >
-        <Download className="w-3 h-3 mr-1" />
-        Export
-      </Button>
-      {open && (
-        <div className="absolute right-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-36">
-          {formats.map(({ label, ext }) => (
-            <button
-              key={ext}
-              type="button"
-              onClick={() => handleExport(ext)}
-              className="block w-full text-left px-3 py-1.5 text-xs hover:bg-accent transition"
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" size="sm" className="text-xs h-7">
+          <Download className="w-3 h-3 mr-1" />
+          Export
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-36">
+        {formats.map(({ label, ext }) => (
+          <DropdownMenuItem key={ext} onSelect={() => void handleExport(ext)} className="text-xs">
+            {label}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -234,7 +217,7 @@ export default function TranscriptViewer({
   });
 
   const { data: compareVersionsExtra } = useQuery({
-    queryKey: queryKeys.stepVersions(`${editorKey}__compare`, sourceRef),
+    queryKey: queryKeys.stepCompareVersions(editorKey, sourceRef),
     queryFn: loadCompareVersions ?? skipToken,
   });
   const compareVersions = compareVersionsExtra ?? versions ?? [];
@@ -496,7 +479,9 @@ export default function TranscriptViewer({
     return srcIdx == null ? undefined : effectiveReference[srcIdx];
   };
 
-  const isChanged = (seg: Segment, id: number) => {
+  // Stable per reference, so the filtered list recomputes when the compare
+  // reference changes and not on every render.
+  const isChanged = useCallback((seg: Segment, id: number) => {
     if (!effectiveReference || seg.speaker === BREAK_SPEAKER) return false;
     // Rows inserted this session (split / manual insert) have no source
     // counterpart. Count them as changed so the "show changed only" filter
@@ -505,7 +490,7 @@ export default function TranscriptViewer({
     if (srcIdx == null) return true;
     const ref = effectiveReference[srcIdx];
     return ref != null && ref.text !== seg.text;
-  };
+  }, [effectiveReference, sourceIndexById]);
 
   const changedCount = useMemo(() => {
     if (!effectiveReference) return 0;
@@ -811,6 +796,25 @@ export default function TranscriptViewer({
   // remounted per step and episode, so without this every edit is lost.
   useDirtyEdit(isDirty, "transcript edits");
 
+  // Switching or deleting a version resets the editor (edits and undo
+  // history) once the new source loads, so ask first, like navigation does.
+  const selectVersion = useCallback(
+    async (id: string | null) => {
+      if (id === selectedVersionId) return;
+      if (isDirty && !(await confirmDiscard(["transcript edits"]))) return;
+      setSelectedVersionId(id);
+    },
+    [isDirty, selectedVersionId],
+  );
+  const removeVersion = useCallback(
+    async (id: string) => {
+      if (isDirty && !(await confirmDiscard(["transcript edits"]))) return;
+      deleteVersionMutation.mutate(id);
+      setSelectedVersionId(null);
+    },
+    [isDirty, deleteVersionMutation],
+  );
+
   const canUndo = editor.canUndo;
   const undo = editor.undo;
   useEffect(() => {
@@ -889,7 +893,7 @@ export default function TranscriptViewer({
         <VersionControlBar
           versions={versions}
           selectedVersionId={selectedVersionId}
-          onSelectVersion={setSelectedVersionId}
+          onSelectVersion={selectVersion}
           hasCompareOptions={hasCompareOptions}
           compareVersions={compareVersions}
           refChoice={refChoice}
@@ -900,12 +904,7 @@ export default function TranscriptViewer({
           infoItems={infoItems}
           expandedInfo={expandedInfo}
           setExpandedInfo={setExpandedInfo}
-          onDeleteVersion={deleteVersion
-            ? (id) => {
-                deleteVersionMutation.mutate(id);
-                setSelectedVersionId(null);
-              }
-            : undefined}
+          onDeleteVersion={deleteVersion ? removeVersion : undefined}
           verifiableStep={verifiableStep}
           verifiedVersionId={verifiedVersionId}
           verifiedStepMatches={verifiedStepMatches}

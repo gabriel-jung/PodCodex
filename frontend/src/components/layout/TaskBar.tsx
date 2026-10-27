@@ -8,9 +8,11 @@ import { useAudioStore, useTaskStore, useBatchHistoryStore } from "@/stores";
 import { cancelTask } from "@/api/client";
 import { invalidateAfterStep } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
-import { useProgress } from "@/hooks/useProgress";
+import { isSettled, isStopping, useProgress } from "@/hooks/useProgress";
 import { capitalize } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { confirmDialog } from "@/components/ui/confirm-dialog";
 import LogSection from "@/components/common/LogSection";
 import {
   AlertTriangle,
@@ -19,6 +21,7 @@ import {
   ChevronUp,
   Download,
   Loader2,
+  Square,
   X,
 } from "lucide-react";
 import {
@@ -29,7 +32,51 @@ import {
   STATUS_COLOR,
   type EpStatus,
 } from "@/lib/batchUtils";
-import type { DownloadItemResult, DownloadItemStatus } from "@/api/types";
+import type { DownloadItemResult, DownloadItemStatus, SubtitleImportResult } from "@/api/types";
+
+/** Stop a running task, after asking: a stray click on the strip's corner
+ *  must not throw away a long run. A square, so it never reads as the X
+ *  that dismisses a finished strip in the same spot. */
+function CancelTaskButton({ what, onConfirm }: { what: string; onConfirm: () => void }) {
+  return (
+    <Button
+      onClick={(e) => {
+        e.stopPropagation();
+        confirmDialog.open({
+          title: `Stop the ${what}?`,
+          description: "Work already finished is kept.",
+          confirmLabel: "Stop",
+          cancelLabel: "Keep running",
+          variant: "destructive",
+          onConfirm,
+        });
+      }}
+      variant="ghost"
+      size="sm"
+      className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
+      title={`Stop ${what}`}
+      aria-label={`Stop ${what}`}
+    >
+      <Square className="w-2.5 h-2.5" />
+    </Button>
+  );
+}
+
+/** Track of a task's progress, exposed to assistive technology. */
+function ProgressTrack({ label, pct, children }: { label: string; pct: number; children: React.ReactNode }) {
+  return (
+    <div
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={pct}
+      className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden flex"
+    >
+      {children}
+    </div>
+  );
+}
 
 // How the strip counts each per-item status of a download or subtitle import
 // (DownloadItemStatus in api/schemas.py). A Record, so a status added to the
@@ -53,16 +100,21 @@ function DownloadStrip() {
   const [showFailed, setShowFailed] = useState(false);
 
   const pct = progress ? Math.round(progress.progress * 100) : 0;
-  const isDone = progress?.status === "completed";
   const isFailed = progress?.status === "failed";
   const isCancelled = progress?.status === "cancelled";
-  const isFinished = isDone || isFailed || isCancelled;
+  const isFinished = isSettled(progress);
 
   // Derive per-status counts from result (array of {stem, status} or {results: [...]})
   const rawResult = isFinished ? progress?.result : null;
   // A download returns the item list; a subtitle import a SubtitleImportResult.
   const results = (Array.isArray(rawResult) ? rawResult : Array.isArray(rawResult?.results) ? rawResult.results : []) as DownloadItemResult[];
-  const total = results.length || 1;
+  // A throttled subtitle import stops early: the videos it never reached are
+  // in `total` but not in `results`, and must not read as a finished run.
+  const subtitleResult = !Array.isArray(rawResult) && Array.isArray(rawResult?.results)
+    ? (rawResult as unknown as SubtitleImportResult)
+    : null;
+  const skippedCount = subtitleResult ? Math.max(0, subtitleResult.total - results.length) : 0;
+  const total = (subtitleResult?.total ?? results.length) || 1;
   const failed = results.filter(r => DOWNLOAD_OUTCOME[r.status] === "failed");
   const noSubs = results.filter(r => DOWNLOAD_OUTCOME[r.status] === "no_subs");
   const failedCount = failed.length;
@@ -73,10 +125,10 @@ function DownloadStrip() {
   // Videos with no track in the requested language: not failures, but the
   // user wants to know which, so they keep the strip open like failures do.
   const noSubsCount = noSubs.length;
-  const hasNotices = hasFailures || noSubsCount > 0;
+  const hasNotices = hasFailures || noSubsCount > 0 || skippedCount > 0;
 
   const { current: msgCurrent, total: msgTotal } = parseProgressCount(progress?.message);
-  const dlTotal = msgTotal ?? (results.length || null);
+  const dlTotal = msgTotal ?? ((subtitleResult?.total ?? results.length) || null);
   const dlCurrent = isFinished ? (results.length || null) : msgCurrent;
 
   const dismiss = () => {
@@ -120,13 +172,16 @@ function DownloadStrip() {
   const noticeLabel = [
     failedCount > 0 ? `${failedCount} failed` : null,
     noSubsCount > 0 ? `${noSubsCount} without subtitles` : null,
+    skippedCount > 0
+      ? `${skippedCount} skipped${subtitleResult?.throttled ? ": YouTube is rate-limiting, try again later" : ""}`
+      : null,
   ].filter(Boolean).join(", ");
 
   return (
     <div>
       <div className="px-4 py-2 flex items-center gap-3 text-xs">
         <Download className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-        <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden flex">
+        <ProgressTrack label="Download" pct={isFinished && results.length > 0 ? successPct : pct}>
           {isFinished && results.length > 0 ? (
             <>
               <div
@@ -148,30 +203,28 @@ function DownloadStrip() {
               style={{ width: `${pct}%` }}
             />
           )}
-        </div>
+        </ProgressTrack>
         {dlTotal != null && (
           <span className="text-muted-foreground shrink-0 font-mono tabular-nums">
             {dlCurrent ?? 0}/{dlTotal}
           </span>
         )}
-        {isFinished && noticeResults.length > 0 && (
-          <button
-            onClick={() => setShowFailed(!showFailed)}
-            className={`${hasFailures ? "text-destructive hover:text-destructive/80" : "text-muted-foreground hover:text-foreground"} transition text-2xs shrink-0`}
-          >
-            {noticeLabel}
-          </button>
+        {isFinished && noticeLabel && (
+          // A toggle only when there is a list to expand: skipped videos
+          // are a count, with no per-item rows behind them.
+          noticeResults.length > 0 ? (
+            <button
+              onClick={() => setShowFailed(!showFailed)}
+              className={`${hasFailures ? "text-destructive hover:text-destructive/80" : "text-muted-foreground hover:text-foreground"} transition text-2xs shrink-0`}
+            >
+              {noticeLabel}
+            </button>
+          ) : (
+            <span className="text-muted-foreground text-2xs shrink-0">{noticeLabel}</span>
+          )
         )}
-        {!isFinished ? (
-          <Button
-            onClick={() => cancelTask(downloadTaskId).catch(() => dismiss())}
-            variant="ghost"
-            size="sm"
-            className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
-            title="Cancel download"
-          >
-            <X className="w-3 h-3" />
-          </Button>
+        {isStopping(progress) ? null : !isFinished ? (
+          <CancelTaskButton what="download" onConfirm={() => cancelTask(downloadTaskId).catch(() => dismiss())} />
         ) : (
           <Button
             onClick={dismiss}
@@ -229,15 +282,15 @@ function BatchResultSummary({ result, onDismiss }: { result: BatchResult; onDism
   const hasErrors = result.errors.length > 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onDismiss}>
-      <div className="bg-background border border-border rounded-lg shadow-xl w-full max-w-sm mx-4" onClick={(e) => e.stopPropagation()}>
+    <Dialog open onOpenChange={(open) => { if (!open) onDismiss(); }}>
+      <DialogContent showCloseButton={false} aria-describedby={undefined} className="p-0 gap-0 sm:max-w-sm">
         <div className="flex items-center gap-2 px-5 py-4 border-b border-border">
           {hasErrors ? (
             <AlertTriangle className="w-4 h-4 text-destructive" />
           ) : (
             <CheckCircle2 className="w-4 h-4 text-success" />
           )}
-          <h3 className="text-base font-semibold">Batch Complete</h3>
+          <DialogTitle className="text-base font-semibold">Batch complete</DialogTitle>
           <div className="flex-1" />
           <button onClick={onDismiss} className="text-muted-foreground hover:text-foreground text-lg" aria-label="Close">
             ×
@@ -286,8 +339,8 @@ function BatchResultSummary({ result, onDismiss }: { result: BatchResult; onDism
         <div className="flex items-center justify-end px-5 py-3 border-t border-border">
           <Button onClick={onDismiss} size="sm">Done</Button>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -312,7 +365,7 @@ function BatchStrip() {
   const isDone = progress?.status === "completed";
   const isFailed = progress?.status === "failed";
   const isCancelled = progress?.status === "cancelled";
-  const isFinished = isDone || isFailed || isCancelled;
+  const isFinished = isSettled(progress);
 
   const dismiss = () => {
     setBatchTask(null);
@@ -404,12 +457,12 @@ function BatchStrip() {
             />
             <span className="text-foreground font-medium">{stepLabel}</span>
           </button>
-          <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+          <ProgressTrack label={`${stepLabel} batch`} pct={pct}>
             <div
               className={`h-full rounded-full transition-all duration-300 ${progressBarColor({ isFailed, isCancelled, isDone })}`}
               style={{ width: `${pct}%` }}
             />
-          </div>
+          </ProgressTrack>
           {totalCount > 0 && (
             <span className="text-muted-foreground shrink-0 font-mono tabular-nums">
               {currentN}/{totalCount}
@@ -422,16 +475,8 @@ function BatchStrip() {
               <ChevronDown className="w-3 h-3 text-muted-foreground shrink-0" />
             )
           )}
-          {!isFinished ? (
-            <Button
-              onClick={(e) => { e.stopPropagation(); cancelTask(batchTaskId).catch(() => dismiss()); }}
-              variant="ghost"
-              size="sm"
-              className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
-              title="Cancel batch"
-            >
-              <X className="w-3 h-3" />
-            </Button>
+          {isStopping(progress) ? null : !isFinished ? (
+            <CancelTaskButton what="batch" onConfirm={() => cancelTask(batchTaskId).catch(() => dismiss())} />
           ) : (
             <Button
               onClick={(e) => { e.stopPropagation(); handleDismiss(); }}
@@ -526,7 +571,7 @@ function EpisodeStrip() {
   const isDone = runStatus === "done";
   const isFailed = runStatus === "failed";
   const isCancelled = runStatus === "cancelled";
-  const isFinished = runStatus !== "running";
+  const isFinished = isSettled(progress);
   const StatusIcon = STATUS_ICON[runStatus];
 
   useEffect(() => {
@@ -535,11 +580,13 @@ function EpisodeStrip() {
     return () => clearTimeout(t);
   }, [taskId, progress, setEpisodeTask]);
 
+  // Only a success clears itself. A failed or cancelled run stays, with its
+  // reason, until dismissed: the user may be on another screen.
   useEffect(() => {
-    if (!isFinished) return;
+    if (!isDone) return;
     const t = setTimeout(() => setEpisodeTask(null), 5_000);
     return () => clearTimeout(t);
-  }, [isFinished, setEpisodeTask]);
+  }, [isDone, setEpisodeTask]);
 
   // The panel's ProgressBar normally runs invalidateAfterStep on completion,
   // but it is mounted only inside the step panel. When the run finishes while
@@ -594,15 +641,24 @@ function EpisodeStrip() {
             {title}
           </button>
         )}
-        <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+        <ProgressTrack label={`${stepLabel} ${title ?? ""}`.trim()} pct={pct}>
           <div
             className={`h-full rounded-full transition-all duration-300 ${progressBarColor({ isFailed, isCancelled, isDone })}`}
             style={{ width: `${pct}%` }}
           />
-        </div>
+        </ProgressTrack>
         {progress?.message && !isFinished && (
           <span className="text-muted-foreground/70 shrink-0 truncate max-w-[30%]" title={progress.message}>
             {progress.message}
+          </span>
+        )}
+        {isFinished && (isFailed || isCancelled) && (
+          <span
+            role="status"
+            className={`shrink-0 truncate max-w-[40%] ${isFailed ? "text-destructive" : "text-warning"}`}
+            title={progress?.error ?? undefined}
+          >
+            {isFailed ? `Failed${progress?.error ? `: ${progress.error}` : ""}` : "Cancelled"}
           </span>
         )}
         {canExpand && (
@@ -612,16 +668,9 @@ function EpisodeStrip() {
             <ChevronDown className="w-3 h-3 text-muted-foreground shrink-0" />
           )
         )}
-        {!isFinished ? (
-          <Button
-            onClick={(e) => { e.stopPropagation(); cancelTask(taskId).catch(() => {}); setEpisodeTask(null); }}
-            variant="ghost"
-            size="sm"
-            className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
-            title="Cancel task"
-          >
-            <X className="w-3 h-3" />
-          </Button>
+        {isStopping(progress) ? null : !isFinished ? (
+          // The strip stays until the server reports the run cancelled.
+          <CancelTaskButton what={`${stepLabel.toLowerCase()} run`} onConfirm={() => void cancelTask(taskId).catch(() => setEpisodeTask(null))} />
         ) : (
           <Button
             onClick={(e) => { e.stopPropagation(); setEpisodeTask(null); }}

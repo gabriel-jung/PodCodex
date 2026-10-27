@@ -1,5 +1,6 @@
 import { json } from "./client";
 import type { TaskResponse } from "./types";
+import type { SetDeviceRequest } from "./generated-types";
 
 export interface GPUStatus {
   mode: "bundle" | "dev";
@@ -75,6 +76,6 @@ export const setDeviceOverride = (override: DeviceOverride) =>
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ override }),
+      body: JSON.stringify({ override } satisfies SetDeviceRequest),
     },
   );

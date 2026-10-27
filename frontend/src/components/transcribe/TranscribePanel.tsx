@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useId } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEpisodeStore, useEpisodeRef, usePipelineConfigStore, useTaskStore } from "@/stores";
@@ -7,7 +7,8 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { getGPUStatus } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { AlertCircle } from "lucide-react";
-import { TRANSCRIBE_PRESETS, CPU_MODELS, GPU_MODELS, CPU_LABELS, GPU_LABELS } from "@/stores/pipelineConfigStore";
+import { TRANSCRIBE_PRESETS, CPU_MODELS, GPU_MODELS, CPU_LABELS, GPU_LABELS, isCpuTranscribe } from "@/stores/pipelineConfigStore";
+import { transcribeRunFields } from "@/lib/runRequests";
 import {
   deleteTranscribeVersion,
   getSegments,
@@ -84,8 +85,7 @@ export default function TranscribePanel() {
   const applyTranscribePreset = usePipelineConfigStore((s) => s.applyTranscribePreset);
   // Infer CPU mode from preset OR current model — drives model-list filtering
   // and hides the speaker identification column (pyannote needs GPU).
-  const isCpu = transcribePreset === "cpu"
-    || (transcribePreset === "" && CPU_MODELS.has(tc.modelSize));
+  const isCpu = isCpuTranscribe(transcribePreset, tc.modelSize);
   // Language state — chips for the top 5 common languages, "Other" chip
   // reveals an ISO-code input. `language` holds either "" (auto), a known
   // ISO code from the chip set, or "other" (meaning use customLang instead).
@@ -164,16 +164,9 @@ export default function TranscribePanel() {
       startTranscribe({
         audio_path: audioPath!,
         output_dir: od,
-        model_size: tc.modelSize,
+        ...transcribeRunFields(tc, { isCpu, clean: cleanMode === "auto" }),
         language: effectiveLang || undefined,
-        batch_size: tc.batchSize ?? undefined,
         force: episode!.transcribed,
-        // CPU mode forces diarize off regardless of stored preference —
-        // pyannote needs a GPU in practice, and the UI column is hidden.
-        diarize: isCpu ? false : tc.diarize,
-        clean: cleanMode === "auto",
-        hf_token: tc.hfToken || undefined,
-        num_speakers: tc.numSpeakers ? Number(tc.numSpeakers) : undefined,
         show: showMeta?.name || "",
         episode: episode!.title,
       }),
@@ -186,7 +179,7 @@ export default function TranscribePanel() {
   const emptyStateProps = downloadDisabled
     ? {
         title: "Downloading audio…",
-        description: "The audio is downloading — this view will refresh when it's ready.",
+        description: "The audio is downloading; this view will refresh when it's ready.",
       }
     : {
         title: "No audio file yet",
@@ -350,7 +343,7 @@ export default function TranscribePanel() {
                 <span className="text-xs text-muted-foreground">
                   {episode.verified?.step === "transcript"
                     ? "Verified version exists. New run creates a draft alongside; verified unchanged."
-                    : "Saves a new version — previous ones stay in History."}
+                    : "Saves a new version; previous ones stay in History."}
                 </span>
               )}
               {!hasSubs && (
@@ -430,6 +423,7 @@ function TranscribeAudioRows({
   hfToken: string; setHfToken: (v: string) => void;
   hfTokenDetected: boolean;
 }) {
+  const fieldId = useId();
   return (
     <>
       <HelpLabel label="Transcription" />
@@ -441,8 +435,8 @@ function TranscribeAudioRows({
         )}
       />
 
-      <HelpLabel label="Model" help="Speech recognition model. Bigger models make fewer mistakes but are slower and need more GPU memory." />
-      <select
+      <HelpLabel label="Model" htmlFor={`${fieldId}-0`} help="Speech recognition model. Bigger models make fewer mistakes but are slower and need more GPU memory." />
+      <select id={`${fieldId}-0`}
         value={modelSize}
         onChange={(e) => setModelSize(e.target.value)}
         className={selectClass}
@@ -454,7 +448,7 @@ function TranscribeAudioRows({
           const filtered = entries.filter(([key]) => (isCpu ? CPU_MODELS : GPU_MODELS).has(key));
           const labels = isCpu ? CPU_LABELS : GPU_LABELS;
           return filtered.map(([key, desc]) => (
-            <option key={key} value={key} title={desc}>{key} — {labels[key] || desc}</option>
+            <option key={key} value={key} title={desc}>{key}: {labels[key] || desc}</option>
           ));
         })()}
       </select>
@@ -504,8 +498,8 @@ function TranscribeAudioRows({
 
       {!isCpu && diarize && !hfTokenDetected && (
         <>
-          <HelpLabel label="HF token" help="HuggingFace access token, needed to download the speaker detection model. Get one free at huggingface.co/settings/tokens." />
-          <input
+          <HelpLabel label="HF token" htmlFor={`${fieldId}-1`} help="HuggingFace access token, needed to download the speaker detection model. Get one free at huggingface.co/settings/tokens." />
+          <input id={`${fieldId}-1`}
             type="password"
             value={hfToken}
             onChange={(e) => setHfToken(e.target.value)}
@@ -520,7 +514,7 @@ function TranscribeAudioRows({
         value={cleanMode}
         onChange={setCleanMode}
         options={[
-          ["manual", "Manual", "Keep every segment — you'll review and delete junk in the editor"],
+          ["manual", "Manual", "Keep every segment; you'll review and delete junk in the editor"],
           ["auto", "Auto", "Automatically remove hallucinated segments (low speech density)"],
         ]}
       />

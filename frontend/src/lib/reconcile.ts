@@ -31,10 +31,12 @@ export function entryText(obj: Record<string, unknown>): string {
  *  trailing instruction block. */
 export function promptToInputEntries(prompt: string): InputEntry[] {
   const entries: InputEntry[] = [];
-  const re = /^\[(\d+)\]\s+(.+)$/gm;
+  // `core/llm.py` writes `[N] text`, so an empty segment is `[N] ` with
+  // nothing after the space; it still counts as an expected entry.
+  const re = /^\[(\d+)\](?:[ \t]+(.*))?$/gm;
   let m: RegExpExecArray | null;
   while ((m = re.exec(prompt)) !== null) {
-    entries.push({ index: Number(m[1]), text: m[2] });
+    entries.push({ index: Number(m[1]), text: m[2] ?? "" });
   }
   return entries.sort((a, b) => a.index - b.index);
 }
@@ -49,7 +51,7 @@ export function reconcileBatch(
   | { error: string } {
   const objs = parseResponseObjects(text);
   if (objs == null) {
-    return { error: "Invalid JSON — could not parse the response." };
+    return { error: "Invalid JSON: could not parse the response." };
   }
   const expected = inputEntries.length;
   if (objs.length !== expected) {

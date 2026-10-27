@@ -3,10 +3,10 @@
  * in the LLM model input. The input stays free-text so any model the
  * provider supports works without a code change. Update lazily.
  */
-// First entry is the canonical default — kept in sync with
-// ``LLM_PROVIDER_DEFAULTS`` in ``src/podcodex/core/constants.py`` so the
-// autocomplete top-suggestion matches the runtime fallback when the user
-// leaves the model field blank.
+// First entry is the default for openai, anthropic and mistral, kept in sync
+// with ``LLM_PROVIDER_DEFAULT_MODEL`` in ``src/podcodex/core/constants.py`` so
+// the top suggestion matches the runtime fallback when the model field is
+// left blank; for the other providers it is only the top suggestion.
 const PROVIDER_MODELS: Record<string, readonly string[]> = {
   openai: ["gpt-4o-mini", "gpt-4o", "gpt-4.1", "gpt-4.1-mini", "o4-mini"],
   anthropic: ["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5"],

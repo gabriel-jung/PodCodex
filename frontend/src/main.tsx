@@ -25,6 +25,7 @@ import {
 } from "./api/persistence";
 import {
   CONNECT_RETRY,
+  conflictSuggestion,
   initApiToken,
   isConnectionError,
   onApiTokenAcquired,
@@ -59,6 +60,9 @@ const queryClient = new QueryClient({
         mutation.options.mutationKey ? JSON.stringify(mutation.options.mutationKey) : "",
         error,
       );
+      // A name collision is an expected step: the import dialogs offer the
+      // suggested free name themselves, so the banner would only repeat it.
+      if (conflictSuggestion(error) !== null) return;
       useMutationErrorStore.getState().report(error);
     },
     onSuccess: (_data, _variables, _context, mutation) => {

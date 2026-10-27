@@ -61,6 +61,38 @@ class TaskInfo:
     log: list[str] = field(default_factory=list)
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
+    def snapshot(self, *, with_outcome: bool = True) -> dict[str, Any]:
+        """The task as clients see it: the WebSocket broadcast and the REST
+        task routes all send this, so the three cannot drift.
+
+        ``stopping`` is true between a cancel request and the moment the
+        work actually stops. The status already reads ``cancelled`` then, but
+        the episode lock is still held (``run()`` releases it), so a client
+        that offers "run again" must wait for ``stopping`` to clear or the
+        re-run is refused as already running.
+
+        Args:
+            with_outcome: Include ``result`` and ``error``. The active-task
+                lookup leaves them out.
+        """
+        msg: dict[str, Any] = {
+            "task_id": self.task_id,
+            "status": self.status,
+            "progress": self.progress,
+            "message": self.message,
+            "stopping": self.status == "cancelled" and self.finished_at is None,
+        }
+        if self.steps:
+            msg["steps"] = self.steps
+        if self.log:
+            msg["log"] = self.log
+        if with_outcome:
+            if self.result is not None:
+                msg["result"] = self.result
+            if self.error is not None:
+                msg["error"] = self.error
+        return msg
+
     def add_step(self, message: str) -> None:
         """Append a milestone message to the steps list."""
         self.steps.append(message)
@@ -534,6 +566,14 @@ class TaskManager:
         info.cancel_event.set()
         info.status = "cancelled"
         info.message = "Cancelling (waiting for current step to finish)…"
+        future = self._futures.get(task_id)
+        if future is not None and future.cancel():
+            # Still queued: run() will never execute, so nothing else would
+            # release its locks or stamp it finished, and clients would wait
+            # on `stopping` until some other task freed a worker.
+            info.message = "Cancelled"
+            info.finished_at = time.monotonic()
+            self.release_locks_for_task(task_id)
         self._broadcast_sync(task_id)
         return True
 
@@ -554,13 +594,8 @@ class TaskManager:
         with self._state_lock:
             live = [t for t in self._tasks.values() if t.finished_at is None]
         for info in live:
+            # Also settles a still-queued task (see `cancel`).
             self.cancel(info.task_id)
-            future = self._futures.get(info.task_id)
-            # Still queued: run() will never execute to release its locks.
-            if future is not None and future.cancel():
-                info.message = "Cancelled"
-                info.finished_at = time.monotonic()
-                self.release_locks_for_task(info.task_id)
         return len(live)
 
     def _broadcast_sync(self, task_id: str) -> None:
@@ -576,20 +611,7 @@ class TaskManager:
         info = self._tasks.get(task_id)
         if not info:
             return
-        msg: dict[str, Any] = {
-            "task_id": info.task_id,
-            "status": info.status,
-            "progress": info.progress,
-            "message": info.message,
-        }
-        if info.steps:
-            msg["steps"] = info.steps
-        if info.log:
-            msg["log"] = info.log
-        if info.result is not None:
-            msg["result"] = info.result
-        if info.error is not None:
-            msg["error"] = info.error
+        msg = info.snapshot()
 
         dead: list[WebSocket] = []
         # Snapshot: a socket connecting during an await would otherwise raise
@@ -616,19 +638,11 @@ class TaskManager:
         with self._state_lock:
             tasks = list(self._tasks.values())
         for info in tasks:
-            if info.status in ("pending", "running"):
-                msg: dict[str, Any] = {
-                    "task_id": info.task_id,
-                    "status": info.status,
-                    "progress": info.progress,
-                    "message": info.message,
-                }
-                if info.steps:
-                    msg["steps"] = info.steps
-                if info.log:
-                    msg["log"] = info.log
+            # Every unfinished task, a cancelled one still stopping included,
+            # in the shape every other client path sends.
+            if info.finished_at is None:
                 try:
-                    await ws.send_json(msg)
+                    await ws.send_json(info.snapshot(with_outcome=False))
                 except Exception:
                     pass
 

@@ -178,3 +178,14 @@ describe("reconcileBatch", () => {
     expect(out).toHaveProperty("objs");
   });
 });
+
+describe("promptToInputEntries with an empty segment", () => {
+  it("counts the `[N] ` line the backend writes for an empty text", () => {
+    const prompt = "Fix these lines.\n\n[4] hello\n[5] \n[6] world\n\nReturn JSON.";
+    expect(promptToInputEntries(prompt)).toEqual([
+      { index: 4, text: "hello" },
+      { index: 5, text: "" },
+      { index: 6, text: "world" },
+    ]);
+  });
+});

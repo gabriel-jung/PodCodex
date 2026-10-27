@@ -1,5 +1,5 @@
 import { json } from "./client";
-import type { SecretsStatusResponse, SecretStatus } from "./generated-types";
+import type { SecretsStatusResponse, SecretStatus, SecretsUpdateRequest } from "./generated-types";
 
 export type { SecretsStatusResponse, SecretStatus };
 
@@ -12,5 +12,5 @@ export const updateSecrets = (values: Record<string, string>) =>
   json<SecretsStatusResponse>("/api/config/secrets", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ values }),
+    body: JSON.stringify({ values } satisfies SecretsUpdateRequest),
   });

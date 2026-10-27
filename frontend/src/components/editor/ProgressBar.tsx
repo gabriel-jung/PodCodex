@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useProgress } from "@/hooks/useProgress";
+import { isStopping, useProgress } from "@/hooks/useProgress";
 import { Check, Loader2, AlertCircle, RotateCcw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import LogSection from "@/components/common/LogSection";
@@ -69,6 +69,9 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
   const isFailed = progress?.status === "failed";
   const isDone = progress?.status === "completed";
   const isCancelled = progress?.status === "cancelled";
+  // Cancel requested, work still winding down: neither runnable nor dismissable
+  // yet, since a re-run would hit the episode lock.
+  const stopping = isStopping(progress);
   const isRunning = !isDone && !isFailed && !isCancelled;
   const isSlow = isRunning && staleElapsed > SLOW_THRESHOLD;
   const isStuck = isRunning && staleElapsed > STUCK_THRESHOLD;
@@ -98,7 +101,10 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
                 Cancel
               </Button>
             )}
-            {onDismiss && !isRunning && (
+            {stopping && (
+              <span className="text-xs text-muted-foreground italic">Stopping…</span>
+            )}
+            {onDismiss && !isRunning && !stopping && (
               <Button onClick={onDismiss} variant="ghost" size="sm" className="text-xs h-6 px-1.5">
                 Dismiss
               </Button>
@@ -134,8 +140,13 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
               <div key={i} className="flex items-center gap-2 text-xs">
                 {isActive ? (
                   <Loader2 className="w-3 h-3 text-primary animate-spin shrink-0" />
-                ) : (isFailed || isCancelled) && isLast ? (
+                ) : stopping && isLast ? (
+                  <Loader2 className="w-3 h-3 text-muted-foreground animate-spin shrink-0" />
+                ) : isFailed && isLast ? (
                   <AlertCircle className="w-3 h-3 text-destructive shrink-0" />
+                ) : isCancelled && isLast ? (
+                  // Cancelled is the user's call, not an error.
+                  <X className="w-3 h-3 text-warning shrink-0" />
                 ) : (
                   <Check className="w-3 h-3 text-success shrink-0" />
                 )}

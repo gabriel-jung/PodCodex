@@ -1,3 +1,4 @@
+import { useId } from "react";
 import type { UseMutationResult } from "@tanstack/react-query";
 import { countLabel } from "@/lib/showCounts";
 import type { PipelineConfig, GeneratedSegment, SynthesisStatus } from "@/api/types";
@@ -60,6 +61,7 @@ export default function TTSGenerationSection({
   generatedSegments,
   generateMutation,
 }: TTSGenerationSectionProps) {
+  const fieldId = useId();
   const toggleSpeaker = (sp: string) => {
     setOnlySpeakers(
       onlySpeakers.includes(sp)
@@ -78,8 +80,8 @@ export default function TTSGenerationSection({
         <HelpLabel label="Voice language" help="The language the cloned voices should speak in. Should match the source text." />
         <LanguageChipRack value={language} onChange={setLanguage} />
 
-        <HelpLabel label="Model size" help="Larger models produce more natural speech but need more GPU memory." />
-        <select
+        <HelpLabel label="Model size" htmlFor={`${fieldId}-0`} help="Larger models produce more natural speech but need more GPU memory." />
+        <select id={`${fieldId}-0`}
           value={modelSize}
           onChange={(e) => setModelSize(e.target.value)}
           className={selectClass}
@@ -95,8 +97,8 @@ export default function TTSGenerationSection({
 
       <AdvancedToggle className="space-y-3">
         <FormGrid className="pl-3 border-l-2 border-border">
-          <HelpLabel label="Max chunk (s)" help="Maximum duration per TTS chunk in seconds. Shorter chunks are more stable, longer ones sound more natural." />
-          <input
+          <HelpLabel label="Max chunk (s)" htmlFor={`${fieldId}-1`} help="Maximum duration per TTS chunk in seconds. Shorter chunks are more stable, longer ones sound more natural." />
+          <input id={`${fieldId}-1`}
             type="number"
             value={maxChunkDuration}
             onChange={(e) => setMaxChunkDuration(Number(e.target.value))}

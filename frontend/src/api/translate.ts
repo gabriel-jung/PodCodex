@@ -1,9 +1,14 @@
-import type { Segment, TaskResponse, TranslateRequest } from "./types";
+import type { TranslateManualPromptsRequest, TranslateApplyManualRequest, TranslateApplyBatchesRequest, Segment, TaskResponse, TranslateRequest } from "./types";
 import { createLLMPipelineApi } from "./versions";
 
 type AudioRef = string | null | undefined;
 
-const api = createLLMPipelineApi("translate");
+const api = createLLMPipelineApi<{
+  start: TranslateRequest;
+  manualPrompts: TranslateManualPromptsRequest;
+  applyManual: TranslateApplyManualRequest;
+  applyBatches: TranslateApplyBatchesRequest;
+}>("translate");
 
 export const getTranslateSegments = (audioPath: AudioRef, lang: string, outputDir?: string) =>
   api.getSegments(audioPath, { lang, output_dir: outputDir });
@@ -16,26 +21,10 @@ export const loadTranslateVersion = (audioPath: AudioRef, lang: string, versionI
 export const deleteTranslateVersion = (audioPath: AudioRef, lang: string, versionId: string, outputDir?: string) =>
   api.deleteVersion(audioPath, versionId, { lang, output_dir: outputDir });
 
-export const startTranslate = (req: TranslateRequest) =>
-  api.start(req as unknown as Record<string, unknown>) as Promise<TaskResponse>;
+export const startTranslate = (req: TranslateRequest): Promise<TaskResponse> => api.start(req);
 
-export const getTranslateManualPrompts = (params: {
-  audio_path?: string;
-  output_dir?: string;
-  context?: string;
-  source_lang?: string;
-  target_lang?: string;
-  batch_minutes?: number;
-  batch_count?: number;
-  source_version_id?: string;
-}) => api.getManualPrompts(params);
+export const getTranslateManualPrompts = (params: TranslateManualPromptsRequest) => api.getManualPrompts(params);
 
-export const applyTranslateManual = (params: { audio_path?: string; output_dir?: string; lang: string; corrections: unknown[]; source_version_id?: string }) =>
-  api.applyManual(params);
+export const applyTranslateManual = (params: TranslateApplyManualRequest) => api.applyManual(params);
 
-export const applyTranslateBatches = (params: {
-  audio_path?: string;
-  output_dir?: string;
-  lang: string;
-  fixes: { batch: number; corrections: unknown[] }[];
-}) => api.applyBatches(params);
+export const applyTranslateBatches = (params: TranslateApplyBatchesRequest) => api.applyBatches(params);

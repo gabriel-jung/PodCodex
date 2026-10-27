@@ -158,7 +158,7 @@ export default function SpeakersPanel({ folder, meta }: SpeakersPanelProps) {
         <p className="text-xs text-muted-foreground">
           {transcribedButNotDiarized
             ? "These transcripts have no speaker labels. Re-transcribe with diarization on to tell speakers apart."
-            : "No speakers found yet — transcribe episodes to populate the roster."}
+            : "No speakers found yet. Transcribe episodes to populate the roster."}
         </p>
       )}
       <ul className="space-y-1.5">

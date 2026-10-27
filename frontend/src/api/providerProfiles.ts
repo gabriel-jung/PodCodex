@@ -1,7 +1,9 @@
 import { json, rawFetch } from "./client";
 import type {
   ProviderProfile,
+  ProviderProfileCreateRequest,
   ProviderProfilesListResponse,
+  ProviderProfileUpdateRequest,
 } from "./generated-types";
 
 export type { ProviderProfile, ProviderProfilesListResponse };
@@ -9,7 +11,7 @@ export type { ProviderProfile, ProviderProfilesListResponse };
 export const listProviderProfiles = () =>
   json<ProviderProfilesListResponse>("/api/provider-profiles");
 
-export const createProviderProfile = (req: { name: string; base_url: string }) =>
+export const createProviderProfile = (req: ProviderProfileCreateRequest) =>
   json<ProviderProfile>("/api/provider-profiles", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -18,7 +20,7 @@ export const createProviderProfile = (req: { name: string; base_url: string }) =
 
 export const updateProviderProfile = (
   name: string,
-  patch: { base_url?: string },
+  patch: ProviderProfileUpdateRequest,
 ) =>
   json<ProviderProfile>(`/api/provider-profiles/${encodeURIComponent(name)}`, {
     method: "PATCH",

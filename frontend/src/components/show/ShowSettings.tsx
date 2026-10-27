@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useDirtyEdit } from "@/lib/dirtyEdits";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
@@ -6,23 +6,34 @@ import type { ShowMeta } from "@/api/types";
 import type { ShowMetaUpdate } from "@/api/shows";
 import { updateShowMeta, moveShow, deleteShow, previewBroadcastNumber, uploadShowArtwork, deleteShowArtwork } from "@/api/client";
 import { artworkUrl as showArtworkEndpoint } from "@/api/filesystem";
-import { LOCAL_ARTWORK_MARKER } from "@/lib/showArtwork";
+import { bumpShowArtwork, LOCAL_ARTWORK_MARKER } from "@/lib/showArtwork";
 import { removeQueriesForShowId, removeQueriesUnderPath } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
 import { useIndexConfig } from "@/hooks/useIndexConfig";
-import { useLLMProviders } from "@/hooks/useLLMProviders";
-import { useProviderProfiles } from "@/hooks/useProviderProfiles";
-import { useApiKeys } from "@/hooks/useApiKeys";
 import { Button } from "@/components/ui/button";
 import { SettingRow, SettingSection } from "@/components/ui/setting-row";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { ErrorAlert } from "@/components/ui/error-alert";
-import { errorMessage, inputWidth, selectClass, splitPath } from "@/lib/utils";
+import { appDefaultLabel, errorMessage, inputWidth, splitPath } from "@/lib/utils";
 import FolderLocationFields from "@/components/common/FolderLocationFields";
 import ShowAccessSection from "./ShowAccessSection";
 import BundleExportSection from "./BundleExportSection";
 import { StatusDot } from "@/components/ui/status-dot";
 import { FolderOpen, Trash2, Upload } from "lucide-react";
+import { usePipelineConfigStore } from "@/stores/pipelineConfigStore";
+import {
+  ApiKeyField,
+  BatchMinutesField,
+  ChunkingField,
+  EmbeddingModelField,
+  IdentifySpeakersField,
+  LlmModeField,
+  LlmModelField,
+  ProviderField,
+  TargetLangField,
+  TranscriptionModelField,
+} from "@/components/settings/PipelineFields";
+import { LLM_MODE_LABELS } from "@/lib/pipelineLabels";
 
 interface ShowSettingsProps {
   folder: string;
@@ -171,10 +182,8 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   const artworkTouchedRef = useRef(false);
 
   const { data: indexConfig } = useIndexConfig();
-  const { whisperModels } = useLLMProviders();
-  const { profiles } = useProviderProfiles();
-  const { keys } = useApiKeys();
-  const apiProfiles = useMemo(() => profiles.filter((p) => p.type !== "ollama"), [profiles]);
+  // The live app defaults, named by every "App default (…)" choice below.
+  const app = usePipelineConfigStore((s) => s.appDefaults);
 
   // ── Artwork upload ──
   const isLocalArtwork = artworkUrl === LOCAL_ARTWORK_MARKER;
@@ -189,6 +198,9 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
       patch({ artworkUrl: LOCAL_ARTWORK_MARKER });
       queryClient.invalidateQueries({ queryKey: queryKeys.showMeta(folder) });
       queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
+      // Replacing an uploaded cover keeps the same URL (same route, same
+      // marker), so the browser would keep showing the old image.
+      bumpShowArtwork(folder);
     },
   });
   // Feed-backed shows get the feed's own cover back on the next refresh, so
@@ -596,31 +608,16 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
         title="Transcription"
         description={'How episodes of this show are turned into text. Each setting overrides the matching app default (Settings → Pipeline); leave it on "App default" to inherit.'}
       >
-        <SettingRow label="Transcription model" help="Bigger models are more accurate but slower.">
-          <select
-            value={pipeModelSize}
-            onChange={(e) => patch({ pipeModelSize: e.target.value })}
-            className={selectClass}
-          >
-            <option value="">App default</option>
-            {Object.entries(whisperModels).map(([key, label]) => (
-              <option key={key} value={key}>{label}</option>
-            ))}
-          </select>
-        </SettingRow>
-        <SettingRow label="Identify speakers" help="Detect who is talking and label each line with a speaker.">
-          <select
-            value={pipeDiarize === null ? "" : pipeDiarize ? "yes" : "no"}
-            onChange={(e) =>
-              patch({ pipeDiarize: e.target.value === "" ? null : e.target.value === "yes" })
-            }
-            className={selectClass}
-          >
-            <option value="">App default</option>
-            <option value="yes">On</option>
-            <option value="no">Off</option>
-          </select>
-        </SettingRow>
+        <TranscriptionModelField
+          value={pipeModelSize}
+          onChange={(v) => patch({ pipeModelSize: v })}
+          inherit={appDefaultLabel(app.transcribe.modelSize)}
+        />
+        <IdentifySpeakersField
+          value={pipeDiarize === null ? "" : pipeDiarize ? "yes" : "no"}
+          onChange={(v) => patch({ pipeDiarize: v === "" ? null : v === "yes" })}
+          inherit={appDefaultLabel(app.transcribe.diarize ? "On" : "Off")}
+        />
         {pipeDiarize === true && (
           <SettingRow label="Speaker count" help="How many people speak in the show. Leave blank to detect automatically.">
             <input
@@ -640,80 +637,43 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
         title="AI correction & translation"
         description="The AI that cleans up raw transcripts and translates them."
       >
-        <SettingRow
-          label="Where the AI runs"
-          help="Ollama runs on your own computer. Cloud API uses a paid online provider. Manual lets you copy the prompts and run them yourself."
-        >
-          <select
-            value={pipeLlmMode}
-            onChange={(e) => patch({ pipeLlmMode: e.target.value })}
-            className={selectClass}
-          >
-            <option value="">App default</option>
-            <option value="api">Cloud API</option>
-            <option value="ollama">Ollama (local)</option>
-            <option value="manual">Manual (copy-paste prompts)</option>
-          </select>
-        </SettingRow>
+        <LlmModeField
+          value={pipeLlmMode}
+          onChange={(v) => patch({ pipeLlmMode: v })}
+          inherit={appDefaultLabel(LLM_MODE_LABELS[app.llm.mode])}
+        />
         {pipeLlmMode === "api" && (
           <>
-            <SettingRow label="AI provider" help="Which provider profile to use. Manage profiles in Settings → Credentials.">
-              <select
-                value={pipeLlmProviderProfile}
-                onChange={(e) => patch({ pipeLlmProviderProfile: e.target.value })}
-                className={selectClass}
-              >
-                <option value="">App default</option>
-                {apiProfiles.map((p) => (
-                  <option key={p.name} value={p.name}>
-                    {p.name}{p.builtin ? "" : " (custom)"}
-                  </option>
-                ))}
-              </select>
-            </SettingRow>
-            <SettingRow label="AI API key" help="Which saved API key to use. Add keys in Settings → Credentials.">
-              <select
-                value={pipeLlmKeyName}
-                onChange={(e) => patch({ pipeLlmKeyName: e.target.value })}
-                className={selectClass}
-              >
-                <option value="">App default</option>
-                {keys.map((k) => (
-                  <option key={k.name} value={k.name}>{k.name}</option>
-                ))}
-              </select>
-            </SettingRow>
+            <ProviderField
+              value={pipeLlmProviderProfile}
+              onChange={(v) => patch({ pipeLlmProviderProfile: v })}
+              inherit={appDefaultLabel(app.llm.providerProfile)}
+            />
+            <ApiKeyField
+              value={pipeLlmKeyName}
+              onChange={(v) => patch({ pipeLlmKeyName: v })}
+              inherit={appDefaultLabel(app.llm.keyName)}
+            />
           </>
         )}
         {(pipeLlmMode === "api" || pipeLlmMode === "ollama") && (
-          <SettingRow label="AI model" help="Specific model name for this mode. Leave blank to inherit the app default for the same mode.">
-            <input
-              value={pipeLlmModels[pipeLlmMode] ?? ""}
-              onChange={(e) =>
-                setDraft((d) => ({
-                  ...d,
-                  pipeLlmModels: { ...d.pipeLlmModels, [d.pipeLlmMode]: e.target.value },
-                }))
-              }
-              placeholder="App default"
-              className={`input ${inputWidth.short}`}
-            />
-          </SettingRow>
-        )}
-        <SettingRow
-          label="Minutes per batch"
-          help="Max audio duration per LLM request. Smaller batches stay within model context windows; larger batches are fewer requests but heavier prompts. Leave blank to inherit the app default."
-        >
-          <input
-            type="number"
-            min={1}
-            step={1}
-            value={pipeLlmBatchMinutes}
-            onChange={(e) => patch({ pipeLlmBatchMinutes: e.target.value })}
-            placeholder="App default"
-            className={`input ${inputWidth.numeric}`}
+          <LlmModelField
+            mode={pipeLlmMode}
+            value={pipeLlmModels[pipeLlmMode] ?? ""}
+            onChange={(v) =>
+              setDraft((d) => ({
+                ...d,
+                pipeLlmModels: { ...d.pipeLlmModels, [d.pipeLlmMode]: v },
+              }))
+            }
+            inheritValue={app.llm.modelsByMode[pipeLlmMode] ?? ""}
           />
-        </SettingRow>
+        )}
+        <BatchMinutesField
+          value={pipeLlmBatchMinutes}
+          onChange={(v) => patch({ pipeLlmBatchMinutes: v })}
+          inheritValue={String(app.llm.batchMinutes)}
+        />
         <SettingRow
           label="About this show"
           help="A short description of the show, its hosts and recurring topics. The AI reads it to make better corrections."
@@ -728,14 +688,11 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
         >
           <span />
         </SettingRow>
-        <SettingRow label="Translate into" help="Language episodes are translated into.">
-          <input
-            value={pipeTargetLang}
-            onChange={(e) => patch({ pipeTargetLang: e.target.value })}
-            placeholder="App default"
-            className={`input ${inputWidth.short}`}
-          />
-        </SettingRow>
+        <TargetLangField
+          value={pipeTargetLang}
+          onChange={(v) => patch({ pipeTargetLang: v })}
+          inheritValue={app.targetLang}
+        />
       </SettingSection>
 
       {/* ── Search index ── */}
@@ -780,36 +737,16 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
             className={`input ${inputWidth.medium} font-mono`}
           />
         </SettingRow>
-        <SettingRow
-          label="Search: embedding model"
-          help="Model used to make episodes searchable. AI search queries the model set here."
-        >
-          <select
-            value={pipeRagModel}
-            onChange={(e) => patch({ pipeRagModel: e.target.value })}
-            className={selectClass}
-          >
-            <option value="">App default (BGE-M3)</option>
-            {Object.entries(indexConfig?.models ?? {}).map(([key, m]) => (
-              <option key={key} value={key}>{m.label}</option>
-            ))}
-          </select>
-        </SettingRow>
-        <SettingRow
-          label="Search: chunking"
-          help="How transcripts are split into searchable chunks. Pairs with the embedding model above."
-        >
-          <select
-            value={pipeRagChunker}
-            onChange={(e) => patch({ pipeRagChunker: e.target.value })}
-            className={selectClass}
-          >
-            <option value="">App default (semantic)</option>
-            {Object.keys(indexConfig?.chunking_strategies ?? {}).map((key) => (
-              <option key={key} value={key}>{key}</option>
-            ))}
-          </select>
-        </SettingRow>
+        <EmbeddingModelField
+          value={pipeRagModel}
+          onChange={(v) => patch({ pipeRagModel: v })}
+          inherit={appDefaultLabel(indexConfig?.models[app.indexModel]?.label ?? app.indexModel)}
+        />
+        <ChunkingField
+          value={pipeRagChunker}
+          onChange={(v) => patch({ pipeRagChunker: v })}
+          inherit={appDefaultLabel(app.indexChunker)}
+        />
       </SettingSection>
 
       {/* ── Discord bot access ── */}

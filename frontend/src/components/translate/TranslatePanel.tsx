@@ -27,6 +27,7 @@ import {
 import { modeToPreset } from "@/stores/pipelineConfigStore";
 import type { LLMConfig } from "@/stores/pipelineConfigStore";
 import TranscriptViewer from "@/components/editor/TranscriptViewer";
+import { confirmDiscard, dirtyEdits } from "@/lib/dirtyEdits";
 import PipelinePanel from "@/components/common/PipelinePanel";
 import HelpLabel from "@/components/common/HelpLabel";
 import MissingDependency from "@/components/common/MissingDependency";
@@ -136,7 +137,7 @@ export default function TranslatePanel() {
       title: "Clear rejected-batch records?",
       description:
         `The last translation run had ${translateFailures.rejected} rejected ` +
-        "batch(es). You just saved a new version — clear those records?",
+        "batch(es). You just saved a new version. Clear those records?",
       confirmLabel: "Clear records",
       cancelLabel: "Keep",
       onConfirm: async () => { await dismissFailures.mutateAsync(); },
@@ -170,7 +171,11 @@ export default function TranslatePanel() {
             <div className="px-4 pb-2 flex justify-end">
               <select
                 value={activeLang}
-                onChange={(e) => setEditingLang(e.target.value)}
+                onChange={async (e) => {
+                  const lang = e.target.value;
+                  if (dirtyEdits.isDirty() && !(await confirmDiscard())) return;
+                  setEditingLang(lang);
+                }}
                 className={selectClass}
               >
                 {episode.translations.map((lang) => (
@@ -186,7 +191,7 @@ export default function TranslatePanel() {
                 <MissingDependency
                   extra="pipeline"
                   label="LLM libraries"
-                  description="Required for automatic AI processing. Manual mode works without them — it gives you prompts to paste into any chatbot."
+                  description="Required for automatic AI processing. Manual mode works without them: it gives you prompts to paste into any chatbot."
                 />
               )}
 
@@ -290,6 +295,9 @@ export default function TranslatePanel() {
       )}
       {hasTranslations && activeLang && !task.activeTaskId && !expanded && (
         <TranscriptViewer
+          // One viewer per language: a picked version id or pending edit
+          // belongs to its language and must not carry over to the next.
+          key={activeLang}
           editorKey={`translate-${activeLang}`}
           audioPath={audioPath ?? undefined}
           sourceRef={sourceRef ?? undefined}

@@ -39,7 +39,7 @@ export default function BundleExportPanel() {
       setResultMsg("Exporting all shows… this may take a moment."),
     onSuccess: (res) => {
       setResultMsg(
-        `Exported ${res.shows_exported} show(s), ${res.collections_exported} collection(s) — ${(res.size_bytes / 1e6).toFixed(2)} MB → ${res.output_path}`,
+        `Exported ${res.shows_exported} show(s), ${res.collections_exported} collection(s), ${(res.size_bytes / 1e6).toFixed(2)} MB → ${res.output_path}`,
       );
     },
     onError: (err) => setResultMsg(`Error: ${errorMessage(err)}`),
@@ -55,7 +55,7 @@ export default function BundleExportPanel() {
         <Package className="w-4 h-4" /> Index export
       </h2>
       <p className="text-sm text-muted-foreground">
-        Bundle every show&apos;s search index into a single <code className="font-mono">.podcodex</code> file. Useful for deploying the Discord bot to a VPS without rsync — copy the file across, then run <code className="font-mono">podcodex-import</code> on the host.
+        Bundle every show&apos;s search index into a single <code className="font-mono">.podcodex</code> file. Useful for deploying the Discord bot to a VPS without rsync: copy the file across, then run <code className="font-mono">podcodex-import</code> on the host.
       </p>
 
       <div>

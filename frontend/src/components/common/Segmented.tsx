@@ -21,6 +21,9 @@ export default function Segmented<T extends string>({
           onClick={() => enabled && onChange(key)}
           disabled={!enabled}
           title={title}
+          // The selected option is shown by background and weight; say it to
+          // assistive technology too.
+          aria-pressed={value === key}
           className={`px-3 py-1 transition ${
             value === key
               ? "bg-accent font-medium"

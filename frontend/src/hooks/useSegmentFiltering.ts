@@ -150,7 +150,7 @@ export function useFilteredSegments(
 
     return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editedSegments, ids, speakerFilter, showFlaggedOnly, showChangedOnly, showRemovedOnly, searchLower, densityThreshold, maxDensityThreshold, dismissedFlags, recentlyEdited, customPatterns, isPendingRemoval, displaySpeaker]);
+  }, [editedSegments, ids, speakerFilter, showFlaggedOnly, showChangedOnly, showRemovedOnly, searchLower, densityThreshold, maxDensityThreshold, dismissedFlags, recentlyEdited, customPatterns, isPendingRemoval, displaySpeaker, isChanged]);
 
   // Auto-disable filters when they produce no results
   useEffect(() => {

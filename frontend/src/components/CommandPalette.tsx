@@ -1,6 +1,6 @@
 /** Global command palette — Cmd+K / Ctrl+K to open. */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQuery, useQueries } from "@tanstack/react-query";
 import {
@@ -33,13 +33,17 @@ import { useAudioStore, useBatchHistoryStore } from "@/stores";
 import { useTheme } from "@/hooks/useTheme";
 import { errorMessage, formatTime } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
+import { countLabel } from "@/lib/showCounts";
+
+/** Episode items shown at most; the list is for jumping, not browsing. */
+const MAX_EPISODE_ITEMS = 30;
 
 export default function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const navigate = useNavigate();
-  const seekTo = useAudioStore((s) => s.seekTo);
+  const playEpisode = useAudioStore((s) => s.playEpisode);
   const { theme, setTheme } = useTheme();
   const isPlaying = useAudioStore((s) => s.isPlaying);
 
@@ -49,21 +53,38 @@ export default function CommandPalette() {
     enabled: open,
   });
 
-  const episodeQueries = useQueries({
+  // Episode lists are the heavy `/unified` read, one per show, so they load
+  // only once the user types something to match against, and share the show
+  // page's cache entry (and its staleness) instead of refetching every open.
+  const episodeQuery = query.trim().toLowerCase();
+  const wantEpisodes = open && !!shows && episodeQuery.length >= 2;
+  // `combine` keeps the result referentially stable while the data is, so
+  // the match below reruns on new data or a new query, not on every render.
+  const episodeLists = useQueries({
     queries: (shows ?? []).map((show) => ({
       queryKey: queryKeys.episodesForFolder(show.path),
       queryFn: () => getEpisodes(show.path),
-      enabled: open && !!shows,
-      staleTime: 60_000,
+      enabled: wantEpisodes,
     })),
+    combine: (results) => results.map((q) => q.data),
   });
 
+  // Matched here and capped: cmdk would otherwise mount and score one item
+  // per episode of every show on each keystroke.
   const episodes = useMemo(() => {
-    if (!shows) return [];
-    return episodeQueries.flatMap((q, i) =>
-      (q.data ?? []).map((ep) => ({ ...ep, showPath: shows[i].path, showName: shows[i].name || shows[i].path })),
-    );
-  }, [shows, episodeQueries]);
+    if (!shows || !wantEpisodes) return [];
+    const out: { id: string; stem?: string | null; title: string; showPath: string; showName: string }[] = [];
+    episodeLists.forEach((list, i) => {
+      const showName = shows[i].name || shows[i].path;
+      for (const ep of list ?? []) {
+        if (out.length >= MAX_EPISODE_ITEMS) return;
+        if (`${ep.title} ${showName}`.toLowerCase().includes(episodeQuery)) {
+          out.push({ id: ep.id, stem: ep.stem, title: ep.title, showPath: shows[i].path, showName });
+        }
+      }
+    });
+    return out;
+  }, [shows, wantEpisodes, episodeLists, episodeQuery]);
 
   // Debounce the query for transcript fan-out — running N exact searches per
   // keystroke across every show wastes work when the user is still typing.
@@ -92,7 +113,7 @@ export default function CommandPalette() {
 
   const transcriptHits = useMemo(() => {
     if (!shows) return [];
-    type Hit = { showPath: string; showName: string; text: string; episode: string; speaker: string; start: number; end: number; score: number };
+    type Hit = { showPath: string; showName: string; text: string; episode: string; stem: string; audioPath: string; speaker: string; start: number; end: number; score: number };
     const out: Hit[] = [];
     transcriptQueries.forEach((q, i) => {
       const show = shows[i];
@@ -102,6 +123,8 @@ export default function CommandPalette() {
           showName: show.name || show.path,
           text: r.text,
           episode: r.episode,
+          stem: r.episode_stem,
+          audioPath: r.audio_path,
           speaker: r.speaker,
           start: r.start,
           end: r.end,
@@ -138,23 +161,21 @@ export default function CommandPalette() {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const seekTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => {
-    if (seekTimer.current) clearTimeout(seekTimer.current);
-  }, []);
-
-  const openTranscriptHit = (hit: { showPath: string; episode: string; start: number }) => {
-    // Episode value from search result is the stem-like string the indexer stored
+  // `episode` is the display title; the route and the player need the stem
+  // and the hit's own audio file, not whatever track is already loaded.
+  const openTranscriptHit = (hit: { showPath: string; showName: string; episode: string; stem: string; audioPath: string; start: number }) => {
     navigate({
       to: "/show/$folder/episode/$stem",
-      params: { folder: encodeURIComponent(hit.showPath), stem: encodeURIComponent(hit.episode) },
+      params: { folder: encodeURIComponent(hit.showPath), stem: encodeURIComponent(hit.stem) },
     });
-    // Defer the seek until after navigation + audio load; AudioBar picks up pendingSeek.
-    if (seekTimer.current) clearTimeout(seekTimer.current);
-    seekTimer.current = setTimeout(() => {
-      const audioPath = useAudioStore.getState().audioPath;
-      if (audioPath) seekTo(audioPath, hit.start);
-    }, 400);
+    if (hit.audioPath) {
+      playEpisode(hit.audioPath, hit.start, {
+        title: hit.episode,
+        showName: hit.showName,
+        folder: hit.showPath,
+        stem: hit.stem,
+      });
+    }
   };
 
   const run = (fn: () => void) => {
@@ -253,7 +274,7 @@ export default function CommandPalette() {
               >
                 <Podcast className="mr-2" />
                 {show.name || show.path}
-                <CommandShortcut>{show.episode_count} episodes</CommandShortcut>
+                <CommandShortcut>{countLabel(show.episode_count ?? 0, "episode")}</CommandShortcut>
               </CommandItem>
             ))}
           </CommandGroup>

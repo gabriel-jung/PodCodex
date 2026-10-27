@@ -67,7 +67,33 @@ export default defineConfig({
           // Read per request (tiny local file, dev only) so a token that
           // appears or changes after Vite boots is picked up without a
           // restart.
-          const inject = (proxyReq: { setHeader(k: string, v: string): void }) => {
+          //
+          // Only for requests from this dev server's own pages. The browser
+          // sends any site's WebSocket (CORS does not apply) and simple
+          // requests here too, and the proxy would authenticate them for it:
+          // a page open in another tab could read every task's progress and
+          // logs. No Origin (curl, server-side tools) is the local user.
+          //
+          // Browsers leave Origin off a cross-site <img> or link GET, so
+          // `Sec-Fetch-Site` decides when they send it: only this server's own
+          // pages ("same-origin") or a request the user typed ("none").
+          type Headers = { origin?: string; host?: string; "sec-fetch-site"?: string };
+          const sameOrigin = (req: { headers: Headers }) => {
+            const site = req.headers["sec-fetch-site"];
+            if (site !== undefined) return site === "same-origin" || site === "none";
+            const origin = req.headers.origin;
+            if (!origin) return true;
+            try {
+              return new URL(origin).host === req.headers.host;
+            } catch {
+              return false;
+            }
+          };
+          const inject = (
+            proxyReq: { setHeader(k: string, v: string): void },
+            req: { headers: Headers },
+          ) => {
+            if (!sameOrigin(req)) return;
             const token = readApiToken();
             if (token) proxyReq.setHeader("X-PodCodex-Token", token);
           };

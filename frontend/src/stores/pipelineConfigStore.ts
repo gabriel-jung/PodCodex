@@ -20,6 +20,8 @@ import type { AppConfig, PipelineAppDefaults, PipelineDefaults } from "@/api/typ
 import { queryKeys } from "@/api/queryKeys";
 import { getConfig, putPipelineDefaults } from "@/api/shows";
 import { BOOT_PATIENT_RETRY } from "@/api/client";
+import { useMutationErrorStore } from "./mutationErrorStore";
+import { errorMessage } from "@/lib/utils";
 
 export type LLMMode = "api" | "ollama" | "manual";
 
@@ -76,6 +78,12 @@ export const CPU_LABELS: Record<string, string> = { base: "Fastest", small: "Sli
 export const GPU_LABELS: Record<string, string> = { "large-v3": "Slightly more accurate, 2-3x slower", "large-v3-turbo": "Fast, near-best quality", medium: "Lighter, still good" };
 export const CPU_MODELS = new Set(Object.keys(CPU_LABELS));
 export const GPU_MODELS = new Set(Object.keys(GPU_LABELS));
+
+/** CPU mode, from the preset or, with no preset picked, from the model.
+ *  Drives the model list and forces diarization off (pyannote needs a GPU). */
+export function isCpuTranscribe(preset: string, modelSize: string): boolean {
+  return preset === "cpu" || (preset === "" && CPU_MODELS.has(modelSize));
+}
 
 export const TRANSCRIBE_PRESETS = {
   cpu: { label: "CPU", desc: "Lightweight, no GPU", modelSize: "base" },
@@ -358,7 +366,12 @@ function pushNow(): Promise<void> {
       );
     },
     (err: unknown) => {
+      // The save runs debounced, after the Settings control that caused it
+      // has moved on: the shell banner is the only place left to say so.
       console.warn("Saving pipeline defaults failed:", err);
+      useMutationErrorStore.getState().report(
+        new Error(`Saving the pipeline defaults failed: ${errorMessage(err)}`),
+      );
     },
   );
 }
@@ -605,24 +618,31 @@ export function readLegacyAppDefaults(): PipelineAppDefaults | null {
   }
 }
 
-/** Seed the working pipeline config from a show once per show open.
- *  Re-seeds when the folder changes; a same-show meta refetch does not
- *  re-seed, so a panel edit survives background refetches. */
+/** Seed the working pipeline config from a show once per show open; a
+ *  same-show meta refetch does not re-seed, so a panel edit survives
+ *  background refetches. With `followSaves`, a change to the show's saved
+ *  pipeline re-seeds as well: ShowPage passes it so a batch run sends what
+ *  Show settings just saved. EpisodePage does not, since its panels save
+ *  one step through RunSettingsBanner and a re-seed would reset the other
+ *  steps and the episode's LLM context. */
 export function useSeedPipelineFromShow(
   folder: string | undefined,
   pipeline: PipelineDefaults | null | undefined,
   ready: boolean,
+  { followSaves = false }: { followSaves?: boolean } = {},
 ): void {
   const seed = usePipelineConfigStore((s) => s.seedWorkingFromShow);
   // Also wait for the server-owned app defaults: seeding from the built-ins
   // while hydration is in flight would bake the wrong base into the working
   // copy for the whole show visit.
   const defaultsReady = usePipelineConfigStore((s) => s.appDefaultsReady);
-  const seededFolder = useRef<string | null>(null);
+  const seededFrom = useRef<string | null>(null);
   useEffect(() => {
     if (!ready || !defaultsReady) return;
-    if (seededFolder.current === (folder ?? null)) return;
-    seededFolder.current = folder ?? null;
+    // The meta object is rebuilt on every refetch; compare its content.
+    const key = JSON.stringify(followSaves ? [folder ?? null, pipeline ?? null] : [folder ?? null]);
+    if (seededFrom.current === key) return;
+    seededFrom.current = key;
     seed(pipeline);
-  }, [folder, ready, defaultsReady, pipeline, seed]);
+  }, [folder, ready, defaultsReady, pipeline, seed, followSaves]);
 }

@@ -39,7 +39,6 @@ import { Kbd } from "@/components/ShortcutsHelp";
 import { SHORTCUTS } from "@/lib/shortcuts";
 import { NullableNumberInput } from "@/components/ui/number-input";
 import { SettingRow, SettingSection } from "@/components/ui/setting-row";
-import { useIndexConfig } from "@/hooks/useIndexConfig";
 import { useLLMProviders } from "@/hooks/useLLMProviders";
 import { useApiKeys } from "@/hooks/useApiKeys";
 import { useProviderProfiles } from "@/hooks/useProviderProfiles";
@@ -48,6 +47,19 @@ import { useFlagPatternsStore } from "@/stores/flagPatternsStore";
 import { inputWidth, selectClass } from "@/lib/utils";
 import { ErrorAlert } from "@/components/ui/error-alert";
 import InlineConfirm from "@/components/common/InlineConfirm";
+import {
+  ApiKeyField,
+  BatchMinutesField,
+  ChunkingField,
+  EmbeddingModelField,
+  IdentifySpeakersField,
+  LlmModeField,
+  LlmModelField,
+  OnOffField,
+  ProviderField,
+  TargetLangField,
+  TranscriptionModelField,
+} from "@/components/settings/PipelineFields";
 
 // Plugins panel runs `uv sync --extra X` to install Python extras — only
 // meaningful when a venv exists (dev mode). The bundled sidecar has its
@@ -235,11 +247,7 @@ function ShortcutsPanel() {
 // ── Pipeline defaults ────────────────────────
 
 function PipelineDefaultsPanel() {
-  const { whisperModels, detectedKeys, pipelineConfig } = useLLMProviders();
-  const { profiles } = useProviderProfiles();
-  const { keys: pooledKeys } = useApiKeys();
-  const apiProfiles = useMemo(() => profiles.filter((p) => p.type !== "ollama"), [profiles]);
-  const { data: indexConfig } = useIndexConfig();
+  const { detectedKeys } = useLLMProviders();
 
   // App-wide defaults. Each show inherits these unless it overrides them in
   // its own Settings; episode and batch runs start from the show's resolved
@@ -281,26 +289,11 @@ function PipelineDefaultsPanel() {
         title="Transcription"
         description="How episodes are turned into text."
       >
-        <SettingRow
-          label="Transcription model"
-          help="Bigger models are more accurate but slower. The CPU options work without a graphics card; the GPU options need one."
-        >
-          <select
-            value={transcribe.modelSize}
-            onChange={(e) => setTranscribe({ modelSize: e.target.value })}
-            className={selectClass}
-            disabled={!pipelineConfig}
-          >
-            {pipelineConfig
-              ? Object.entries(whisperModels).map(([key, label]) => (
-                  <option key={key} value={key}>{label}</option>
-                ))
-              : <option>Loading…</option>}
-          </select>
-        </SettingRow>
-        <SettingRow
-          label="Identify speakers"
-          help="Detect who is talking and label each line. Requires a Hugging Face token."
+        <TranscriptionModelField
+          value={transcribe.modelSize}
+          onChange={(modelSize) => setTranscribe({ modelSize })}
+        />
+        <IdentifySpeakersField
           below={transcribe.diarize && !detectedKeys.hf_token ? (
             <p className="text-xs text-muted-foreground">
               Hugging Face token needed.{" "}
@@ -318,29 +311,15 @@ function PipelineDefaultsPanel() {
               .
             </p>
           ) : undefined}
-        >
-          <select
-            value={transcribe.diarize ? "yes" : "no"}
-            onChange={(e) => setTranscribe({ diarize: e.target.value === "yes" })}
-            className={selectClass}
-          >
-            <option value="no">Off</option>
-            <option value="yes">On</option>
-          </select>
-        </SettingRow>
-        <SettingRow
+          value={transcribe.diarize ? "yes" : "no"}
+          onChange={(v) => setTranscribe({ diarize: v === "yes" })}
+        />
+        <OnOffField
           label="Drop low-quality segments"
           help="Remove garbled or off-mic lines that the model itself flags as unreliable. Leave off if you'd rather review and delete them by hand in the editor."
-        >
-          <select
-            value={transcribe.clean ? "yes" : "no"}
-            onChange={(e) => setTranscribe({ clean: e.target.value === "yes" })}
-            className={selectClass}
-          >
-            <option value="no">Off</option>
-            <option value="yes">On</option>
-          </select>
-        </SettingRow>
+          value={transcribe.clean ? "yes" : "no"}
+          onChange={(v) => setTranscribe({ clean: v === "yes" })}
+        />
         <SettingRow
           label="GPU batch size"
           help="How many audio chunks WhisperX processes at once on the GPU. Leave blank to auto-pick from VRAM (8 for ≤10 GB, 16 above). Lower it if you hit out-of-memory errors; raise it on big GPUs for more speed."
@@ -359,143 +338,32 @@ function PipelineDefaultsPanel() {
         title="AI correction & translation"
         description="The AI that cleans up raw transcripts and translates them."
       >
-        <SettingRow
-          label="Where the AI runs"
-          help="Ollama runs on your own computer. Cloud API uses a paid online provider. Manual lets you copy the prompts and run them yourself."
-        >
-          <select
-            value={llm.mode}
-            onChange={(e) => setLLM({ mode: e.target.value as typeof llm.mode })}
-            className={selectClass}
-          >
-            <option value="api">Cloud API</option>
-            <option value="ollama">Ollama (local)</option>
-            <option value="manual">Manual (copy-paste prompts)</option>
-          </select>
-        </SettingRow>
+        <LlmModeField value={llm.mode} onChange={(v) => setLLM({ mode: v as typeof llm.mode })} />
         {llm.mode === "api" && (
           <>
-            <SettingRow
-              label="AI provider"
-              help="Which provider profile to use. Manage profiles in Settings → Credentials."
-            >
-              <select
-                value={llm.providerProfile}
-                onChange={(e) => setLLM({ providerProfile: e.target.value })}
-                className={selectClass}
-              >
-                <option value="">Pick…</option>
-                {apiProfiles.map((p) => (
-                  <option key={p.name} value={p.name}>
-                    {p.name}{p.builtin ? "" : " (custom)"}
-                  </option>
-                ))}
-              </select>
-            </SettingRow>
-            <SettingRow
-              label="AI API key"
-              help="Which saved API key to use. Add keys in Settings → Credentials."
-            >
-              <select
-                value={llm.keyName}
-                onChange={(e) => setLLM({ keyName: e.target.value })}
-                className={selectClass}
-              >
-                <option value="">
-                  {pooledKeys.length === 0 ? "No keys yet" : "Pick…"}
-                </option>
-                {pooledKeys.map((k) => (
-                  <option key={k.name} value={k.name}>
-                    {k.name}
-                    {k.suggested_provider ? ` (${k.suggested_provider})` : ""}
-                  </option>
-                ))}
-              </select>
-            </SettingRow>
+            <ProviderField value={llm.providerProfile} onChange={(providerProfile) => setLLM({ providerProfile })} />
+            <ApiKeyField value={llm.keyName} onChange={(keyName) => setLLM({ keyName })} />
           </>
         )}
         {(llm.mode === "api" || llm.mode === "ollama") && (
-          <SettingRow
-            label="AI model"
-            help={llm.mode === "ollama"
-              ? "Model tag served by your local Ollama instance."
-              : "Specific model name. Leave blank to use the provider's default."}
-          >
-            <input
-              value={llm.model}
-              onChange={(e) => setLLM({ model: e.target.value })}
-              placeholder={llm.mode === "ollama" ? "e.g. llama3.1:8b" : "e.g. gpt-4o-mini"}
-              className={`input ${inputWidth.medium}`}
-            />
-          </SettingRow>
+          <LlmModelField mode={llm.mode} value={llm.model} onChange={(model) => setLLM({ model })} />
         )}
-        <SettingRow
-          label="Translate into"
-          help="Language episodes are translated into."
-        >
-          <input
-            value={targetLang}
-            onChange={(e) => setTargetLang(e.target.value)}
-            placeholder="English"
-            className={`input ${inputWidth.short}`}
-          />
-        </SettingRow>
-        <SettingRow
-          label="Minutes per batch"
-          help="Max audio duration per LLM request. Smaller batches stay within model context windows; larger batches are fewer requests but heavier prompts. Episodes panel can override per-run as a batch count."
-        >
-          <input
-            type="number"
-            min={1}
-            step={1}
-            value={llm.batchMinutes}
-            onChange={(e) => {
-              const n = Number(e.target.value);
-              if (Number.isFinite(n) && n > 0) setLLM({ batchMinutes: n });
-            }}
-            className={`input ${inputWidth.numeric}`}
-          />
-        </SettingRow>
+        <TargetLangField value={targetLang} onChange={setTargetLang} />
+        <BatchMinutesField
+          value={String(llm.batchMinutes)}
+          onChange={(v) => {
+            const n = Number(v);
+            if (Number.isFinite(n) && n > 0) setLLM({ batchMinutes: n });
+          }}
+        />
       </SettingSection>
 
       <SettingSection
         title="Search index"
         description="The embeddings that make episodes searchable, used by AI search and the MCP server."
       >
-        <SettingRow
-          label="Embedding model"
-          help="The model that turns transcript text into vectors so search can find passages by meaning. AI search queries whichever model is set here."
-        >
-          <select
-            value={indexModel}
-            onChange={(e) => setIndexModel(e.target.value)}
-            className={selectClass}
-            disabled={!indexConfig}
-          >
-            {indexConfig
-              ? Object.entries(indexConfig.models).map(([key, m]) => (
-                  <option key={key} value={key}>{m.label}</option>
-                ))
-              : <option>Loading…</option>}
-          </select>
-        </SettingRow>
-        <SettingRow
-          label="Chunking"
-          help="How transcripts are split before they are embedded. Semantic groups sentences with similar meaning; speaker groups consecutive lines from the same speaker."
-        >
-          <select
-            value={indexChunker}
-            onChange={(e) => setIndexChunker(e.target.value)}
-            className={selectClass}
-            disabled={!indexConfig}
-          >
-            {indexConfig
-              ? Object.keys(indexConfig.chunking_strategies).map((key) => (
-                  <option key={key} value={key}>{key}</option>
-                ))
-              : <option>Loading…</option>}
-          </select>
-        </SettingRow>
+        <EmbeddingModelField value={indexModel} onChange={setIndexModel} />
+        <ChunkingField value={indexChunker} onChange={setIndexChunker} />
       </SettingSection>
 
       <FlagPatternsSection />
@@ -972,7 +840,7 @@ function CredentialsPanel() {
 
 function ApiKeysSection() {
   const qc = useQueryClient();
-  const { keys } = useApiKeys();
+  const { keys, error: keysError, refetch: refetchKeys } = useApiKeys();
   const { profiles } = useProviderProfiles();
   const apiProfileNames = useMemo(
     () => profiles.filter((p) => p.type !== "ollama").map((p) => p.name),
@@ -1033,7 +901,9 @@ function ApiKeysSection() {
         </p>
       </div>
 
-      {keys.length === 0 ? (
+      {keysError ? (
+        <ErrorAlert error={keysError} onRetry={() => void refetchKeys()} />
+      ) : keys.length === 0 ? (
         <p className="text-sm text-muted-foreground">No keys yet.</p>
       ) : (
         <div className="border border-border rounded-lg divide-y divide-border">
@@ -1267,7 +1137,7 @@ function ApiKeyRow({
 
 function ProviderProfilesSection() {
   const qc = useQueryClient();
-  const { profiles } = useProviderProfiles();
+  const { profiles, error: profilesError, refetch: refetchProfiles } = useProviderProfiles();
 
   const [adding, setAdding] = useState(false);
   const [draftName, setDraftName] = useState("");
@@ -1313,6 +1183,7 @@ function ProviderProfilesSection() {
           name and base URL.
         </p>
       </div>
+      {profilesError && <ErrorAlert error={profilesError} onRetry={() => void refetchProfiles()} />}
       <div className="border border-border rounded-lg divide-y divide-border">
         {profiles.map((p) => (
           <ProviderProfileRow

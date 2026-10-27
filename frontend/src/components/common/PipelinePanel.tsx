@@ -1,13 +1,8 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
 import ProgressBar from "@/components/editor/ProgressBar";
+import { cancelTask } from "@/api/client";
 import { EmptyState } from "@/components/ui/empty-state";
-import type { PanelStatus } from "@/lib/stepStatus";
-
-const STATUS_META: Record<PanelStatus, { text: string; color: string }> = {
-  ready: { text: "ready", color: "text-success" },
-  review: { text: "needs review", color: "text-info" },
-  none: { text: "not started", color: "text-muted-foreground/60" },
-};
+import { PANEL_STATUS_META as STATUS_META, type PanelStatus } from "@/lib/stepStatus";
 
 interface PipelinePanelProps {
   /** Panel title shown in the header. */
@@ -107,7 +102,18 @@ export default function PipelinePanel({
         </div>
       )}
 
-      {taskId && <ProgressBar taskId={taskId} onComplete={onTaskComplete} onRetry={onRetry} onDismiss={onDismiss} onCancel={onDismiss} />}
+      {/* Cancel only asks the server to stop: the bar stays, reads
+          "Stopping…" until the work ends and the lock is free, then offers
+          Dismiss. Clearing at once let a re-run hit the lock. */}
+      {taskId && (
+        <ProgressBar
+          taskId={taskId}
+          onComplete={onTaskComplete}
+          onRetry={onRetry}
+          onDismiss={onDismiss}
+          onCancel={() => void cancelTask(taskId).catch(() => onDismiss?.())}
+        />
+      )}
 
       {children}
 

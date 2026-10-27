@@ -387,7 +387,7 @@ export default function SearchPanel(props: SearchPanelProps) {
                   value={speaker}
                   onChange={(e) => setSpeaker(e.target.value)}
                   title="Filter by speaker"
-                  className="bg-transparent border-0 p-0 text-foreground hover:underline focus:outline-none cursor-pointer"
+                  className="bg-transparent border-0 p-0 text-foreground hover:underline focus:outline-none focus-visible:underline cursor-pointer"
                 >
                   <option value="">all speakers</option>
                   {indexedSpeakers.map((s) => (
@@ -414,7 +414,7 @@ export default function SearchPanel(props: SearchPanelProps) {
                         <select
                           value={episodeSort}
                           onChange={(e) => setEpisodeSort(e.target.value as "date" | "title" | "number")}
-                          className="bg-transparent border-0 p-0 text-2xs text-muted-foreground focus:outline-none cursor-pointer"
+                          className="bg-transparent border-0 p-0 text-2xs text-muted-foreground focus:outline-none focus-visible:underline cursor-pointer"
                           title="Sort episodes"
                         >
                           <option value="date">sort: date</option>
@@ -429,8 +429,8 @@ export default function SearchPanel(props: SearchPanelProps) {
                           className="text-muted-foreground hover:text-foreground transition"
                           title={
                             episodeSortDir === "asc"
-                              ? "Ascending — click for descending"
-                              : "Descending — click for ascending"
+                              ? "Ascending, click for descending"
+                              : "Descending, click for ascending"
                           }
                         >
                           {episodeSortDir === "asc" ? (
@@ -510,7 +510,7 @@ export default function SearchPanel(props: SearchPanelProps) {
                 onChange={(e) => setModel(e.target.value)}
                 disabled={availableModels.length === 0}
                 title="Embedding model (only indexed ones listed)"
-                className="bg-transparent border-0 p-0 text-foreground hover:underline focus:outline-none cursor-pointer"
+                className="bg-transparent border-0 p-0 text-foreground hover:underline focus:outline-none focus-visible:underline cursor-pointer"
               >
                 {availableModels.length === 0 && <option>no model indexed</option>}
                 {availableModels.map((key) => (
@@ -525,7 +525,7 @@ export default function SearchPanel(props: SearchPanelProps) {
                 onChange={(e) => setChunking(e.target.value)}
                 disabled={availableChunkings.length === 0}
                 title="Chunking strategy (only indexed ones listed)"
-                className="bg-transparent border-0 p-0 text-foreground hover:underline focus:outline-none cursor-pointer"
+                className="bg-transparent border-0 p-0 text-foreground hover:underline focus:outline-none focus-visible:underline cursor-pointer"
               >
                 {availableChunkings.length === 0 && <option>no chunker indexed</option>}
                 {availableChunkings.map((key) => (
@@ -540,7 +540,7 @@ export default function SearchPanel(props: SearchPanelProps) {
                     value={source}
                     onChange={(e) => setSource(e.target.value)}
                     title="Filter by indexed source version"
-                    className="bg-transparent border-0 p-0 text-foreground hover:underline focus:outline-none cursor-pointer"
+                    className="bg-transparent border-0 p-0 text-foreground hover:underline focus:outline-none focus-visible:underline cursor-pointer"
                   >
                     <option value="">all sources</option>
                     {availableSources.map((s) => (

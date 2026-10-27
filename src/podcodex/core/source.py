@@ -191,18 +191,20 @@ def _resolve_source_segments(p, source: str) -> SourceVersion:
     the canonical seglist (verified pointer, then edited-first ``corrected``,
     then newest ``transcript``), so index, translate, synthesize and the
     batch runner pick the same version the speaker roster does. ``transcript``,
-    ``corrected`` or a language code take that step's best version. Raises
-    ValueError if nothing found.
+    ``corrected`` or a language code take ``versions.load_default_source``:
+    the verified pick when it belongs to that step, else the step's default
+    (newest for transcripts, edited-first otherwise). Both match the frontend
+    source picker's default. Raises ValueError if nothing found.
     """
     from podcodex.core._utils import normalize_lang
     from podcodex.core.versions import (
-        load_latest_with_meta,
+        load_default_source,
         load_version,
         resolve_canonical_ref,
     )
 
     def latest(step: str) -> SourceVersion | None:
-        found = load_latest_with_meta(p.base, step)
+        found = load_default_source(p.base, step)
         return SourceVersion(found[1], step, found[0]["id"]) if found else None
 
     if source == "auto":
@@ -250,7 +252,7 @@ def load_source(
 
     The pinned *version_id* when given (the source picker; it must belong to
     *step* unless *step* is ``auto``), else *step*'s choice: ``auto`` is the
-    canonical source, ``transcript`` the newest transcript (what correction
+    canonical source, ``transcript`` the verified transcript, else the newest (what correction
     reads). Every "pinned, else default" site
     goes through here; they used to hand-roll it and fall back three
     different ways.
@@ -294,7 +296,7 @@ def resolve_source_ref(
     from podcodex.core._utils import AudioPaths
     from podcodex.core.pipeline_db import get_pipeline_db
     from podcodex.core._utils import show_dir_of
-    from podcodex.core.versions import current_version, resolve_canonical_ref
+    from podcodex.core.versions import default_source_version, resolve_canonical_ref
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     if version_id:
@@ -307,7 +309,7 @@ def resolve_source_ref(
     if step == "auto":
         ref = resolve_canonical_ref(p.base)
         return SourceRef(*ref) if ref else None
-    head = current_version(p.base, step)
+    head = default_source_version(p.base, step)
     return SourceRef(step, head["id"]) if head else None
 
 

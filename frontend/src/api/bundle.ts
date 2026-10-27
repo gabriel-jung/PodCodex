@@ -11,6 +11,7 @@ import type {
   ExportResult,
   ExportShowRequest,
   ImportRequest,
+  PreviewRequest,
   ImportResult,
 } from "./generated-types";
 import { json } from "./client";
@@ -29,7 +30,7 @@ export const exportIndexBundle = (req: ExportIndexRequest) =>
   _post<ExportResult>("/api/bundle/export-index", req);
 
 export const previewBundle = (archive_path: string) =>
-  _post<ArchivePreview>("/api/bundle/preview", { archive_path });
+  _post<ArchivePreview>("/api/bundle/preview", { archive_path } satisfies PreviewRequest);
 
 export const importBundle = (req: ImportRequest) =>
   _post<ImportResult>("/api/bundle/import", req);

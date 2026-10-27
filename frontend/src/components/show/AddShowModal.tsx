@@ -3,6 +3,7 @@ import { useState } from "react";
 import { createFromRSS, createFromYouTube, healthQueryOptions, registerShow, searchPodcasts } from "@/api/client";
 import type { PodcastSearchResult } from "@/api/types";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { errorMessage, SUB_LANGUAGES } from "@/lib/utils";
 import FolderLocationFields from "@/components/common/FolderLocationFields";
 import FolderPicker from "@/components/common/FolderPicker";
@@ -119,19 +120,16 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onIm
 
   return (
     <>
-      <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-        onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-        onKeyDown={(e) => { if (e.key === "Escape") onClose(); }}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="add-show-title"
-      >
-        <div className={`bg-card border border-border rounded-lg p-6 max-w-lg w-full shadow-lg max-h-[85vh] flex flex-col ${STEP_HEIGHT[step]}`}>
+      <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+        <DialogContent
+          showCloseButton={false}
+          aria-describedby={undefined}
+          className={`bg-card gap-0 sm:max-w-lg max-h-[85vh] flex flex-col ${STEP_HEIGHT[step]}`}
+        >
           <div className="flex items-center justify-between mb-1">
-            <h3 id="add-show-title" className="text-lg font-semibold">
+            <DialogTitle className="text-lg font-semibold">
               {step === "search" ? "Add a show" : "Save location"}
-            </h3>
+            </DialogTitle>
             <Button onClick={onClose} variant="ghost" size="sm" className="h-7 w-7 p-0" aria-label="Close">
               <X className="w-4 h-4" />
             </Button>
@@ -385,8 +383,8 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onIm
               )}
             </div>
           )}
-        </div>
-      </div>
+        </DialogContent>
+      </Dialog>
 
       {localPickerOpen === "folder" && (
         <FolderPicker

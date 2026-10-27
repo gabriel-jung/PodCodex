@@ -28,7 +28,7 @@ export function IntegrationCard({
       onClick={onOpen}
       className={cn(
         "group text-left flex flex-col gap-3 rounded-lg border border-border bg-card px-5 py-5 transition",
-        "hover:border-primary/40 hover:shadow-sm hover:-translate-y-px",
+        "hover:border-primary/40",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
         className,
       )}

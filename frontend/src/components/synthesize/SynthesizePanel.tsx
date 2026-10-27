@@ -17,7 +17,9 @@ import {
   deleteSynthesizeVersion,
 } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
+import { invalidateAfterStep } from "@/api/cacheInvalidation";
 import { Button } from "@/components/ui/button";
+import { ErrorAlert } from "@/components/ui/error-alert";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { versionOption } from "@/lib/utils";
 import { useCapabilities } from "@/hooks/useCapabilities";
@@ -122,7 +124,7 @@ export default function SynthesizePanel() {
   });
 
 
-  const { data: status, refetch: refetchStatus } = useQuery({
+  const { data: status, error: statusError, refetch: refetchStatus } = useQuery({
     queryKey: queryKeys.synthesizeStatus(sourceRef),
     queryFn: () => getSynthesisStatus(audioPath, outputDir),
     enabled: hasSourceRef,
@@ -155,14 +157,14 @@ export default function SynthesizePanel() {
   // translation the generate job synthesized.
   const resolvedSourceLang = resolvedSource.sourceLang ?? null;
 
-  const { data: voiceSamples } = useQuery({
+  const { data: voiceSamples, error: voicesError, refetch: refetchVoices } = useQuery({
     queryKey: queryKeys.synthesizeVoices(sourceRef, resolvedVersionId, resolvedSourceLang),
     queryFn: () =>
       getVoiceSamples(audioPath, outputDir, resolvedVersionId, resolvedSourceLang),
     enabled: hasSourceRef && !!status?.voice_samples_extracted,
   });
 
-  const { data: generatedSegments } = useQuery({
+  const { data: generatedSegments, error: generatedError, refetch: refetchGenerated } = useQuery({
     queryKey: queryKeys.synthesizeGenerated(sourceRef, resolvedVersionId, resolvedSourceLang),
     queryFn: () =>
       getGeneratedSegments(audioPath, outputDir, resolvedVersionId, resolvedSourceLang),
@@ -186,7 +188,7 @@ export default function SynthesizePanel() {
     return Math.max(0, sourceSelection.size - (generatedSegments?.length ?? 0));
   }, [sourceSelection, generatedSegments]);
 
-  const { data: synthVersions } = useQuery({
+  const { data: synthVersions, error: versionsError, refetch: refetchVersions } = useQuery({
     queryKey: queryKeys.synthesizeVersions(sourceRef),
     queryFn: () => getSynthesizeVersions(audioPath, outputDir),
     enabled: hasSourceRef && !!status?.synthesized,
@@ -206,11 +208,21 @@ export default function SynthesizePanel() {
     },
   });
 
+  // A failed read must not look like "nothing done yet": the status query
+  // gates every section, so its failure would hide them all.
+  const loadError = statusError ?? voicesError ?? generatedError ?? versionsError;
+  const retryLoad = () => {
+    void refetchStatus();
+    if (voicesError) void refetchVoices();
+    if (generatedError) void refetchGenerated();
+    if (versionsError) void refetchVersions();
+  };
+
   const refreshQueries = useCallback(() => {
     refetchStatus();
-    queryClient.invalidateQueries({ queryKey: queryKeys.synthesizeAll() });
-    queryClient.invalidateQueries({ queryKey: queryKeys.synthesizeVersions(sourceRef) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
+    // The step's shared sweep: the synthesize namespace plus this episode's
+    // versions and the show-wide list the Overview tab reads.
+    invalidateAfterStep(queryClient, "synthesize", { audioPath: sourceRef });
   }, [queryClient, refetchStatus, sourceRef]);
 
   const extractMutation = useMutation({
@@ -343,6 +355,7 @@ export default function SynthesizePanel() {
       onDismiss={handleDismiss}
       controls={!isRunning ? (
         <div className="px-4 pb-3 space-y-4">
+          {loadError && <ErrorAlert error={loadError} onRetry={retryLoad} compact />}
           <SourceSegmentPicker
             audioPath={audioPath}
             source={source}
@@ -413,7 +426,7 @@ export default function SynthesizePanel() {
           onComplete={() => { refreshQueries(); setExtractTaskId(null); }}
           onRetry={() => { setExtractTaskId(null); extractMutation.mutate(); }}
           onDismiss={() => { cancelTask(extractTaskId).catch(() => {}); setExtractTaskId(null); }}
-          onCancel={() => { cancelTask(extractTaskId).catch(() => {}); setExtractTaskId(null); }}
+          onCancel={() => { cancelTask(extractTaskId).catch(() => setExtractTaskId(null)); }}
         />
       )}
       {generateTaskId && (
@@ -430,7 +443,7 @@ export default function SynthesizePanel() {
           }}
           onRetry={() => { setGenerateTaskId(null); setEpisodeTask(null); generateMutation.mutate(); }}
           onDismiss={() => { cancelTask(generateTaskId).catch(() => {}); setGenerateTaskId(null); setEpisodeTask(null); }}
-          onCancel={() => { cancelTask(generateTaskId).catch(() => {}); setGenerateTaskId(null); setEpisodeTask(null); }}
+          onCancel={() => { cancelTask(generateTaskId).catch(() => { setGenerateTaskId(null); setEpisodeTask(null); }); }}
         />
       )}
 

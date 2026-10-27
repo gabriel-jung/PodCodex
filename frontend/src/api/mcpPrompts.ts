@@ -1,5 +1,5 @@
 import { json, rawFetch } from "./client";
-import type { PromptOut, SlotIn } from "./generated-types";
+import type { PromptCreateRequest, PromptOut, PromptUpdateRequest, SlotIn } from "./generated-types";
 
 /** A prompt slot. `SlotIn` on the Python side; the create/update payloads
  *  below reuse it, which is why `type` and `required` stay writable. */
@@ -7,24 +7,8 @@ export type SlotDef = SlotIn;
 export type SlotType = SlotIn["type"];
 export type McpPrompt = PromptOut;
 
-export interface McpPromptCreate {
-  id: string;
-  name?: string;
-  title: string;
-  description?: string;
-  template: string;
-  slots?: SlotDef[];
-  enabled?: boolean;
-}
-
-export interface McpPromptUpdate {
-  name?: string;
-  title?: string;
-  description?: string;
-  template?: string;
-  slots?: SlotDef[];
-  enabled?: boolean;
-}
+export type McpPromptCreate = PromptCreateRequest;
+export type McpPromptUpdate = PromptUpdateRequest;
 
 const jsonHeaders = { "Content-Type": "application/json" };
 

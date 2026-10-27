@@ -1,40 +1,40 @@
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useId } from "react";
 import { confirmDiscard, useDirtyEdit } from "@/lib/dirtyEdits";
 import { countLabel } from "@/lib/showCounts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import type { Episode } from "@/api/types";
-import { getShowVersions } from "@/api/shows";
+import { getShowMeta, getShowVersions } from "@/api/shows";
 import type { VersionEntry } from "@/api/types";
 import { queryKeys } from "@/api/queryKeys";
 import { getEpisodeStem } from "@/lib/episodeRef";
 import { usePipelineConfig } from "@/hooks/usePipelineConfig";
 import { useLLMProviders } from "@/hooks/useLLMProviders";
-import { useApiKeys } from "@/hooks/useApiKeys";
-import { useProviderProfiles } from "@/hooks/useProviderProfiles";
 import {
   TRANSCRIBE_PRESETS,
   CPU_MODELS,
   GPU_MODELS,
   CPU_LABELS,
   GPU_LABELS,
-  LLM_PRESETS,
   INDEX_PRESETS,
+  isCpuTranscribe,
+  modeToPreset,
   usePipelineConfigStore,
 } from "@/stores/pipelineConfigStore";
+import LLMControlsForm from "@/components/common/LLMControlsForm";
 import { Button } from "@/components/ui/button";
-import { Mic, Sparkles, Languages, Database, ChevronDown, Play, Copy, Check, Settings as SettingsIcon } from "lucide-react";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Mic, Sparkles, Languages, Database, ChevronDown, Play, Check, Settings as SettingsIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
-import { languageToISO, errorMessage, selectClass, cn, versionLabel, stepTag, SUB_LANGUAGES } from "@/lib/utils";
-import { modelPlaceholderFor, modelsFor } from "@/lib/providerModels";
+import { languageToISO, selectClass, cn, versionLabel, stepTag, SUB_LANGUAGES } from "@/lib/utils";
 import { INPUT_STEPS, filterVersionsForStep, sortVersionsForDefault, type PipelineInputStep } from "@/lib/pipelineInputs";
 import { getEpisodeBatchPath } from "@/lib/episodeRef";
 import PresetCards from "@/components/common/PresetCards";
 import SectionHeader from "@/components/common/SectionHeader";
 import HelpLabel from "@/components/common/HelpLabel";
 import VersionPicker from "@/components/common/VersionPicker";
-import { getCorrectManualPrompts, applyCorrectManual } from "@/api/correct";
-import { getTranslateManualPrompts, applyTranslateManual } from "@/api/translate";
-import { episodeNeedsStep } from "@/lib/stepStatus";
+import { epKey, useManualBatch } from "./useManualBatch";
+import ManualBatchView from "./ManualBatchView";
+import { episodeCanRunStep, episodeNeedsStep } from "@/lib/stepStatus";
 
 export type StepKey = PipelineInputStep;
 
@@ -54,12 +54,6 @@ interface SourceGroup {
   variants: SourceVariant[];
 }
 
-interface PromptBatch {
-  batch_index: number;
-  prompt: string;
-  segment_count: number;
-}
-
 /** Find the label for a source key (group or variant). */
 function findSourceLabel(groups: SourceGroup[], key: string): string | undefined {
   for (const g of groups) {
@@ -67,11 +61,6 @@ function findSourceLabel(groups: SourceGroup[], key: string): string | undefined
     const v = g.variants.find((v) => v.key === key);
     if (v) return v.label;
   }
-}
-
-/** Stable key for an episode across the manual workflow. */
-function epKey(ep: Episode): string {
-  return ep.audio_path || ep.id;
 }
 
 /**
@@ -95,18 +84,6 @@ function toBatchKeys(
     if (versionId && key) out[key] = versionId;
   }
   return Object.keys(out).length > 0 ? out : undefined;
-}
-
-/** Check if all batches for an episode have been validated. */
-function isEpDone(
-  ep: Episode,
-  prompts: Record<string, PromptBatch[]>,
-  results: Record<string, Record<number, unknown[]>>,
-): boolean {
-  const k = epKey(ep);
-  const pr = prompts[k] || [];
-  const re = results[k] || {};
-  return pr.length > 0 && pr.every((_, i) => re[i] != null);
 }
 
 /** Build source groups with variants.
@@ -218,18 +195,16 @@ export default function StepConfigEditor({ step, episodes, folder, showLanguage,
   onRun: (filteredEpisodes?: Episode[], sourceVersionIds?: Record<string, string>, transcribeSource?: TranscribeSource, force?: boolean) => void;
   onClose: () => void;
 }) {
-  const queryClient = useQueryClient();
+  const fieldId = useId();
   const navigate = useNavigate();
   const { tc, setTc, llm, setLLM, targetLang, setTargetLang } = usePipelineConfig();
   const { whisperModels, detectedKeys: detected } = useLLMProviders();
-  const { profiles } = useProviderProfiles();
-  const { keys } = useApiKeys();
-  const apiProfiles = useMemo(() => profiles.filter((p) => p.type !== "ollama"), [profiles]);
-  const modelDatalistId = useId();
+  const { data: showMeta } = useQuery({
+    queryKey: queryKeys.showMeta(folder),
+    queryFn: () => getShowMeta(folder),
+  });
   const transcribePreset = usePipelineConfigStore((s) => s.transcribePreset);
   const applyTranscribePreset = usePipelineConfigStore((s) => s.applyTranscribePreset);
-  const llmPreset = usePipelineConfigStore((s) => s.llmPreset);
-  const applyLLMPreset = usePipelineConfigStore((s) => s.applyLLMPreset);
   const indexPreset = usePipelineConfigStore((s) => s.indexPreset);
   const applyIndexPreset = usePipelineConfigStore((s) => s.applyIndexPreset);
   const hasAnySubs = step === "transcribe" && episodes.some((e) => e.has_subtitles);
@@ -246,39 +221,6 @@ export default function StepConfigEditor({ step, episodes, folder, showLanguage,
   const [otherMode, setOtherMode] = useState(!!currentLang && !isTopChip);
   const chipSelected = otherMode ? "other" : isTopChip ? currentLang : "";
 
-  // Manual batch workflow state
-  const [manualActive, setManualActive] = useState(false); // true = episode-by-episode page
-  const [manualBatchCounts, setManualBatchCounts] = useState<Record<string, number>>({});
-  const [manualPrompts, setManualPrompts] = useState<Record<string, PromptBatch[]>>({});
-  const [manualCurrentEp, setManualCurrentEp] = useState(0);
-  const [manualCurrentBatch, setManualCurrentBatch] = useState(0);
-  const [manualResults, setManualResults] = useState<Record<string, Record<number, unknown[]>>>({});
-  const [manualPasted, setManualPasted] = useState("");
-  const [manualParseError, setManualParseError] = useState<string | null>(null);
-  const [manualCopied, setManualCopied] = useState(false);
-  const [manualGenerating, setManualGenerating] = useState(false);
-  const [manualApplying, setManualApplying] = useState(false);
-  const [manualApplyingEp, setManualApplyingEp] = useState<string | null>(null);
-  const [manualApplied, setManualApplied] = useState<Set<string>>(new Set());
-  const [manualError, setManualError] = useState<string | null>(null);
-
-  // Pasted replies and validated batches exist only in this dialog until
-  // they are applied; the backdrop, the close button and Cancel all ask first.
-  const manualDirty =
-    manualActive &&
-    (manualPasted.trim() !== "" ||
-      Object.keys(manualResults).some((ek) => !manualApplied.has(ek)));
-  useDirtyEdit(manualDirty, "pasted LLM batches");
-  const requestClose = () => {
-    if (!manualDirty) {
-      onClose();
-      return;
-    }
-    void confirmDiscard(["pasted LLM batches"]).then((discard) => {
-      if (discard) onClose();
-    });
-  };
-
   // Sync languages from show metadata
   useEffect(() => {
     if (showLanguage && isLLMStep && llm.sourceLang !== showLanguage) setLLM({ sourceLang: showLanguage });
@@ -287,23 +229,15 @@ export default function StepConfigEditor({ step, episodes, folder, showLanguage,
   }, [showLanguage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectFull = cn(selectClass, "py-1.5 w-full");
-  const inputFieldClass = "input py-1.5 text-sm w-full";
 
   const stepInfo = STEPS.find((s) => s.key === step)!;
   const Icon = stepInfo.icon;
 
   // Filter to episodes that need this step (prerequisites met + not already done)
-  const canRun = useMemo(() => episodes.filter((e) => {
-    switch (step) {
-      case "transcribe":
-        if (transcribeSource === "subtitles") return !!e.has_subtitles;
-        return !!e.audio_path;
-      case "correct":    return !!e.transcribed;
-      case "translate":  return !!e.transcribed;
-      case "index":      return !!e.transcribed;
-      default:           return true;
-    }
-  }), [episodes, step, transcribeSource]);
+  const canRun = useMemo(
+    () => episodes.filter((e) => episodeCanRunStep(e, step, transcribeSource)),
+    [episodes, step, transcribeSource],
+  );
   const needsWork = useMemo(() => canRun.filter((e) => episodeNeedsStep(e, step)), [canRun, step]);
   const needsWorkIds = useMemo(() => new Set(needsWork.map(epKey)), [needsWork]);
   const cantRun = episodes.length - canRun.length;
@@ -355,83 +289,60 @@ export default function StepConfigEditor({ step, episodes, folder, showLanguage,
     return canRun;
   }, [selectedSource, sourceGroups, canRun]);
 
-  /** Apply manual corrections for a single completed episode, then invalidate queries. */
-  const applyEpisode = async (ep: Episode, results: Record<string, Record<number, unknown[]>>, prompts: Record<string, PromptBatch[]>) => {
-    const k = epKey(ep);
-    const pr = prompts[k] || [];
-    const re = results[k] || {};
-    const corrections: unknown[] = [];
-    for (let i = 0; i < pr.length; i++) {
-      const batch = re[i];
-      if (Array.isArray(batch)) corrections.push(...batch);
+  // The source version pinned per episode (`epKey`): picked one by one under
+  // "Custom", else the group or variant picked under "Input transcripts".
+  // Shared by the auto run and the manual flow, so both read the same text.
+  const pinnedVersions = useMemo(() => {
+    if (Object.keys(customVersions).length > 0) return customVersions;
+    if (!selectedSource || !epVersionsMap) return {};
+    const out: Record<string, string> = {};
+    const isVariant = !sourceGroups.some((g) => g.key === selectedSource);
+    for (const ep of filteredEpisodes) {
+      const versions = sortVersionsForDefault(
+        filterVersionsForStep(epVersionsMap[epKey(ep)] || [], step),
+        step,
+        ep.verified ?? null,
+      );
+      const match = isVariant
+        ? versions.find((v) => `${v.step}:${versionLabel(v)}` === selectedSource)
+        : versions.find((v) => v.step === selectedSource);
+      if (match) out[epKey(ep)] = match.id;
     }
-    const params = { audio_path: ep.audio_path || undefined, output_dir: ep.output_dir || undefined, corrections } as Record<string, unknown>;
-    // Must pin the same version the prompts were generated from (see the
-    // generate effect below). Without it the route validates the pasted
-    // replies against its own default pick, which now rejects a count
-    // mismatch outright, so every apply with a pinned source 400s.
-    const cvId = customVersions[k];
-    if (cvId) params.source_version_id = cvId;
-    if (step === "translate") {
-      await applyTranslateManual({ ...params, lang: targetLang } as Parameters<typeof applyTranslateManual>[0]);
-    } else {
-      await applyCorrectManual(params as Parameters<typeof applyCorrectManual>[0]);
+    return out;
+  }, [customVersions, selectedSource, epVersionsMap, sourceGroups, filteredEpisodes, step]);
+
+  const manual = useManualBatch({
+    step: step === "translate" ? "translate" : "correct",
+    episodes: filteredEpisodes,
+    folder,
+    showMeta,
+    sourceLang: llm.sourceLang,
+    targetLang,
+    sourceVersions: pinnedVersions,
+  });
+
+  // Pasted replies and validated batches exist only in this dialog until
+  // they are applied; Escape, the close button and Cancel all ask first.
+  useDirtyEdit(manual.dirty, "pasted LLM batches");
+  const requestClose = () => {
+    if (!manual.dirty) {
+      onClose();
+      return;
     }
-    queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
+    void confirmDiscard(["pasted LLM batches"]).then((discard) => {
+      if (discard) onClose();
+    });
   };
 
-  // Derived values for auto-generate effect
-  const currentEpKey = filteredEpisodes[manualCurrentEp] ? epKey(filteredEpisodes[manualCurrentEp]) : "";
-  const currentBatchCount = manualBatchCounts[currentEpKey] ?? 1;
-
-  // Auto-generate prompts when entering manual view, navigating episodes, or changing batch count
-  useEffect(() => {
-    if (!manualActive || !currentEpKey) return;
-    const ep = filteredEpisodes[manualCurrentEp];
-    if (!ep || (!ep.audio_path && !ep.output_dir)) return;
-    let cancelled = false;
-    const timeout = setTimeout(async () => {
-      setManualGenerating(true);
-      setManualError(null);
-      try {
-        const epDuration = ep.duration || 3600;
-        const batchMins = Math.ceil(epDuration / 60 / currentBatchCount);
-        const params: Record<string, unknown> = {
-          source_lang: llm.sourceLang,
-          batch_minutes: batchMins,
-          context: llm.context || undefined,
-        };
-        if (ep.audio_path) params.audio_path = ep.audio_path;
-        if (ep.output_dir) params.output_dir = ep.output_dir;
-        const cvId = customVersions[currentEpKey];
-        if (cvId) params.source_version_id = cvId;
-        let result: PromptBatch[];
-        if (step === "translate") {
-          params.target_lang = targetLang;
-          result = await getTranslateManualPrompts(params as Parameters<typeof getTranslateManualPrompts>[0]);
-        } else {
-          result = await getCorrectManualPrompts(params as Parameters<typeof getCorrectManualPrompts>[0]);
-        }
-        if (!cancelled) {
-          setManualPrompts((prev) => ({ ...prev, [currentEpKey]: result }));
-          setManualCurrentBatch(0);
-        }
-      } catch (e) {
-        if (!cancelled) setManualError(errorMessage(e));
-      } finally {
-        if (!cancelled) setManualGenerating(false);
-      }
-    }, 300);
-    return () => { cancelled = true; clearTimeout(timeout); };
-  }, [manualActive, currentEpKey, currentBatchCount, customVersions[currentEpKey]]); // eslint-disable-line react-hooks/exhaustive-deps
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={requestClose}>
-      <div className="bg-background border border-border rounded-lg shadow-xl w-full max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
+    // Radix brings the dialog role, focus trap and return, and Escape;
+    // every close path still goes through requestClose (pasted batches).
+    <Dialog open onOpenChange={(open) => { if (!open) requestClose(); }}>
+      <DialogContent showCloseButton={false} aria-describedby={undefined} className="p-0 gap-0 sm:max-w-md">
         {/* Header */}
         <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border">
           <Icon className="w-4 h-4" />
-          <span className="text-sm font-semibold">{stepInfo.label}</span>
+          <DialogTitle className="text-sm font-semibold">{stepInfo.label}</DialogTitle>
           <span className="text-xs text-muted-foreground">
             {filteredEpisodes.length === episodes.length
               ? `${countLabel(episodes.length, "episode")}`
@@ -475,10 +386,10 @@ export default function StepConfigEditor({ step, episodes, folder, showLanguage,
           {canRun.length === 0 && (
             <div className="py-4 text-center">
               <p className="text-sm text-muted-foreground">
-                {manualApplied.size > 0
-                  ? `Done — ${countLabel(manualApplied.size, "episode")} processed.`
+                {manual.applied.size > 0
+                  ? `Done: ${countLabel(manual.applied.size, "episode")} processed.`
                   : cantRun > 0
-                    ? `All ${episodes.length} selected episode${episodes.length !== 1 ? "s are" : " is"} ${cantRunReason}.`
+                    ? `${episodes.length === 1 ? "The selected episode is" : `All ${countLabel(episodes.length, "selected episode")} are`} ${cantRunReason}.`
                     : "Nothing to process."}
               </p>
             </div>
@@ -490,7 +401,7 @@ export default function StepConfigEditor({ step, episodes, folder, showLanguage,
           )}
 
           {/* ── Input source selector ── */}
-          {canRun.length > 0 && sourceGroups.length > 0 && step !== "transcribe" && !manualActive && selectedSource !== "custom" && (
+          {canRun.length > 0 && sourceGroups.length > 0 && step !== "transcribe" && !manual.active && selectedSource !== "custom" && (
             <div className="space-y-1.5">
               <button
                 onClick={() => setSourceOpen(!sourceOpenResolved)}
@@ -579,7 +490,7 @@ export default function StepConfigEditor({ step, episodes, folder, showLanguage,
           )}
 
           {/* ── Custom version picker ── */}
-          {canRun.length > 0 && selectedSource === "custom" && !manualActive && epVersionsMap && (
+          {canRun.length > 0 && selectedSource === "custom" && !manual.active && epVersionsMap && (
             <div className="space-y-2">
               <p className="text-xs text-muted-foreground">Choose which version to use as input for each episode.</p>
               <div className="space-y-1">
@@ -611,324 +522,31 @@ export default function StepConfigEditor({ step, episodes, folder, showLanguage,
           )}
 
           {/* ── Manual episode-by-episode workflow ── */}
-          {canRun.length > 0 && isLLMStep && manualActive && (() => {
-            const eps = filteredEpisodes;
-            const ep = eps[manualCurrentEp];
-            if (!ep) return null;
-            const ek = epKey(ep);
-            const batchCount = manualBatchCounts[ek] ?? 1;
-            const dur = ep.duration ? `${Math.round(ep.duration / 60)} min` : "";
-            const epPrompts = manualPrompts[ek] || [];
-            const hasPrompts = epPrompts.length > 0;
-            const batch = epPrompts[manualCurrentBatch];
-            const epResults = manualResults[ek] || {};
-            const batchDone = epResults[manualCurrentBatch] != null;
-            const epDoneCount = epPrompts.filter((_, i) => epResults[i] != null).length;
-            const epAllDone = hasPrompts && epDoneCount === epPrompts.length;
-            const totalEpsDone = eps.filter((e) => manualApplied.has(epKey(e))).length;
-
-            return (
-              <div className="space-y-3">
-                {/* Episode navigation */}
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => { setManualCurrentEp(Math.max(0, manualCurrentEp - 1)); setManualCurrentBatch(0); setManualPasted(""); setManualParseError(null); setManualCopied(false); }}
-                    disabled={manualCurrentEp === 0}
-                    className="text-muted-foreground hover:text-foreground disabled:opacity-30 transition"
-                    aria-label="Previous episode"
-                  >
-                    <ChevronDown className="w-3.5 h-3.5 rotate-90" />
-                  </button>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium truncate" title={ep.title}>{ep.title}</div>
-                    <div className="text-xs text-muted-foreground">
-                      Episode {manualCurrentEp + 1} of {eps.length}
-                      {dur && ` - ${dur}`}
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => { setManualCurrentEp(Math.min(eps.length - 1, manualCurrentEp + 1)); setManualCurrentBatch(0); setManualPasted(""); setManualParseError(null); setManualCopied(false); }}
-                    disabled={manualCurrentEp >= eps.length - 1}
-                    className="text-muted-foreground hover:text-foreground disabled:opacity-30 transition"
-                    aria-label="Next episode"
-                  >
-                    <ChevronDown className="w-3.5 h-3.5 -rotate-90" />
-                  </button>
-                </div>
-
-                {/* Overall progress (when multiple episodes) */}
-                {eps.length > 1 && (
-                  <div className="flex items-center gap-3">
-                    <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
-                      <div
-                        className="h-full rounded-full bg-primary transition-all"
-                        style={{ width: `${(totalEpsDone / eps.length) * 100}%` }}
-                      />
-                    </div>
-                    <span className="text-xs text-muted-foreground shrink-0">{totalEpsDone}/{eps.length} done</span>
-                  </div>
-                )}
-
-                {/* Batch count slider - only show once prompts are loaded */}
-                {hasPrompts && (
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-3">
-                      <label className="text-sm font-medium" title="Number of chunks to split the transcript into. Each chunk becomes one prompt.">Batches</label>
-                      <input
-                        type="range"
-                        min={1}
-                        max={10}
-                        value={batchCount}
-                        onChange={(e) => { const v = Number(e.target.value); setManualBatchCounts((prev) => ({ ...prev, [ek]: v })); }}
-                        className="flex-1 accent-primary"
-                      />
-                      <span className="text-sm tabular-nums w-4 text-center">{batchCount}</span>
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      Number of prompts to split the episode into. Large models like Claude Opus 4.6 or GPT-4o can handle hours-long episodes in one batch.
-                    </p>
-                  </div>
-                )}
-
-                {/* No transcript available */}
-                {!ep.audio_path && !ep.output_dir && (
-                  <p className="text-xs text-muted-foreground">No transcript available for this episode.</p>
-                )}
-
-                {/* Loading state */}
-                {manualGenerating && (
-                  <p className="text-xs text-muted-foreground">Generating prompt...</p>
-                )}
-
-                {/* Batch navigation (if multiple) */}
-                {hasPrompts && epPrompts.length > 1 && (
-                  <div className="flex items-center gap-1.5">
-                    {epPrompts.map((_, i) => (
-                      <button
-                        key={i}
-                        onClick={() => { setManualCurrentBatch(i); setManualPasted(""); setManualParseError(null); setManualCopied(false); }}
-                        className={`w-6 h-6 rounded text-2xs font-medium transition ${
-                          i === manualCurrentBatch
-                            ? "bg-primary text-primary-foreground"
-                            : epResults[i] != null
-                              ? "bg-success/20 text-success border border-success/30"
-                              : "bg-secondary text-muted-foreground border border-border"
-                        }`}
-                      >
-                        {i + 1}
-                      </button>
-                    ))}
-                    <span className="text-xs text-muted-foreground ml-1">{epDoneCount}/{epPrompts.length} batches</span>
-                  </div>
-                )}
-
-                {/* Prompt display + copy */}
-                {batch && (
-                  <div className="border border-border rounded">
-                    <div className="flex items-center justify-between px-3 py-1.5 bg-secondary/50 border-b border-border">
-                      <span className="text-xs text-muted-foreground">
-                        {epPrompts.length > 1 ? `Batch ${manualCurrentBatch + 1} - ` : ""}{batch.segment_count} segments
-                        {batchDone && <span className="text-success ml-2">validated</span>}
-                      </span>
-                      <Button
-                        onClick={async () => {
-                          await navigator.clipboard.writeText(batch.prompt);
-                          setManualCopied(true);
-                          setTimeout(() => setManualCopied(false), 2000);
-                        }}
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 px-2"
-                      >
-                        {manualCopied ? <Check className="w-3 h-3 text-success" /> : <Copy className="w-3 h-3" />}
-                      </Button>
-                    </div>
-                    <pre className="p-3 text-xs max-h-40 overflow-y-auto whitespace-pre-wrap leading-relaxed">
-                      {batch.prompt}
-                    </pre>
-                  </div>
-                )}
-
-                {/* Paste + validate */}
-                {batch && !batchDone && (
-                  <div className="space-y-2">
-                    <textarea
-                      value={manualPasted}
-                      onChange={(e) => { setManualPasted(e.target.value); setManualParseError(null); }}
-                      placeholder="Paste LLM JSON response here..."
-                      className="input text-xs w-full resize-y"
-                      rows={4}
-                    />
-                    {manualParseError && <p className="text-destructive text-xs">{manualParseError}</p>}
-                    <Button
-                      onClick={async () => {
-                        setManualParseError(null);
-                        try {
-                          const parsed = JSON.parse(manualPasted);
-                          const arr = Array.isArray(parsed) ? parsed : [parsed];
-                          const newResults = { ...manualResults, [ek]: { ...epResults, [manualCurrentBatch]: arr } };
-                          setManualResults(newResults);
-                          setManualPasted("");
-                          // Check if all batches for this episode are now done
-                          const updatedEpResults = newResults[ek] || {};
-                          const allBatchesDone = epPrompts.length > 0 && epPrompts.every((_, i) => updatedEpResults[i] != null);
-                          if (allBatchesDone) {
-                            // Auto-apply corrections for this episode
-                            setManualApplyingEp(ek);
-                            setManualError(null);
-                            try {
-                              await applyEpisode(ep, newResults, manualPrompts);
-                              setManualApplied((prev) => new Set(prev).add(ek));
-                              // Auto-advance to next incomplete episode
-                              const nextEp = eps.findIndex((e, i) => i > manualCurrentEp && !isEpDone(e, manualPrompts, newResults) && !manualApplied.has(epKey(e)));
-                              if (nextEp >= 0) {
-                                setManualCurrentEp(nextEp);
-                                setManualCurrentBatch(0);
-                                setManualCopied(false);
-                              }
-                            } catch (e) {
-                              setManualError(errorMessage(e));
-                            } finally {
-                              setManualApplyingEp(null);
-                            }
-                          } else {
-                            // Auto-advance to next incomplete batch within this episode
-                            const nextBatch = epPrompts.findIndex((_, i) => i > manualCurrentBatch && updatedEpResults[i] == null);
-                            if (nextBatch >= 0) {
-                              setManualCurrentBatch(nextBatch);
-                            }
-                          }
-                        } catch (e) {
-                          setManualParseError(`Invalid JSON: ${errorMessage(e)}`);
-                        }
-                      }}
-                      disabled={!manualPasted.trim() || manualApplyingEp === ek}
-                      size="sm"
-                    >
-                      Validate
-                    </Button>
-                  </div>
-                )}
-
-                {batch && batchDone && !epAllDone && (
-                  <div className="flex items-center gap-2 text-xs">
-                    <Check className="w-3.5 h-3.5 text-success" />
-                    <span className="text-success">Validated ({(epResults[manualCurrentBatch] as unknown[]).length} segments)</span>
-                    <Button
-                      onClick={() => {
-                        const next = { ...epResults };
-                        delete next[manualCurrentBatch];
-                        setManualResults({ ...manualResults, [ek]: next });
-                      }}
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 text-xs text-muted-foreground"
-                    >
-                      Redo
-                    </Button>
-                  </div>
-                )}
-
-                {manualApplyingEp === ek && (
-                  <p className="text-xs text-muted-foreground">Applying corrections...</p>
-                )}
-                {manualApplied.has(ek) && (
-                  <div className="flex items-center gap-2 text-xs text-success">
-                    <Check className="w-3.5 h-3.5" />
-                    Applied
-                  </div>
-                )}
-
-                {manualError && <p className="text-destructive text-xs">{manualError}</p>}
-              </div>
-            );
-          })()}
+          {canRun.length > 0 && isLLMStep && manual.active && (
+            <ManualBatchView m={manual} episodes={filteredEpisodes} />
+          )}
 
           {/* ── LLM mode + config (correct / translate) ── */}
-          {canRun.length > 0 && isLLMStep && !manualActive && selectedSource !== "custom" && (
+          {canRun.length > 0 && isLLMStep && !manual.active && selectedSource !== "custom" && (
             <>
-              <PresetCards presets={LLM_PRESETS} active={llmPreset} onSelect={applyLLMPreset} />
-
-              {/* Language fields (always visible) */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <HelpLabel label="Source language" help="Language of the original transcript." />
-                  <input value={llm.sourceLang} onChange={(e) => setLLM({ sourceLang: e.target.value })} className={inputFieldClass} />
-                </div>
-                {step === "translate" && (
-                  <div className="space-y-1.5">
-                    <HelpLabel label="Target language" help="Language to translate into." />
-                    <input value={targetLang} onChange={(e) => setTargetLang(e.target.value)} className={inputFieldClass} />
-                  </div>
-                )}
-              </div>
-
-              {/* Inline config for local / cloud */}
-              {llm.mode !== "manual" && (
-                <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1.5">
-                      <HelpLabel label="Model" help="LLM model name to use for processing." />
-                      <input
-                        value={llm.model}
-                        onChange={(e) => setLLM({ model: e.target.value })}
-                        list={llm.mode === "api" && modelsFor(llm.providerProfile).length > 0 ? modelDatalistId : undefined}
-                        placeholder={llm.mode === "api" ? modelPlaceholderFor(llm.providerProfile) : "e.g. gpt-4o-mini"}
-                        className={inputFieldClass}
-                      />
-                      {llm.mode === "api" && modelsFor(llm.providerProfile).length > 0 && (
-                        <datalist id={modelDatalistId}>
-                          {modelsFor(llm.providerProfile).map((m) => (
-                            <option key={m} value={m} />
-                          ))}
-                        </datalist>
-                      )}
-                    </div>
-                    <div className="space-y-1.5">
-                      <HelpLabel label="Batch (min)" help="Minutes of transcript per LLM request. Larger batches are faster but need more context. Large models (e.g. Opus, GPT-4o) can handle a full episode at once." />
-                      <input type="number" value={llm.batchMinutes} onChange={(e) => setLLM({ batchMinutes: Number(e.target.value) })} min={1} step={5} className={inputFieldClass} />
-                    </div>
-                  </div>
-                  {llm.mode === "api" && (
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-1.5">
-                        <HelpLabel label="Provider" help="Pick a profile (built-in or custom). Manage in Settings → Credentials." />
-                        <select
-                          value={llm.providerProfile}
-                          onChange={(e) => setLLM({ providerProfile: e.target.value })}
-                          className={selectFull}
-                        >
-                          <option value="">Pick a profile…</option>
-                          {apiProfiles.map((p) => (
-                            <option key={p.name} value={p.name}>
-                              {p.name}{p.builtin ? "" : " (custom)"}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="space-y-1.5">
-                        <HelpLabel label="LLM API key" help="Pick a key from the pool. Add keys in Settings → Credentials." />
-                        <select
-                          value={llm.keyName}
-                          onChange={(e) => setLLM({ keyName: e.target.value })}
-                          className={selectFull}
-                        >
-                          <option value="">
-                            {keys.length === 0 ? "No keys yet" : "Pick a key…"}
-                          </option>
-                          {keys.map((k) => (
-                            <option key={k.name} value={k.name}>
-                              {k.name}
-                              {k.suggested_provider ? ` — ${k.suggested_provider}` : ""}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
+              <LLMControlsForm
+                config={llm}
+                patch={setLLM}
+                activePreset={modeToPreset(llm.mode)}
+                showBatches={llm.mode !== "manual"}
+                languageRows={
+                  <>
+                    <HelpLabel label="Source language" htmlFor={`${fieldId}-0`} help="Language of the original transcript." />
+                    <input id={`${fieldId}-0`} value={llm.sourceLang} onChange={(e) => setLLM({ sourceLang: e.target.value })} className="input" />
+                    {step === "translate" && (
+                      <>
+                        <HelpLabel label="Target language" htmlFor={`${fieldId}-1`} help="Language to translate into." />
+                        <input id={`${fieldId}-1`} value={targetLang} onChange={(e) => setTargetLang(e.target.value)} className="input" />
+                      </>
+                    )}
+                  </>
+                }
+              />
             </>
           )}
 
@@ -937,7 +555,7 @@ export default function StepConfigEditor({ step, episodes, folder, showLanguage,
           {canRun.length > 0 && !isLLMStep && !(step === "transcribe" && transcribeSource === "subtitles") && (
             <div className="space-y-4">
               {step === "transcribe" && (() => {
-                const isCpu = transcribePreset === "cpu" || (transcribePreset === "" && CPU_MODELS.has(tc.modelSize));
+                const isCpu = isCpuTranscribe(transcribePreset, tc.modelSize);
                 const entries = Object.keys(whisperModels).length > 0
                   ? Object.entries(whisperModels)
                   : [[tc.modelSize, tc.modelSize] as [string, string]];
@@ -947,8 +565,8 @@ export default function StepConfigEditor({ step, episodes, folder, showLanguage,
                 return (
                   <>
                     <div className="space-y-1.5">
-                      <HelpLabel label="Model" help="Speech recognition model. Bigger models make fewer mistakes but are slower and need more GPU memory." />
-                      <select value={tc.modelSize} onChange={(e) => setTc({ modelSize: e.target.value })} className={selectFull}>
+                      <HelpLabel label="Model" htmlFor={`${fieldId}-2`} help="Speech recognition model. Bigger models make fewer mistakes but are slower and need more GPU memory." />
+                      <select id={`${fieldId}-2`} value={tc.modelSize} onChange={(e) => setTc({ modelSize: e.target.value })} className={selectFull}>
                         {filtered.map(([key, label]) => (
                           <option key={key} value={key}>{key}: {isCpu ? CPU_LABELS[key] || label : GPU_LABELS[key] || label}</option>
                         ))}
@@ -1039,60 +657,49 @@ export default function StepConfigEditor({ step, episodes, folder, showLanguage,
         {/* Footer */}
         <div className="flex items-center justify-end gap-3 px-5 py-3 border-t border-border">
           {/* Back button when in sub-page (manual or custom) */}
-          {manualActive && (
-            <Button onClick={() => { setManualActive(false); setManualPrompts({}); setManualResults({}); setManualCurrentEp(0); setManualCurrentBatch(0); }} variant="ghost" size="sm">
+          {manual.active && (
+            <Button
+              onClick={async () => {
+                // Back drops the pasted replies, like closing the dialog.
+                if (manual.dirty && !(await confirmDiscard(["pasted LLM batches"]))) return;
+                manual.back();
+              }}
+              variant="ghost"
+              size="sm"
+            >
               Back
             </Button>
           )}
-          {selectedSource === "custom" && !manualActive && (
+          {selectedSource === "custom" && !manual.active && (
             <Button onClick={() => setSelectedSource(null)} variant="ghost" size="sm">
               Back
             </Button>
           )}
-          {selectedSource !== "custom" && !manualActive && (
+          {selectedSource !== "custom" && !manual.active && (
             <Button onClick={requestClose} variant="ghost" size="sm">
               {canRun.length === 0 ? "Close" : "Cancel"}
             </Button>
           )}
 
           {/* Manual mode: "Next" on step 1, "Generate"/"Apply" on step 2 */}
-          {filteredEpisodes.length > 0 && isLLMStep && llm.mode === "manual" && !manualActive && selectedSource !== "custom" && (
-            <Button onClick={() => { setManualActive(true); setManualCurrentEp(0); setManualCurrentBatch(0); }} size="sm">
+          {filteredEpisodes.length > 0 && isLLMStep && llm.mode === "manual" && !manual.active && selectedSource !== "custom" && (
+            <Button onClick={manual.start} size="sm">
               {stepInfo.label} {countLabel(filteredEpisodes.length, "episode")}
             </Button>
           )}
-          {filteredEpisodes.length > 0 && isLLMStep && manualActive && (() => {
-            const allApplied = filteredEpisodes.every((e) => manualApplied.has(epKey(e)));
-            if (allApplied) return <Button onClick={onClose} size="sm">Done</Button>;
-            // Fallback: retry any completed-but-not-applied episodes
-            const retryEps = filteredEpisodes.filter((e) => isEpDone(e, manualPrompts, manualResults) && !manualApplied.has(epKey(e)));
-            if (retryEps.length === 0) return null;
-            return (
-              <Button
-                onClick={async () => {
-                  setManualApplying(true);
-                  setManualError(null);
-                  try {
-                    for (const e of retryEps) {
-                      await applyEpisode(e, manualResults, manualPrompts);
-                      setManualApplied((prev) => new Set(prev).add(epKey(e)));
-                    }
-                  } catch (e) {
-                    setManualError(errorMessage(e));
-                  } finally {
-                    setManualApplying(false);
-                  }
-                }}
-                disabled={manualApplying}
-                size="sm"
-              >
-                {manualApplying ? "Applying..." : `Retry ${retryEps.length} failed`}
+          {filteredEpisodes.length > 0 && isLLMStep && manual.active && (
+            manual.allApplied ? (
+              <Button onClick={onClose} size="sm">Done</Button>
+            ) : manual.pendingApply.length > 0 ? (
+              // Replies complete but the apply failed: try those again.
+              <Button onClick={() => void manual.retry()} disabled={manual.retrying} size="sm">
+                {manual.retrying ? "Applying..." : `Retry ${manual.pendingApply.length} failed`}
               </Button>
-            );
-          })()}
+            ) : null
+          )}
 
           {/* Custom mode: confirm selection and go back to config */}
-          {selectedSource === "custom" && !manualActive && (
+          {selectedSource === "custom" && !manual.active && (
             <Button onClick={() => setSelectedSource(null)} size="sm">
               <Check className="w-3.5 h-3.5 mr-1" />
               Confirm versions
@@ -1100,29 +707,10 @@ export default function StepConfigEditor({ step, episodes, folder, showLanguage,
           )}
 
           {/* Non-manual run button */}
-          {filteredEpisodes.length > 0 && !(isLLMStep && llm.mode === "manual") && !manualActive && selectedSource !== "custom" && (() => {
+          {filteredEpisodes.length > 0 && !(isLLMStep && llm.mode === "manual") && !manual.active && selectedSource !== "custom" && (() => {
             const pending = filteredEpisodes.filter((e) => needsWorkIds.has(epKey(e)));
             const runWith = (force?: boolean) => {
-              let vids = Object.keys(customVersions).length > 0
-                ? toBatchKeys(customVersions, filteredEpisodes)
-                : undefined;
-              if (!vids && selectedSource && epVersionsMap) {
-                const sourceVids: Record<string, string> = {};
-                const isVariant = !sourceGroups.some((g) => g.key === selectedSource);
-                for (const ep of filteredEpisodes) {
-                  const versions = sortVersionsForDefault(
-                    filterVersionsForStep(epVersionsMap[epKey(ep)] || [], step),
-                    step,
-                    ep.verified ?? null,
-                  );
-                  const match = isVariant
-                    ? versions.find((v) => `${v.step}:${versionLabel(v)}` === selectedSource)
-                    : versions.find((v) => v.step === selectedSource);
-                  const key = getEpisodeBatchPath(ep);
-                  if (match && key) sourceVids[key] = match.id;
-                }
-                if (Object.keys(sourceVids).length > 0) vids = sourceVids;
-              }
+              const vids = toBatchKeys(pinnedVersions, filteredEpisodes);
               onRun(
                 selectedSource || transcribeSource === "subtitles" ? filteredEpisodes : undefined,
                 vids,
@@ -1149,7 +737,7 @@ export default function StepConfigEditor({ step, episodes, folder, showLanguage,
             );
           })()}
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

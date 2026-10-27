@@ -780,6 +780,82 @@ export interface ProviderProfilesListResponse {
   profiles: ProviderProfile[];
 }
 
+export interface APIKeyCreateRequest {
+  name: string;
+  value: string;
+  suggested_provider?: string | null;
+}
+
+export interface APIKeyUpdateRequest {
+  value?: string | null;
+  suggested_provider?: string | null;
+}
+
+export interface ProviderProfileCreateRequest {
+  name: string;
+  base_url: string;
+}
+
+export interface ProviderProfileUpdateRequest {
+  base_url?: string | null;
+}
+
+export interface SetPasswordRequest {
+  password?: string | null;
+}
+
+export interface ExportSaveRequest {
+  audio_path?: string;
+  output_dir?: string | null;
+  source?: string;
+  version_id?: string | null;
+  format: "txt" | "srt" | "vtt" | "zip" | "audio";
+  dest: string;
+}
+
+export interface FfmpegValidateRequest {
+  path: string;
+}
+
+export interface SecretsUpdateRequest {
+  values: Record<string, string | null>;
+}
+
+export interface InstallExtraRequest {
+  extra: string;
+}
+
+export interface SetDeviceRequest {
+  override: "auto" | "cpu" | "cuda";
+}
+
+export interface PromptCreateRequest {
+  id: string;
+  name?: string;
+  title: string;
+  description?: string;
+  template: string;
+  slots?: SlotIn[];
+  enabled?: boolean;
+}
+
+export interface PromptUpdateRequest {
+  name?: string | null;
+  title?: string | null;
+  description?: string | null;
+  template?: string | null;
+  slots?: SlotIn[] | null;
+  enabled?: boolean | null;
+}
+
+export interface DeleteEpisodeRequest {
+  stem: string;
+}
+
+export interface DeleteShowRequest {
+  delete_files?: boolean;
+}
+
 // Audio file extensions the backend accepts (src/podcodex/core/constants.py).
 export const AUDIO_EXTENSIONS = [".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".webm", ".wma"];
 

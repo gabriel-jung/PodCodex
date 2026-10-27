@@ -50,6 +50,7 @@ export const queryKeys = {
   ollamaCheck: () => ["system", "ollama"] as const,
   models: () => ["models"] as const,
   gpuStatus: () => ["gpu", "status"] as const,
+  gpuDownloadTask: (taskId: string | null) => ["gpu", "task", taskId] as const,
   deviceInfo: () => ["system", "device"] as const,
 
   // ── Shows & episodes ───────────────────────────────────
@@ -82,6 +83,18 @@ export const queryKeys = {
 
   bestSourceSegments: (audioPath: AudioPath) =>
     ["best-source-segments", audioPath] as const,
+  /** Prompts of the batch dialog's manual flow for one episode. Keyed on
+   *  everything the server builds them from, so a changed input is a new
+   *  fetch rather than a stale prompt. */
+  batchManualPrompts: (
+    step: string,
+    episodeKey: string,
+    batchCount: number,
+    sourceVersionId: string | null,
+    sourceLang: string,
+    targetLang: string | null,
+    context: string,
+  ) => ["manualPrompts", step, episodeKey, batchCount, sourceVersionId, sourceLang, targetLang, context] as const,
   /** Rejected-batch records written by the last auto correct run. */
   llmFailuresCorrect: (audioPath: AudioPath) =>
     ["llmFailures", "correct", audioPath] as const,
@@ -141,6 +154,11 @@ export const queryKeys = {
   /** Version list for a step. */
   stepVersions: (editorKey: string, audioPath: AudioPath) =>
     [editorKey, "versions", audioPath] as const,
+  /** The editor's broader compare-picker list. Under `stepVersions` so every
+   *  invalidation of the step's versions (save, delete, a finished run)
+   *  reaches it by prefix. */
+  stepCompareVersions: (editorKey: string, audioPath: AudioPath) =>
+    [editorKey, "versions", audioPath, "compare"] as const,
   /** A specific version's segments. */
   stepVersionSegments: (
     editorKey: string,

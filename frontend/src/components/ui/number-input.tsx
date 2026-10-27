@@ -9,6 +9,7 @@ interface NumberInputProps {
   className?: string;
   disabled?: boolean;
   placeholder?: string;
+  id?: string;
   "aria-label"?: string;
 }
 
@@ -21,6 +22,7 @@ export function NumberInput({
   max,
   step,
   className,
+  id,
   disabled,
   placeholder,
   "aria-label": ariaLabel,
@@ -36,6 +38,7 @@ export function NumberInput({
 
   return (
     <input
+      id={id}
       type="number"
       value={draft}
       min={min}

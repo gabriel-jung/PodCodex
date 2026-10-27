@@ -15,10 +15,12 @@ import { queryKeys } from "@/api/queryKeys";
 import { invalidateAfterEpisodeDelete, removeQueriesUnderPath } from "@/api/cacheInvalidation";
 import { showArtworkSrc, useArtworkEpoch } from "@/lib/showArtwork";
 import type { Episode, FilesImportResponse } from "@/api/types";
-import { languageToISO, isOutdated, splitPath } from "@/lib/utils";
+import { buildShowContext, languageToISO, isOutdated, splitPath } from "@/lib/utils";
+import { llmRunFields, transcribeRunFields } from "@/lib/runRequests";
+import { isCpuTranscribe } from "@/stores/pipelineConfigStore";
 import { dateCmp } from "@/lib/episodeSort";
 import type { PipelineInputStep } from "@/lib/pipelineInputs";
-import { matchesStepFilter } from "@/lib/stepStatus";
+import { episodeCanRunStep, matchesStepFilter } from "@/lib/stepStatus";
 import { getEpisodeBatchPath, getEpisodeSourceRef, getEpisodeStem } from "@/lib/episodeRef";
 import { FeedRefreshButton } from "@/components/common/FeedRefreshButton";
 import { useEpisodeStatusPoll } from "@/hooks/useEpisodeStatusPoll";
@@ -58,6 +60,7 @@ import { AUDIO_EXTENSIONS } from "@/api/types";
 
 type ShowTab = "episodes" | "search" | "speakers" | "settings";
 const TABS: ShowTab[] = ["episodes", "search", "speakers", "settings"];
+const BATCH_STEPS: PipelineInputStep[] = ["transcribe", "correct", "translate", "index"];
 type ViewMode = "list" | "card";
 type StatusFilter = "all" | "ready" | "transcribed" | "corrected" | "translated" | "indexed" | "outdated" | "verified";
 
@@ -124,7 +127,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     queryFn: () => getShowMeta(folder),
   });
 
-  useSeedPipelineFromShow(folder, meta?.pipeline, !!meta);
+  useSeedPipelineFromShow(folder, meta?.pipeline, !!meta, { followSaves: true });
 
   const isPolling = !!(downloadTaskId || batchTaskId);
   const {
@@ -154,6 +157,8 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   // refresh until meta is in.
   const metaLoaded = !!meta;
   const refreshLabel = !metaLoaded ? "Refresh" : isYouTube ? "Refresh YouTube" : "Refresh RSS";
+  // A local-folder show has no feed: refreshing one only errors.
+  const hasFeed = !metaLoaded || isYouTube || !!meta?.rss_url;
 
   const deleteMutation = useMutation({
     mutationFn: (audioPath: string) => deleteAudioFile(audioPath),
@@ -318,7 +323,8 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
         if (!e.has_subtitles) missingSubs.push(e);
         if (!e.downloaded) downloadable.push(e);
       }
-      if (e.downloaded || e.has_subtitles || (e.transcribed && e.output_dir)) {
+      // Runnable for some step, with a path the batch route can address.
+      if (getEpisodeBatchPath(e) && BATCH_STEPS.some((s) => episodeCanRunStep(e, s))) {
         batchable.push(e);
       }
     }
@@ -413,6 +419,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
 
   const indexModel = usePipelineConfigStore((s) => s.indexModel);
   const indexChunker = usePipelineConfigStore((s) => s.indexChunker);
+  const transcribePreset = usePipelineConfigStore((s) => s.transcribePreset);
 
   const batchMutate = batchMutation.mutate;
   const runStep = useCallback((step: PipelineInputStep, filteredEpisodes?: Episode[], sourceVersionIds?: Record<string, string>, transcribeSource?: string, force?: boolean) => {
@@ -420,6 +427,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     const audioPaths = source.map(getEpisodeBatchPath).filter(Boolean) as string[];
     if (audioPaths.length === 0) return;
     const episodes = source.map((e) => ({ title: e.title, stem: e.stem || e.id }));
+    const llmFields = llmRunFields(llm);
     batchMutate({
       show_folder: folder,
       audio_paths: audioPaths,
@@ -427,23 +435,21 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       correct: step === "correct",
       translate: step === "translate",
       index: step === "index",
-      model_size: tc.modelSize,
+      ...transcribeRunFields(tc, { isCpu: isCpuTranscribe(transcribePreset, tc.modelSize), clean: tc.clean }),
       language: tc.language || languageToISO(meta?.language || ""),
-      batch_size: tc.batchSize ?? undefined,
-      diarize: tc.diarize,
-      clean: tc.clean,
-      hf_token: tc.hfToken || undefined,
-      num_speakers: tc.numSpeakers ? Number(tc.numSpeakers) : undefined,
       transcribe_source: transcribeSource || "audio",
       sub_lang: languageToISO(meta?.language || "") || "en",
-      llm_mode: llm.mode === "api" ? "api" : "ollama",
-      llm_provider_profile: llm.mode === "api" ? (llm.providerProfile || undefined) : undefined,
-      llm_key_name: llm.mode === "api" ? (llm.keyName || undefined) : undefined,
-      llm_model: llm.model || undefined,
-      context: llm.context,
-      source_lang: llm.sourceLang,
+      llm_mode: llmFields.mode,
+      llm_provider_profile: llmFields.provider_profile,
+      llm_key_name: llmFields.key_name,
+      llm_model: llmFields.model || undefined,
+      // The show half only: the working context carries the last opened
+      // episode's title and description, and the batch runner appends each
+      // episode's own (`_episode_context` in api/routes/batch.py).
+      context: buildShowContext(meta),
+      source_lang: llmFields.source_lang,
       target_lang: targetLang,
-      llm_batch_minutes: llm.batchMinutes,
+      llm_batch_minutes: llmFields.batch_minutes,
       engine,
       show_name: meta?.name || "",
       index_model_keys: step === "index" ? [indexModel] : undefined,
@@ -453,7 +459,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     }, {
       onSuccess: (data) => setBatchTask(data.task_id, folder, episodes, step),
     });
-  }, [batchMutate, folder, tc, llm, engine, targetLang, meta?.name, meta?.language, indexModel, indexChunker, setBatchTask]);
+  }, [batchMutate, folder, tc, transcribePreset, llm, engine, targetLang, meta, indexModel, indexChunker, setBatchTask]);
 
   const playEpisode = useCallback((ep: Episode) => {
     if (!ep.audio_path) return;
@@ -532,7 +538,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
             : []),
           ...(meta?.language ? [{ value: meta.language }] : []),
         ]}
-        actions={
+        actions={hasFeed &&
           <FeedRefreshButton
             onRefresh={() => refreshMutation.mutate()}
             title={isYouTube ? "Refresh YouTube videos" : "Refresh RSS feed"}
@@ -688,17 +694,21 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
             <EmptyState
               icon={Podcast}
               title="No episodes yet"
-              description={isYouTube ? "Refresh to fetch videos from YouTube." : "Refresh the RSS feed to fetch episodes, or drop audio files here."}
-              steps={[
+              description={
+                !hasFeed
+                  ? "Drop audio files here, or add them to the show folder."
+                  : isYouTube ? "Refresh to fetch videos from YouTube." : "Refresh the RSS feed to fetch episodes, or drop audio files here."
+              }
+              steps={hasFeed ? [
                 { label: isYouTube ? "Refresh to pull the latest YouTube videos" : "Refresh to pull the latest RSS episodes" },
                 { label: "Download audio to enable transcription" },
                 { label: "Transcribe, correct, and index" },
-              ]}
-              action={{
+              ] : undefined}
+              action={hasFeed ? {
                 label: refreshLabel,
                 onClick: () => refreshMutation.mutate(),
                 disabled: feedRefreshing || !metaLoaded,
-              }}
+              } : undefined}
             />
           ) : (
             <EmptyState

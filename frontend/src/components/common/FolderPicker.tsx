@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, useRef } from "react";
 import { listDirectory, createDirectory, listDrives } from "@/api/client";
 import type { DirEntry, DirListing, FileEntry } from "@/api/types";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Folder, FolderPlus, Music, ChevronLeft, ChevronRight, ArrowUp, Home, HardDrive, X } from "lucide-react";
 import { isUnderPath } from "@/lib/utils";
 
@@ -223,20 +224,24 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
   const activeQuick = activeQuickPath(listing?.path, quickAccess, homePath);
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-      onKeyDown={(e) => { if (e.key === "Escape") onClose(); }}
-      role="dialog"
-      aria-modal="true"
-      aria-label={displayTitle}
-    >
-      <div className="bg-card border border-border rounded-lg w-[700px] h-[70vh] flex flex-col shadow-lg">
+    <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
+      <DialogContent
+        showCloseButton={false}
+        // An explicit undefined unlinks Radix's description id, so only
+        // opt out of the description when there is none.
+        {...(description ? {} : { "aria-describedby": undefined })}
+        className="bg-card p-0 gap-0 w-[700px] sm:max-w-[min(700px,calc(100%-2rem))] h-[70vh] flex flex-col"
+        // Radix catches Escape before the inputs do: while the path or a new
+        // folder name is being typed, Escape cancels that edit, not the picker.
+        onEscapeKeyDown={(e) => {
+          if (editingPath || creatingFolder) e.preventDefault();
+        }}
+      >
         {/* Header */}
         <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-          <h3 className="text-lg font-semibold">{displayTitle}</h3>
+          <DialogTitle className="text-lg font-semibold">{displayTitle}</DialogTitle>
           {description && (
-            <span className="text-xs text-muted-foreground ml-3 mr-auto">{description}</span>
+            <DialogDescription className="text-xs text-muted-foreground ml-3 mr-auto">{description}</DialogDescription>
           )}
           <Button onClick={onClose} variant="ghost" size="sm" className="h-7 w-7 p-0" aria-label="Close">
             <X className="w-4 h-4" />
@@ -394,8 +399,8 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
             </Button>
           )}
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -423,12 +428,12 @@ function DirRow({
       </button>
 
       {dir.is_show && (
-        <span className="text-2xs bg-primary/20 text-primary px-1.5 py-0.5 rounded-full">
+        <span className="text-2xs bg-primary/15 text-primary px-1.5 py-0.5 rounded-full">
           show
         </span>
       )}
       {dir.has_audio && !dir.is_show && (
-        <span className="text-2xs bg-warning/20 text-warning px-1.5 py-0.5 rounded-full">
+        <span className="text-2xs bg-warning/15 text-warning px-1.5 py-0.5 rounded-full">
           audio
         </span>
       )}

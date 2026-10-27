@@ -1,4 +1,5 @@
 import type { BatchRequest, ExactRequest, IndexRequest, IndexStatus, RandomRequest, SearchRequest, SearchResult, TaskResponse, VersionEntry } from "./types";
+import type { VerifiedSetRequest } from "./generated-types";
 import { json } from "./client";
 import { episodeParams } from "./versions";
 
@@ -64,7 +65,7 @@ export const setVerifiedVersion = (
   }>(`/api/shows/verified?${params}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ step, version_id: versionId }),
+    body: JSON.stringify({ step, version_id: versionId } satisfies VerifiedSetRequest),
   });
 };
 

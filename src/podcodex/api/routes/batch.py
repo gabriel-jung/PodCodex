@@ -230,8 +230,60 @@ def _resolve_video_id(episode_dir: Path) -> str | None:
     return (meta.youtube_id or None) if meta else None
 
 
+def _feed_by_stem(show_dir: Path) -> dict:
+    """The show's feed cache entries by episode stem, built once per batch.
+
+    Stems resolve against the same on-disk listing `/unified` and the
+    delete path use (``list_show_stems``), so an entry maps to the episode
+    the panel shows it under.
+    """
+    from podcodex.core.source import list_show_stems
+    from podcodex.ingest.rss import episode_stem, load_feed_cache
+
+    feed = load_feed_cache(show_dir) or []
+    if not feed:
+        return {}
+    stems = list_show_stems(show_dir)
+    return {episode_stem(r, show_dir, existing_stems=stems): r for r in feed}
+
+
+def _episode_context(episode_dir: Path, show_context: str, feed_by_stem: dict) -> str:
+    """The LLM context for one episode of a batch: the show context the
+    client sent, plus this episode's title and description.
+
+    Title and description come from the same sources, in the same order, as
+    the `/unified` row the episode panel builds its context from: the feed
+    cache entry (*feed_by_stem*, from :func:`_feed_by_stem`), else
+    ``.episode_meta.json``, else the stem for the title. The text shape
+    matches the panel's `buildDefaultContext` (`frontend/src/lib/utils.ts`),
+    and both decode descriptions the same way (``html_to_text`` /
+    `stripHtml`). Only real metadata is used.
+    """
+    from podcodex.ingest.rss import html_to_text, load_episode_meta
+
+    stem = episode_dir.name
+    source = feed_by_stem.get(stem) or load_episode_meta(episode_dir)
+    title = (source.title if source else "") or stem
+    lines = [f"Episode: {title}"]
+    if source is not None and source.description:
+        lines.append(f"Description: {html_to_text(source.description)}")
+    return "\n\n".join(
+        part for part in (show_context.strip(), "\n".join(lines)) if part
+    )
+
+
 def _batch_llm_step(
-    audio_path, p, req, cancelled, ep_progress, i, step_offset, *, step, version_id=None
+    audio_path,
+    p,
+    req,
+    cancelled,
+    ep_progress,
+    i,
+    step_offset,
+    *,
+    step,
+    feed_by_stem=None,
+    version_id=None,
 ):
     """Run a correct or translate step. Returns True if work was done.
 
@@ -249,8 +301,8 @@ def _batch_llm_step(
     # Which version the step reads: provenance and the correct prompt
     # describe it. Resolved without loading it, so an episode the skip check
     # below turns away costs a DB query, not a transcript parse. An explicit
-    # version_id overrides the default (canonical for translate, newest
-    # transcript for correct).
+    # version_id overrides the default (canonical for translate; for correct
+    # the verified transcript, else the newest).
     source_step = "auto" if is_translate else "transcript"
     ref = resolve_source_ref(audio_path, None, version_id, step=source_step)
     if ref is None:
@@ -320,7 +372,7 @@ def _batch_llm_step(
 
     run_kwargs = dict(
         audio_path=audio_path,
-        context=req.context,
+        context=_episode_context(p.base.parent, req.context, feed_by_stem or {}),
         source_lang=req.source_lang,
         batch_minutes=req.llm_batch_minutes,
         provider_profile=req.llm_provider_profile,
@@ -427,6 +479,11 @@ def _run_batch(progress_cb, req: BatchRequest):
         ep_frac = (step_offset + frac * step_weight) / weight
         report(ep_idx, msg, frac=(ep_idx + ep_frac) / total)
 
+    # Episode titles and descriptions for the LLM context, read once.
+    feed_by_stem = (
+        _feed_by_stem(Path(req.show_folder)) if req.correct or req.translate else {}
+    )
+
     for i, audio_path in enumerate(req.audio_paths):
         if _cancelled():
             progress_cb(i / total, "Cancelled")
@@ -489,6 +546,7 @@ def _run_batch(progress_cb, req: BatchRequest):
                     i,
                     step_offset,
                     step="correct",
+                    feed_by_stem=feed_by_stem,
                     version_id=ep_version_id,
                 ):
                     ep_had_work = True
@@ -504,6 +562,7 @@ def _run_batch(progress_cb, req: BatchRequest):
                     i,
                     step_offset,
                     step="translate",
+                    feed_by_stem=feed_by_stem,
                     version_id=ep_version_id,
                 ):
                     ep_had_work = True

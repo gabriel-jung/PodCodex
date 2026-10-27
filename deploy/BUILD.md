@@ -193,7 +193,7 @@ Iterating on a single layer is faster:
 
 | Changed             | Re-run                                                             |
 |---------------------|--------------------------------------------------------------------|
-| Frontend (TS / CSS) | `cd frontend && npm run build && cd src-tauri && cargo tauri build` |
+| Frontend (TS / CSS) | `cd src-tauri && cargo tauri build` (its beforeBuildCommand runs `npm run build` in frontend/) |
 | Rust shell only     | `cd src-tauri && cargo tauri build`                                |
 | Python backend      | `make bundle-server && cd src-tauri && cargo tauri build`          |
 | yt-dlp              | `make bundle-natives`                                              |

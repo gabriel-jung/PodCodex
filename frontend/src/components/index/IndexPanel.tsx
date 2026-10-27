@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useId } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEpisodeStore, useEpisodeRef, usePipelineConfigStore } from "@/stores";
 import {
@@ -25,6 +25,7 @@ import IndexRow from "@/components/index/IndexRow";
 import { plainStatus } from "@/lib/stepStatus";
 
 export default function IndexPanel() {
+  const fieldId = useId();
   const episode = useEpisodeStore((s) => s.episode);
   const showMeta = useEpisodeStore((s) => s.showMeta);
   const ref = useEpisodeRef();
@@ -161,8 +162,8 @@ export default function IndexPanel() {
 
           <AdvancedToggle className="border-t border-border/50 pt-3 space-y-3">
             <FormGrid className="pl-3 border-l-2 border-border">
-              <HelpLabel label="Chunk size" help="Number of tokens per chunk. Smaller chunks give more precise results, larger chunks preserve more context." />
-              <input
+              <HelpLabel label="Chunk size" htmlFor={`${fieldId}-0`} help="Number of tokens per chunk. Smaller chunks give more precise results, larger chunks preserve more context." />
+              <input id={`${fieldId}-0`}
                 type="number"
                 value={chunkSize}
                 onChange={(e) => setChunkSize(Number(e.target.value))}
@@ -172,8 +173,8 @@ export default function IndexPanel() {
               />
               {chunking === "semantic" && (
                 <>
-                  <HelpLabel label="Similarity" help="How similar adjacent sentences must be to stay in the same chunk. 0 = always split, 1 = never split." />
-                  <input
+                  <HelpLabel label="Similarity" htmlFor={`${fieldId}-1`} help="How similar adjacent sentences must be to stay in the same chunk. 0 = always split, 1 = never split." />
+                  <input id={`${fieldId}-1`}
                     type="number"
                     value={threshold}
                     onChange={(e) => setThreshold(Number(e.target.value))}

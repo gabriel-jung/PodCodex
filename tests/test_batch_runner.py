@@ -375,3 +375,31 @@ def test_batch_cancel_stops_inside_the_episode(tmp_path, monkeypatch):
         )
     assert ran == [1]
     assert list_versions(base, "corrected") == []
+
+
+def test_each_batch_episode_gets_its_own_title_and_description(tmp_path):
+    """A batch sends one show context; each episode's LLM run adds its own
+    metadata, as a single-episode run from the panel does."""
+    from podcodex.ingest.rss import RSSEpisode, save_episode_meta
+    from tests.fixtures.episodes import make_episode
+
+    base, _audio = make_episode(tmp_path)
+    save_episode_meta(
+        base.parent,
+        RSSEpisode(
+            guid="g",
+            title="The river",
+            pub_date="",
+            description="<p>About a <b>river</b>.</p>",
+        ),
+    )
+
+    assert batch_mod._episode_context(
+        base.parent, "My show", batch_mod._feed_by_stem(base.parent.parent)
+    ) == ("My show\n\nEpisode: The river\nDescription: About a river .")
+    # No metadata: the stem, as the panel shows it (`/unified` falls back to it).
+    bare, _ = make_episode(tmp_path, stem="bare")
+    assert (
+        batch_mod._episode_context(bare.parent, "My show", {})
+        == "My show\n\nEpisode: bare"
+    )

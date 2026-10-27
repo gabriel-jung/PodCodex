@@ -138,6 +138,26 @@ from podcodex.bundle.manifest import (  # noqa: E402
     ShowEntry,
 )
 
+# Request bodies of the remaining write routes, so every body the frontend
+# sends is typed against its Pydantic model.
+from podcodex.api.routes.api_keys import (  # noqa: E402
+    CreateRequest as APIKeyCreateRequest,
+    UpdateRequest as APIKeyUpdateRequest,
+)
+from podcodex.api.routes.provider_profiles import (  # noqa: E402
+    CreateRequest as ProviderProfileCreateRequest,
+    UpdateRequest as ProviderProfileUpdateRequest,
+)
+from podcodex.api.routes.bot_access import SetPasswordRequest  # noqa: E402
+from podcodex.api.routes.export import ExportSaveRequest  # noqa: E402
+from podcodex.api.routes.config import (  # noqa: E402
+    FfmpegValidateRequest,
+    SecretsUpdateRequest,
+)
+from podcodex.api.routes.health import InstallExtraRequest, SetDeviceRequest  # noqa: E402
+from podcodex.api.routes.mcp_prompts import PromptCreate, PromptUpdate  # noqa: E402
+from podcodex.api.routes.shows import DeleteEpisodeRequest, DeleteShowRequest  # noqa: E402
+
 # (name_override, model_class) — name_override=None uses the class name.
 MODELS: list[tuple[str | None, type[BaseModel]]] = [
     # schemas.py
@@ -227,6 +247,21 @@ MODELS: list[tuple[str | None, type[BaseModel]]] = [
     ("APIKeysScanResponse", APIKeysScanResponse),
     (None, ProviderProfile),
     ("ProviderProfilesListResponse", ProviderProfilesListResponse),
+    # remaining request bodies
+    ("APIKeyCreateRequest", APIKeyCreateRequest),
+    ("APIKeyUpdateRequest", APIKeyUpdateRequest),
+    ("ProviderProfileCreateRequest", ProviderProfileCreateRequest),
+    ("ProviderProfileUpdateRequest", ProviderProfileUpdateRequest),
+    (None, SetPasswordRequest),
+    (None, ExportSaveRequest),
+    (None, FfmpegValidateRequest),
+    (None, SecretsUpdateRequest),
+    (None, InstallExtraRequest),
+    (None, SetDeviceRequest),
+    ("PromptCreateRequest", PromptCreate),
+    ("PromptUpdateRequest", PromptUpdate),
+    (None, DeleteEpisodeRequest),
+    (None, DeleteShowRequest),
 ]
 
 # ── JSON Schema → TypeScript converter ──────────────────────────────────────

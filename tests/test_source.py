@@ -111,3 +111,56 @@ def test_the_ref_names_the_version_load_source_reads(tmp_path):
         loaded = load_source(str(audio), None, step=step)
         ref = resolve_source_ref(str(audio), None, step=step)
         assert (ref.step, ref.version_id) == (loaded.step, loaded.version_id)
+
+
+def _seg(text: str) -> list[dict]:
+    return [{"speaker": "A", "text": text, "start": 0.0, "end": 1.0}]
+
+
+def test_a_fresh_transcribe_supersedes_an_older_edit_unless_verified(tmp_path):
+    """Correction's default input matches the source picker's default
+    (`sortVersionsForDefault`): a re-transcribe replaces an older hand edit,
+    but a verified transcript is the user's explicit pick and wins."""
+    from podcodex.core._utils import show_dir_of
+    from podcodex.core.pipeline_db import get_pipeline_db
+    from podcodex.core.source import load_source, resolve_source_ref
+
+    base, audio = make_episode(tmp_path)
+    edited = save_version(
+        base,
+        "transcript",
+        _seg("hand edited"),
+        {**prov("transcript"), "manual_edit": True},
+    )
+    fresh = save_version(
+        base, "transcript", _seg("fresh transcribe"), prov("transcript")
+    )
+
+    for step in ("transcript", "auto"):
+        assert load_source(str(audio), None, step=step).version_id == fresh
+        assert resolve_source_ref(str(audio), None, step=step).version_id == fresh
+
+    get_pipeline_db(show_dir_of(base)).set_verified(base.name, "transcript", edited)
+    for step in ("transcript", "auto"):
+        assert load_source(str(audio), None, step=step).version_id == edited
+
+
+def test_a_verified_transcript_is_the_correction_input(tmp_path):
+    from podcodex.core._utils import show_dir_of
+    from podcodex.core.pipeline_db import get_pipeline_db
+    from podcodex.core.source import load_source, resolve_source_ref
+
+    base, audio = make_episode(tmp_path)
+    verified = save_version(base, "transcript", _seg("verified"), prov("transcript"))
+    save_version(
+        base,
+        "transcript",
+        _seg("edited later"),
+        {**prov("transcript"), "manual_edit": True},
+    )
+    get_pipeline_db(show_dir_of(base)).set_verified(base.name, "transcript", verified)
+
+    assert load_source(str(audio), None, step="transcript").version_id == verified
+    assert (
+        resolve_source_ref(str(audio), None, step="transcript").version_id == verified
+    )

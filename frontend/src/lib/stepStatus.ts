@@ -6,8 +6,16 @@ import type { Episode } from "@/api/types";
 import type { PipelineInputStep } from "./pipelineInputs";
 
 /** Three-way review status used by Overview StageCards and PipelinePanel
- *  headers. Stays in sync with `STAGE_CARD_CLASSES` vocabulary. */
+ *  headers. Its labels and colours are `PANEL_STATUS_META` below. */
 export type PanelStatus = "ready" | "review" | "none";
+
+/** How a PanelStatus reads and is coloured, everywhere it is shown (panel
+ *  headers, Overview stage cards, the sidebar's accessible names). */
+export const PANEL_STATUS_META: Record<PanelStatus, { text: string; color: string }> = {
+  ready: { text: "ready", color: "text-success" },
+  review: { text: "needs review", color: "text-info" },
+  none: { text: "not started", color: "text-muted-foreground/60" },
+};
 
 /** Status for a step that has a review state (transcribe/correct/translate).
  *  Present + edited → ready, present + raw → review, absent → none. */
@@ -34,6 +42,22 @@ export function translationsStatus(
     (l) => reviewStatus(true, provenance?.[l]) === "ready",
   );
   return allReady ? "ready" : "review";
+}
+
+/** Whether an episode has what *step* needs as input. Transcribe reads the
+ *  audio or the subtitles: pass the source the run will use, or omit it for
+ *  "either" (the pipeline button's count). Every other step reads a transcript.
+ *  The single rule behind the pipeline buttons, the batch dialog and the
+ *  episode selection, so their counts agree. */
+export function episodeCanRunStep(
+  ep: Episode,
+  step: PipelineInputStep,
+  transcribeSource?: "audio" | "subtitles",
+): boolean {
+  if (step !== "transcribe") return !!ep.transcribed;
+  if (transcribeSource === "subtitles") return !!ep.has_subtitles;
+  if (transcribeSource === "audio") return !!ep.audio_path;
+  return !!ep.audio_path || !!ep.has_subtitles;
 }
 
 /** True if the episode still needs work for the given step. */

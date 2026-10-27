@@ -128,6 +128,9 @@ async function fetchOrThrow(url: string, init: RequestInit): Promise<Response> {
  *  Returns null when `detail` carries nothing readable. */
 function detailToMessage(detail: unknown): string | null {
   if (typeof detail === "string") return detail;
+  // The name-collision 409s carry `{suggested}` (see `conflictSuggestion`).
+  const suggested = (detail as { suggested?: unknown } | null)?.suggested;
+  if (typeof suggested === "string") return `That name is already taken. "${suggested}" is free.`;
   if (!Array.isArray(detail)) return null;
   const lines = detail
     .map((entry) => {

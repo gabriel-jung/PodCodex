@@ -32,12 +32,15 @@ export function filterVersionsForStep(
   return valid.size > 0 ? versions.filter((v) => !!v.step && valid.has(v.step)) : versions;
 }
 
-/** Order versions for "default pick" across multiple input steps.
- *  Priority: verified version first (when present in the list and its step
- *  is a valid input for `step`), then step rank, then edited-vs-not within
- *  each step. Example for `index` (steps = ["corrected", "transcript"]):
- *    verified > edited corrected > corrected > edited transcript > transcript.
- *  Stable — within tier, input order (timestamp DESC) is preserved. */
+/** Order versions for "default pick" across multiple input steps, the same
+ *  order the backend reads them in (`core/versions.py` `_source_candidates`
+ *  and the canonical ladder). Priority: the verified version (when present
+ *  and its step is a valid input for `step`), then step rank, then within a
+ *  step that step's own rule: edited first for corrected versions, strictly
+ *  newest for transcripts (a fresh transcribe supersedes an older edit).
+ *  Example for `index` (steps = ["corrected", "transcript"]):
+ *    verified > edited corrected > corrected > newest transcript.
+ *  Stable: within a tier, input order (newest first) is preserved. */
 export function sortVersionsForDefault(
   versions: VersionEntry[],
   step?: PipelineInputStep,
@@ -51,7 +54,9 @@ export function sortVersionsForDefault(
     if (verifiedActive && v.id === verified!.version_id) return -1;
     const stepIdx = v.step ? priority.indexOf(v.step) : -1;
     const stepKey = stepIdx === -1 ? priority.length : stepIdx;
-    return stepKey * 2 + (isEdited(v) ? 0 : 1);
+    // Transcripts have no edited tier (see the doc comment above).
+    const editedTier = v.step === "transcript" ? 0 : isEdited(v) ? 0 : 1;
+    return stepKey * 2 + editedTier;
   };
   return [...versions].sort((a, b) => rank(a) - rank(b));
 }

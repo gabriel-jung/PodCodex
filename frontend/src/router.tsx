@@ -56,7 +56,9 @@ const showRoute = createRoute({
   component: function ShowWrapper() {
     const { folder } = showRoute.useParams();
     const { tab } = showRoute.useSearch();
-    return <ShowPage folder={decodeURIComponent(folder)} initialTab={tab} />;
+    // Keyed per show: selection, tab, search and filters belong to one show
+    // and must not carry over to the next (palette, batch history, sidebar).
+    return <ShowPage key={folder} folder={decodeURIComponent(folder)} initialTab={tab} />;
   },
 });
 

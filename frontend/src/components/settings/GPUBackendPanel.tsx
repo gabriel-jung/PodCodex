@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Cpu, Zap, Download, Power, PowerOff, Trash2, Loader2,
@@ -6,16 +5,18 @@ import {
 } from "lucide-react";
 import {
   getGPUStatus, downloadGPUBackend, activateGPUBackend,
-  deactivateGPUBackend, uninstallGPUBackend, getTaskStatus,
+  deactivateGPUBackend, uninstallGPUBackend,
   getDeviceInfo, setDeviceOverride,
 } from "@/api/client";
 import type { DeviceInfo, DeviceOverride } from "@/api/gpu";
 import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
+import { ErrorAlert } from "@/components/ui/error-alert";
+import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { RefreshIconButton } from "@/components/common/RefreshIconButton";
 import { restartApp } from "@/lib/restartApp";
-
-const POLL_INTERVAL_MS = 1000;
+import { useGpuDownloadTask } from "@/hooks/useGpuDownload";
+import { useGpuDownloadStore } from "@/stores/gpuDownloadStore";
 
 // Sidecar selection happens once at app launch (lib.rs::spawn_backend_if_needed),
 // so flipping the activated marker — or replacing the binary under an already-
@@ -25,13 +26,14 @@ const POLL_INTERVAL_MS = 1000;
 
 export default function GPUBackendPanel() {
   const qc = useQueryClient();
-  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
-  // Persisted error message for the most recent download attempt. Stays
-  // visible after task completion (or mutation rejection) so the user
-  // sees what went wrong even if the failure is fast.
-  const [lastError, setLastError] = useState<string | null>(null);
+  // The download lives in a store and is finished by the app-wide watcher,
+  // so leaving Settings mid-download loses nothing.
+  const { taskId: activeTaskId, task } = useGpuDownloadTask();
+  const lastError = useGpuDownloadStore((s) => s.lastError);
+  const startDownload = useGpuDownloadStore((s) => s.start);
+  const setLastError = useGpuDownloadStore((s) => s.setError);
 
-  const { data: status, isLoading, isFetching, refetch } = useQuery({
+  const { data: status, isLoading, isFetching, error: statusError, refetch } = useQuery({
     queryKey: queryKeys.gpuStatus(),
     queryFn: getGPUStatus,
   });
@@ -50,40 +52,11 @@ export default function GPUBackendPanel() {
     },
   });
 
-  const { data: task } = useQuery({
-    queryKey: ["gpu", "task", activeTaskId],
-    queryFn: () => (activeTaskId ? getTaskStatus(activeTaskId) : null),
-    enabled: !!activeTaskId,
-    refetchInterval: activeTaskId ? POLL_INTERVAL_MS : false,
-  });
-
-  useEffect(() => {
-    if (!task) return;
-    if (task.status === "completed" || task.status === "failed" || task.status === "cancelled") {
-      if (task.status === "failed") {
-        const msg = task.error ?? "Download failed";
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- surface task failure once on completion
-        setLastError(msg);
-        console.error("GPU download task failed:", task);
-      }
-      setActiveTaskId(null);
-      qc.invalidateQueries({ queryKey: queryKeys.gpuStatus() });
-      // Update path: a download that completed while the backend is already
-      // activated means we replaced the binary under a running sidecar.
-      // The sidecar selection at app startup picked CPU (the version was
-      // mismatched then), so re-evaluating requires a restart. Fresh-install
-      // path doesn't enter here — activated is false until the user clicks
-      // Activate, which has its own restart.
-      if (task.status === "completed" && status?.activated) {
-        void restartApp();
-      }
-    }
-  }, [task, qc, status?.activated]);
 
   const downloadMut = useMutation({
     mutationFn: () => downloadGPUBackend(),
     onMutate: () => setLastError(null),
-    onSuccess: (resp) => setActiveTaskId(resp.task_id),
+    onSuccess: (resp) => startDownload(resp.task_id, !!status?.activated),
     onError: (err) => {
       const msg = err instanceof Error ? err.message : String(err);
       setLastError(msg);
@@ -103,6 +76,15 @@ export default function GPUBackendPanel() {
     meta: { invalidates: [queryKeys.gpuStatus()] },
   });
 
+  if (statusError && !status) {
+    return (
+      <section className="space-y-4">
+        <Heading />
+        <ErrorAlert error={statusError} onRetry={() => void refetch()} />
+      </section>
+    );
+  }
+
   if (isLoading || !status) {
     return (
       <section className="space-y-4">
@@ -114,7 +96,8 @@ export default function GPUBackendPanel() {
     );
   }
 
-  const downloading = !!activeTaskId && task?.status === "running";
+  // Pending, running or not polled yet: anything but a finished task.
+  const downloading = !!activeTaskId;
   // lastError survives task completion + mutation reset; the live error
   // sources take precedence while they're set.
   const downloadError =
@@ -163,7 +146,15 @@ export default function GPUBackendPanel() {
           onDownload={() => downloadMut.mutate()}
           onActivate={() => activateMut.mutate()}
           onDeactivate={() => deactivateMut.mutate()}
-          onUninstall={() => uninstallMut.mutate()}
+          onUninstall={() =>
+            confirmDialog.open({
+              title: "Uninstall the GPU backend?",
+              description: "This deletes the downloaded CUDA backend (about 3 GB). Using the GPU again means downloading it again.",
+              confirmLabel: "Uninstall",
+              variant: "destructive",
+              onConfirm: () => uninstallMut.mutate(),
+            })
+          }
           mutating={
             activateMut.isPending || deactivateMut.isPending ||
             uninstallMut.isPending || downloadMut.isPending

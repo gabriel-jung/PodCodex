@@ -52,6 +52,9 @@ function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, onDeleteEp
       tabIndex={0}
       onClick={handleOpen}
       onKeyDown={(e) => {
+        // Only keys aimed at the card itself: Enter on a nested Play,
+        // Download or menu button bubbles here and must stay that button's.
+        if (e.target !== e.currentTarget) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           handleOpen();
@@ -129,7 +132,7 @@ function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, onDeleteEp
           {ep.removed && (
             <span
               className="w-5 h-5 bg-black/65 backdrop-blur-sm text-white/70 rounded-md flex items-center justify-center"
-              title="No longer in the live feed — kept locally"
+              title="No longer in the live feed, kept locally"
               aria-label="No longer in feed"
             >
               <CloudOff className="w-3 h-3" />

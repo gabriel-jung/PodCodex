@@ -11,7 +11,7 @@ import { getPipelineConfig } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 
 export function useLLMProviders() {
-  const { data: pipelineConfig } = useQuery({
+  const { data: pipelineConfig, error, refetch } = useQuery({
     queryKey: queryKeys.pipelineConfig(),
     queryFn: getPipelineConfig,
     staleTime: Infinity,
@@ -21,5 +21,8 @@ export function useLLMProviders() {
     pipelineConfig,
     detectedKeys: pipelineConfig?.detected_keys ?? {},
     whisperModels: pipelineConfig?.whisper_models ?? {},
+    /** A failed read, so a form can say so instead of "Loading…" forever. */
+    error: pipelineConfig ? null : error,
+    refetch,
   };
 }

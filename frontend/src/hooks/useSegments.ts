@@ -19,17 +19,19 @@ type Snapshot = {
   deleted: Set<number>;
 };
 
-type EditorState = Snapshot & {
+export type EditorState = Snapshot & {
   history: Snapshot[];
   nextId: number;
+  /** Row of the last text keystroke ("text:3"), so one burst of typing on
+   *  one row is one undo step. Null after anything else. */
+  typing: string | null;
 };
 
-type EditorAction =
+export type EditorAction =
   | { type: "SET_TEXT"; id: number; text: string }
   | { type: "SET_SPEAKER"; id: number; speaker: string }
   | { type: "SET_TIMESTAMP"; id: number; field: "start" | "end"; value: number }
   | { type: "DELETE"; id: number }
-  | { type: "DELETE_FLAGGED"; ids: number[] }
   | { type: "RESTORE"; id: number }
   | { type: "INSERT"; afterId: number; segment: Segment }
   | { type: "RESET"; segments: Segment[] }
@@ -70,7 +72,37 @@ function mergedSeg(row: Row, edits: Map<number, Partial<Segment>>): Segment {
   return e ? { ...row.base, ...e } : row.base;
 }
 
-function reducer(state: EditorState, action: EditorAction): EditorState {
+/** Initial editor state for a freshly loaded transcript. */
+export function initEditorState(segments: Segment[]): EditorState {
+  return {
+    rows: segments.map((seg, i) => ({ id: i, base: seg, sourceIndex: i })),
+    edits: new Map<number, Partial<Segment>>(),
+    deleted: new Set<number>(),
+    history: [],
+    nextId: segments.length,
+    typing: null,
+  };
+}
+
+/** The editor's state machine. Every structural edit pushes the previous
+ *  snapshot; typing pushes once per burst on one field, so undo after
+ *  "split, then type" reverts the typing first and keeps the split. */
+export function segmentsReducer(state: EditorState, action: EditorAction): EditorState {
+  const next = reduce(state, action);
+  if (next === state) return state;
+  const typing = typingKey(action);
+  return next.typing === typing ? next : { ...next, typing };
+}
+
+/** The row a keystroke text edit types into, or null for anything else.
+ *  Text only: a timestamp also changes from the "set to playhead" button,
+ *  which must stay its own undo step, and the reducer cannot tell the two
+ *  apart. */
+function typingKey(action: EditorAction): string | null {
+  return action.type === "SET_TEXT" ? `text:${action.id}` : null;
+}
+
+function reduce(state: EditorState, action: EditorAction): EditorState {
   switch (action.type) {
     case "SET_TEXT":
     case "SET_SPEAKER":
@@ -84,21 +116,17 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
       } else {
         edits.set(action.id, { ...existing, [action.field]: action.value });
       }
-      // Per-keystroke text edits don't push history (would flood). Discrete
-      // commits (speaker / timestamp) do.
-      if (action.type === "SET_TEXT") return { ...state, edits };
+      // Text keystrokes push history once per burst on one row (one undo
+      // step per burst, not per key); speaker and timestamp changes are each
+      // one step.
+      const field = typingKey(action);
+      if (field !== null && state.typing === field) return { ...state, edits };
       return { ...state, history: pushHistory(state), edits };
     }
     case "DELETE": {
       const history = pushHistory(state);
       const deleted = new Set(state.deleted);
       deleted.add(action.id);
-      return { ...state, history, deleted };
-    }
-    case "DELETE_FLAGGED": {
-      const history = pushHistory(state);
-      const deleted = new Set(state.deleted);
-      for (const id of action.ids) deleted.add(id);
       return { ...state, history, deleted };
     }
     case "RESTORE": {
@@ -131,6 +159,7 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
         deleted: new Set<number>(),
         history: [],
         nextId: startId + action.segments.length,
+        typing: null,
       };
     }
     case "UNDO": {
@@ -154,7 +183,8 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
       // Preserve any prior edits on row.id (notably a speaker edit stamped by
       // a previous SPLIT) — only override text/end and, if requested, speaker.
       const prior = edits.get(row.id) ?? {};
-      const speakerEdit = action.speaker ? { speaker: action.speaker } : {};
+      // `!== undefined`: the empty-string speaker is a real pick.
+      const speakerEdit = action.speaker !== undefined ? { speaker: action.speaker } : {};
       edits.set(row.id, {
         ...prior,
         ...speakerEdit,
@@ -219,10 +249,7 @@ export interface UseSegmentsReturn {
   /** Ids of rows pending deletion. */
   deletedSet: ReadonlySet<number>;
   isDirty: boolean;
-  deletedCount: number;
   canUndo: boolean;
-  /** Ids of currently-flagged segments. */
-  flaggedIds: number[];
   /** Ids of rows whose text differs from the loaded base (per-row text
    *  edits + freshly inserted/split rows). Used to highlight the textarea
    *  visually so unsaved edits are easy to spot. */
@@ -231,7 +258,6 @@ export interface UseSegmentsReturn {
   updateSpeaker: (id: number, speaker: string) => void;
   updateTimestamp: (id: number, field: "start" | "end", value: number) => void;
   deleteSegment: (id: number) => void;
-  deleteFlagged: () => void;
   restoreSegment: (id: number) => void;
   insertAfter: (id: number, segment: Segment) => void;
   mergeWithNext: (id: number, speaker?: string) => void;
@@ -247,13 +273,7 @@ export interface UseSegmentsReturn {
 }
 
 export function useSegments(initialSegments: Segment[]): UseSegmentsReturn {
-  const [state, dispatch] = useReducer(reducer, undefined, () => ({
-    rows: initialSegments.map((seg, i) => ({ id: i, base: seg, sourceIndex: i })),
-    edits: new Map<number, Partial<Segment>>(),
-    deleted: new Set<number>(),
-    history: [],
-    nextId: initialSegments.length,
-  }));
+  const [state, dispatch] = useReducer(segmentsReducer, initialSegments, initEditorState);
 
   const derived = useMemo(() => {
     const editedSegments: Segment[] = [];
@@ -276,15 +296,6 @@ export function useSegments(initialSegments: Segment[]): UseSegmentsReturn {
   const isDirty = state.edits.size > 0 || state.deleted.size > 0
     || state.rows.length !== initialSegments.length;
 
-  const flaggedIds = useMemo(() => {
-    const out: number[] = [];
-    for (const row of state.rows) {
-      if (state.deleted.has(row.id)) continue;
-      if (mergedSeg(row, state.edits).flagged) out.push(row.id);
-    }
-    return out;
-  }, [state.rows, state.edits, state.deleted]);
-
   const textEditedIds = useMemo(() => {
     const s = new Set<number>();
     for (const [id, edit] of state.edits) {
@@ -299,13 +310,10 @@ export function useSegments(initialSegments: Segment[]): UseSegmentsReturn {
   }, [state.rows, state.edits, state.deleted]);
 
   // Stable callbacks need fresh state for predicates that scan live rows
-  // (`getNextSegment`) or pull a snapshot of flagged ids (`deleteFlagged`).
+  // (`getNextSegment`).
   const stateRef = useRef(state);
-  const flaggedRef = useRef(flaggedIds);
   // eslint-disable-next-line react-hooks/refs
   stateRef.current = state;
-  // eslint-disable-next-line react-hooks/refs
-  flaggedRef.current = flaggedIds;
 
   const updateText = useCallback((id: number, text: string) => {
     dispatch({ type: "SET_TEXT", id, text });
@@ -321,9 +329,6 @@ export function useSegments(initialSegments: Segment[]): UseSegmentsReturn {
   );
   const deleteSegment = useCallback((id: number) => {
     dispatch({ type: "DELETE", id });
-  }, []);
-  const deleteFlagged = useCallback(() => {
-    dispatch({ type: "DELETE_FLAGGED", ids: flaggedRef.current });
   }, []);
   const restoreSegment = useCallback((id: number) => {
     dispatch({ type: "RESTORE", id });
@@ -360,15 +365,12 @@ export function useSegments(initialSegments: Segment[]): UseSegmentsReturn {
     ...derived,
     deletedSet: state.deleted,
     isDirty,
-    deletedCount: state.deleted.size,
     canUndo: state.history.length > 0,
-    flaggedIds,
     textEditedIds,
     updateText,
     updateSpeaker,
     updateTimestamp,
     deleteSegment,
-    deleteFlagged,
     restoreSegment,
     insertAfter,
     mergeWithNext,

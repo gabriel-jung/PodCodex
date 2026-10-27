@@ -101,7 +101,7 @@ export default function CorrectPanel() {
       title: "Clear rejected-batch records?",
       description:
         `The last correction run had ${correctFailures.rejected} rejected ` +
-        "batch(es). You just saved a new version — clear those records?",
+        "batch(es). You just saved a new version. Clear those records?",
       confirmLabel: "Clear records",
       cancelLabel: "Keep",
       onConfirm: async () => { await dismissFailures.mutateAsync(); },

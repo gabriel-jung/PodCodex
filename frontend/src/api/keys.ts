@@ -1,8 +1,10 @@
 import { json, rawFetch } from "./client";
 import type {
+  APIKeyCreateRequest,
   APIKeyPublic,
   APIKeysListResponse,
   APIKeysScanResponse,
+  APIKeyUpdateRequest,
 } from "./generated-types";
 
 export type { APIKeyPublic, APIKeysListResponse };
@@ -10,11 +12,7 @@ export type ScanResponse = APIKeysScanResponse;
 
 export const listApiKeys = () => json<APIKeysListResponse>("/api/keys");
 
-export const createApiKey = (req: {
-  name: string;
-  value: string;
-  suggested_provider?: string | null;
-}) =>
+export const createApiKey = (req: APIKeyCreateRequest) =>
   json<APIKeyPublic>("/api/keys", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -23,7 +21,7 @@ export const createApiKey = (req: {
 
 export const updateApiKey = (
   name: string,
-  patch: { value?: string; suggested_provider?: string | null },
+  patch: APIKeyUpdateRequest,
 ) =>
   json<APIKeyPublic>(`/api/keys/${encodeURIComponent(name)}`, {
     method: "PATCH",

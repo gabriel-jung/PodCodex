@@ -783,6 +783,54 @@ def _live_in_default_order(base: Path, step: str, versions: list[dict]):
             yield meta
 
 
+def _source_candidates(base: Path, step: str):
+    """Rows of *step* in default-input order: the verified pick when it is
+    a version of *step*, then :func:`_live_in_default_order`.
+
+    The user's explicit pick wins; otherwise each step's own default rule
+    applies, so a fresh transcribe still supersedes an older hand-edited
+    transcript (``_STRICT_NEWEST_STEPS``). The frontend source picker
+    (``sortVersionsForDefault`` in ``frontend/src/lib/pipelineInputs.ts``)
+    shows this same order as its default."""
+    db = _get_db(base)
+    rows = db.list_versions(base.name, step)
+    # Same failure mode as `resolve_canonical_ref`, which also reads past an
+    # unreadable pointer; logged, so a run on the newest version instead of
+    # the verified one is never silent.
+    try:
+        pointer = _live_pointer(base, db.get_verified(base.name))
+    except Exception:
+        logger.opt(exception=True).warning(
+            "Verified pointer unreadable for {}; using the default order", base.name
+        )
+        pointer = None
+    pinned = pointer[1] if pointer and pointer[0] == step else None
+    if pinned:
+        yield from (meta for meta in rows if meta["id"] == pinned)
+    yield from (
+        meta
+        for meta in _live_in_default_order(base, step, rows)
+        if meta["id"] != pinned
+    )
+
+
+def default_source_version(base: Path, step: str) -> dict | None:
+    """The version row a step reads when *step* is its input and nothing is
+    pinned. Reads no segments; see :func:`load_default_source`."""
+    return next(_source_candidates(base, step), None)
+
+
+def load_default_source(base: Path, step: str) -> tuple[dict, list[dict]] | None:
+    """``(version meta, segments)`` of :func:`default_source_version`,
+    falling through to the next candidate when a file is unreadable."""
+    for meta in _source_candidates(base, step):
+        try:
+            return meta, load_version(base, step, meta["id"])
+        except FileNotFoundError as e:
+            logger.warning("Skipping version {}/{}: {}", step, meta["id"], e)
+    return None
+
+
 def load_latest_with_meta(base: Path, step: str) -> tuple[dict, list[dict]] | None:
     """``(version meta, segments)`` of the best available version of a step.
 

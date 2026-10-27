@@ -1,6 +1,12 @@
-import { useState, type Dispatch, type SetStateAction } from "react";
+import type { Dispatch, SetStateAction } from "react";
 import { ArrowDown, ArrowUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 export type SortKey =
   | "date_desc" | "date_asc"
@@ -32,7 +38,6 @@ export interface SortDropdownProps {
 }
 
 export default function SortDropdown({ sort, setSort }: SortDropdownProps) {
-  const [open, setOpen] = useState(false);
   const { field: activeField, dir: activeDir } = parseSort(sort);
   const activeOption = OPTIONS.find((o) => o.field === activeField) ?? OPTIONS[0];
   const TriggerArrow = activeDir === "asc" ? ArrowUp : ArrowDown;
@@ -47,43 +52,37 @@ export default function SortDropdown({ sort, setSort }: SortDropdownProps) {
   };
 
   return (
-    <div className="relative">
-      <Button
-        onClick={() => setOpen(!open)}
-        variant="ghost"
-        size="sm"
-        className="text-xs h-7 px-2 gap-1.5"
-        aria-label={`Sort by ${activeOption.label}`}
-      >
-        <span>{activeOption.label}</span>
-        <TriggerArrow className="w-3 h-3 text-primary" />
-      </Button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg p-1.5 min-w-[160px]">
-            {OPTIONS.map((opt) => {
-              const active = opt.field === activeField;
-              return (
-                <button
-                  key={opt.field}
-                  onClick={() => pick(opt.field)}
-                  className={`w-full flex items-center justify-between gap-3 px-2 py-1.5 text-xs rounded transition ${
-                    active
-                      ? "bg-accent text-foreground"
-                      : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-                  }`}
-                >
-                  <span className="font-medium">{opt.label}</span>
-                  {active && (activeDir === "asc"
-                    ? <ArrowUp className="w-3 h-3 text-primary" />
-                    : <ArrowDown className="w-3 h-3 text-primary" />)}
-                </button>
-              );
-            })}
-          </div>
-        </>
-      )}
-    </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-xs h-7 px-2 gap-1.5"
+          aria-label={`Sort by ${activeOption.label}`}
+        >
+          <span>{activeOption.label}</span>
+          <TriggerArrow className="w-3 h-3 text-primary" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-[160px]">
+        {OPTIONS.map((opt) => {
+          const active = opt.field === activeField;
+          return (
+            <DropdownMenuItem
+              key={opt.field}
+              // Stay open: picking the active field again flips its direction.
+              onSelect={(e) => { e.preventDefault(); pick(opt.field); }}
+              aria-current={active ? "true" : undefined}
+              className={`justify-between gap-3 text-xs ${active ? "bg-accent text-foreground" : "text-muted-foreground"}`}
+            >
+              <span className="font-medium">{opt.label}</span>
+              {active && (activeDir === "asc"
+                ? <ArrowUp className="w-3 h-3 text-primary" />
+                : <ArrowDown className="w-3 h-3 text-primary" />)}
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

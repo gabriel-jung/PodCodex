@@ -13,7 +13,7 @@ import { deleteTranslateVersion } from "@/api/translate";
 import { deleteAnyVersion, deleteEpisodeCollection } from "@/api/search";
 import { useShowActions } from "@/hooks/useShowActions";
 import { isVerifiedVersion, VERIFIED_CAPTION } from "@/lib/verified";
-import type { PanelStatus } from "@/lib/stepStatus";
+import { PANEL_STATUS_META, type PanelStatus } from "@/lib/stepStatus";
 import { useEpisodeStatusPoll } from "@/hooks/useEpisodeStatusPoll";
 import { isSoloDefaultSpeaker } from "@/lib/speakers";
 import { getEpisodeSourceRef } from "@/lib/episodeRef";
@@ -503,8 +503,7 @@ function StageCard({
 }) {
   const c = STAGE_CLASSES[stage];
   const isEmpty = status === "none";
-  const statusText = status === "ready" ? "ready" : status === "review" ? "needs review" : "not started";
-  const statusColor = status === "ready" ? "text-success" : status === "review" ? "text-info" : "text-muted-foreground/60";
+  const { text: statusText, color: statusColor } = PANEL_STATUS_META[status];
 
   return (
     <button

@@ -3,16 +3,11 @@ import { countLabel } from "@/lib/showCounts";
 import type { Episode } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import StepConfigEditor, { STEPS, type StepKey, type TranscribeSource } from "./StepConfigEditor";
-import { episodeNeedsStep } from "@/lib/stepStatus";
+import { episodeCanRunStep, episodeNeedsStep } from "@/lib/stepStatus";
 
 /** Count episodes that need this step (prerequisites met + not already up-to-date). */
 function countCanRun(episodes: Episode[], step: StepKey): number {
-  return episodes.filter((e) => {
-    const hasPrereq = step === "transcribe"
-      ? (!!e.audio_path || !!e.has_subtitles)
-      : !!e.transcribed;
-    return hasPrereq && episodeNeedsStep(e, step);
-  }).length;
+  return episodes.filter((e) => episodeCanRunStep(e, step) && episodeNeedsStep(e, step)).length;
 }
 
 export default function PipelineButtons({
@@ -54,7 +49,7 @@ export default function PipelineButtons({
               className={`text-xs h-7 px-2 ${hasWork ? "" : "opacity-60"}`}
               title={hasWork
                 ? `${label} ${countLabel(count, "episode")}`
-                : `${label} — all up to date (open to reprocess)`}
+                : `${label}: all up to date (open to reprocess)`}
             >
               <Icon className="w-3 h-3" />
               <span>{label}</span>

@@ -9,10 +9,13 @@ export function cn(...inputs: ClassValue[]) {
 /** Format seconds as "HH:MM:SS" or "MM:SS". */
 export function formatTime(seconds: number | undefined | null, showMs = true): string {
   if (seconds == null || isNaN(seconds)) return "00:00";
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  const ms = Math.round((seconds % 1) * 100);
+  // With hundredths, round once on the total so 5.996 carries into 00:06.00
+  // instead of printing "00:05.100".
+  const total = showMs ? Math.round(seconds * 100) / 100 : seconds;
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = Math.floor(total % 60);
+  const ms = Math.round((total % 1) * 100);
   const base = h > 0
     ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
     : `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
@@ -67,12 +70,25 @@ export function formatDurationHMS(seconds: number | undefined | null): string {
   return parts.join("");
 }
 
-/** Format an ISO date string as a short locale date. */
+/** A calendar date with no time of day: "2026-10-01", or the UTC midnight
+ *  YouTube and some feeds use to mean the same. The offset is required: an
+ *  offset-less "T00:00:00" is local midnight, which local formatting already
+ *  shows on the right day. */
+const CALENDAR_DATE = /^\d{4}-\d{2}-\d{2}(T00:00(:00(\.0+)?)?(Z|[+-]00:?00))?$/;
+
+/** Format an ISO date string as a short locale date. A calendar date is
+ *  shown as that day everywhere; read in local time it would print the day
+ *  before for anyone west of UTC. */
 export function formatDate(dateStr: string | null | undefined): string {
   if (!dateStr) return "";
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return dateStr;
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  return d.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    ...(CALENDAR_DATE.test(dateStr) ? { timeZone: "UTC" } : {}),
+  });
 }
 
 /** Format an ISO date string as a relative time ago string. */
@@ -114,10 +130,37 @@ export function formatBytes(n: number | null | undefined): string {
   return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
 }
 
-/** Strip HTML tags and decode common entities. */
+/** A numeric character reference's character, or U+FFFD when the number is
+ *  not a valid code point (as Python's `html.unescape` does), never a throw:
+ *  the input is untrusted feed HTML. */
+function codePointChar(n: number): string {
+  return Number.isInteger(n) && n > 0 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff)
+    ? String.fromCodePoint(n)
+    : "\uFFFD";
+}
+
+/** Decode every HTML entity. In the app the browser's own parser does it
+ *  (a textarea's content is text, so nothing in it is parsed as markup);
+ *  the regex fallback covers the node test environment. */
+function decodeEntities(text: string): string {
+  if (typeof document !== "undefined") {
+    const el = document.createElement("textarea");
+    el.innerHTML = text;
+    return el.value;
+  }
+  return text
+    .replace(/&#(\d+);/g, (_, n: string) => codePointChar(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, h: string) => codePointChar(parseInt(h, 16)))
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, "\u00a0")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+}
+
+/** Plain text of a feed description: tags become spaces, every entity is
+ *  decoded, whitespace is collapsed. Mirrors `html_to_text` in
+ *  `ingest/rss.py`, which builds the batch runner's episode context, so a
+ *  panel run and a batch run give the model the same text. */
 export function stripHtml(html: string): string {
-  const text = html.replace(/<[^>]*>/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, " ");
-  return text.replace(/\s+/g, " ").trim();
+  return decodeEntities(html.replace(/<[^>]*>/g, " ")).replace(/\s+/g, " ").trim();
 }
 
 /** Build the LLM context for a run by merging the show-level description with
@@ -127,12 +170,7 @@ export function stripHtml(html: string): string {
  *  per-episode info (title + description) never leaks back into the show
  *  config when the user saves run settings to the show. */
 export function buildDefaultContext(episode: Episode, showMeta: ShowMeta | null | undefined): string {
-  const showSummary: string[] = [];
-  if (showMeta?.name) showSummary.push(showMeta.name);
-  if (showMeta?.language) showSummary.push(`${showMeta.language} podcast`);
-  if (showMeta?.speakers?.length) showSummary.push(`hosted by ${showMeta.speakers.join(" and ")}`);
-
-  const showPart = (showMeta?.pipeline?.context || "").trim() || showSummary.join(", ");
+  const showPart = buildShowContext(showMeta);
 
   const episodeLines: string[] = [];
   if (episode.title) episodeLines.push(`Episode: ${episode.title}`);
@@ -140,6 +178,23 @@ export function buildDefaultContext(episode: Episode, showMeta: ShowMeta | null 
 
   return [showPart, episodeLines.join("\n")].filter(Boolean).join("\n\n");
 }
+
+/** The show half of the LLM context: the show's saved context, else a
+ *  summary from its name, language and hosts. A batch run sends only this;
+ *  the backend adds each episode's half, in the same shape as
+ *  `buildDefaultContext` below. */
+export function buildShowContext(showMeta: ShowMeta | null | undefined): string {
+  const showSummary: string[] = [];
+  if (showMeta?.name) showSummary.push(showMeta.name);
+  if (showMeta?.language) showSummary.push(`${showMeta.language} podcast`);
+  if (showMeta?.speakers?.length) showSummary.push(`hosted by ${showMeta.speakers.join(" and ")}`);
+  return (showMeta?.pipeline?.context || "").trim() || showSummary.join(", ");
+}
+
+/** The inherit choice of a show's pipeline override: "App default (X)",
+ *  naming the live app default, or plain "App default" when it is unset. */
+export const appDefaultLabel = (value: string | undefined | null): string =>
+  value ? `App default (${value})` : "App default";
 
 /** Derive a show name from metadata or audio path. */
 export function getShowName(showMeta: ShowMeta | null | undefined, audioPath: string | null): string {
@@ -208,7 +263,7 @@ export function languageToISO(lang: string): string {
     english: "en", french: "fr", german: "de", spanish: "es",
     italian: "it", portuguese: "pt", dutch: "nl", russian: "ru",
     japanese: "ja", chinese: "zh", korean: "ko", arabic: "ar",
-    hindi: "hi", turkish: "tr", correct: "co", swedish: "sv",
+    hindi: "hi", turkish: "tr", polish: "pl", swedish: "sv",
     danish: "da", norwegian: "no", finnish: "fi", greek: "el",
     czech: "cs", romanian: "ro", hungarian: "hu", ukrainian: "uk",
     catalan: "ca", hebrew: "he", thai: "th", vietnamese: "vi",
@@ -357,7 +412,7 @@ export function versionOption(v: VersionEntry): string {
     ].filter(Boolean);
     return `${step}${parts.join(" · ")}`;
   }
-  return `${step}${versionDate(v)} — ${versionLabel(v)} (${v.segment_count} seg)`;
+  return `${step}${versionDate(v)}: ${versionLabel(v)} (${v.segment_count} seg)`;
 }
 
 /** Params to hide from the version info box (internal / not user-relevant). */

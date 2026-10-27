@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { isEdited, plainStatus, reviewStatus, translationsStatus } from "./stepStatus";
+import type { Episode } from "@/api/types";
+import { episodeCanRunStep, isEdited, plainStatus, reviewStatus, translationsStatus } from "./stepStatus";
 
 /**
  * The frontend half of "edited beats freshness". These three derive every
@@ -69,5 +70,29 @@ describe("translationsStatus", () => {
   it("treats a language with no provenance row as needing review", () => {
     expect(translationsStatus(["fr"], {})).toBe("review");
     expect(translationsStatus(["fr"], null)).toBe("review");
+  });
+});
+
+describe("episodeCanRunStep", () => {
+  const ep = (fields: Partial<Episode>) => fields as Episode;
+  const subsOnly = ep({ has_subtitles: true });
+  const audioOnly = ep({ audio_path: "/s/ep.mp3" });
+
+  it("counts audio or subtitles for transcribe when no source is picked", () => {
+    expect(episodeCanRunStep(subsOnly, "transcribe")).toBe(true);
+    expect(episodeCanRunStep(audioOnly, "transcribe")).toBe(true);
+    expect(episodeCanRunStep(ep({}), "transcribe")).toBe(false);
+  });
+
+  it("follows the picked transcribe source", () => {
+    expect(episodeCanRunStep(subsOnly, "transcribe", "audio")).toBe(false);
+    expect(episodeCanRunStep(audioOnly, "transcribe", "subtitles")).toBe(false);
+  });
+
+  it("needs a transcript for every other step", () => {
+    for (const step of ["correct", "translate", "index"] as const) {
+      expect(episodeCanRunStep(audioOnly, step)).toBe(false);
+      expect(episodeCanRunStep(ep({ transcribed: true }), step)).toBe(true);
+    }
   });
 });

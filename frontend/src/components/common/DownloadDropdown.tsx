@@ -1,5 +1,11 @@
-import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Download, Subtitles, ChevronDown } from "lucide-react";
 import { languageToISO, SUB_LANGUAGES } from "@/lib/utils";
 
@@ -20,16 +26,6 @@ interface DownloadDropdownProps {
   className?: string;
 }
 
-/** Sort subtitle languages, prioritizing the show's language. */
-function sortLanguagesByShow(showLanguage: string) {
-  const showLangCode = languageToISO(showLanguage) || showLanguage.toLowerCase().slice(0, 2);
-  return [...SUB_LANGUAGES].sort((a, b) => {
-    if (a.code === showLangCode) return -1;
-    if (b.code === showLangCode) return 1;
-    return 0;
-  });
-}
-
 export default function DownloadDropdown({
   isYouTube,
   showLanguage,
@@ -46,8 +42,6 @@ export default function DownloadDropdown({
   align = "left",
   className = "",
 }: DownloadDropdownProps) {
-  const [open, setOpen] = useState(false);
-
   // Non-YouTube: simple download button
   if (!isYouTube) {
     if (!showAudio) return null;
@@ -64,48 +58,37 @@ export default function DownloadDropdown({
     );
   }
 
-  const sortedLangs = sortLanguagesByShow(showLanguage);
   const showLangCode = languageToISO(showLanguage) || showLanguage.toLowerCase().slice(0, 2);
-  const primaryLang = sortedLangs.find((l) => l.code === showLangCode) || sortedLangs[0];
-  const close = () => setOpen(false);
+  const primaryLang = SUB_LANGUAGES.find((l) => l.code === showLangCode) ?? SUB_LANGUAGES[0];
 
   return (
-    <div className="relative">
-      <Button
-        onClick={() => { if (open) close(); else setOpen(true); }}
-        disabled={disabled}
-        variant={variant}
-        size={size}
-        className={className}
-      >
-        <Download className="w-3 h-3" /> Download <ChevronDown className="w-3 h-3 ml-0.5" />
-      </Button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={close} />
-          <div className={`absolute ${align === "right" ? "right-0" : "left-0"} top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-[160px]`}>
-            <button
-              onClick={() => { close(); onImportSubs(primaryLang.code); }}
-              disabled={!subsEnabled || disabled}
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent transition disabled:opacity-40"
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild disabled={disabled}>
+        <Button disabled={disabled} variant={variant} size={size} className={className}>
+          <Download className="w-3 h-3" /> Download <ChevronDown className="w-3 h-3 ml-0.5" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align={align === "right" ? "end" : "start"} className="min-w-[160px]">
+        <DropdownMenuItem
+          onSelect={() => onImportSubs(primaryLang.code)}
+          disabled={!subsEnabled || disabled}
+          className="text-xs"
+        >
+          <Subtitles className="w-3 h-3" /> {subsLabel}
+        </DropdownMenuItem>
+        {showAudio && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onSelect={onDownload}
+              disabled={!audioEnabled || disabled}
+              className="text-xs"
             >
-              <Subtitles className="w-3 h-3" /> {subsLabel}
-            </button>
-            {showAudio && (
-              <>
-                <div className="border-t border-border/50 my-0.5" />
-                <button
-                  onClick={() => { close(); onDownload(); }}
-                  disabled={!audioEnabled || disabled}
-                  className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent transition disabled:opacity-40"
-                >
-                  <Download className="w-3 h-3" /> {audioLabel}
-                </button>
-              </>
-            )}
-          </div>
-        </>
-      )}
-    </div>
+              <Download className="w-3 h-3" /> {audioLabel}
+            </DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

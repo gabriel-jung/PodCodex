@@ -234,19 +234,7 @@ def get_active_task(
     if not audio_path:
         return None
     info = task_manager.get_active(audio_path)
-    if not info:
-        return None
-    resp: dict = {
-        "task_id": info.task_id,
-        "status": info.status,
-        "progress": info.progress,
-        "message": info.message,
-    }
-    if info.steps:
-        resp["steps"] = info.steps
-    if info.log:
-        resp["log"] = info.log
-    return resp
+    return info.snapshot(with_outcome=False) if info else None
 
 
 @router.get("/tasks/{task_id}")
@@ -255,23 +243,7 @@ def get_task(task_id: str) -> dict | None:
     from podcodex.api.tasks import task_manager
 
     info = task_manager.get(task_id)
-    if not info:
-        return None
-    resp: dict = {
-        "task_id": info.task_id,
-        "status": info.status,
-        "progress": info.progress,
-        "message": info.message,
-    }
-    if info.steps:
-        resp["steps"] = info.steps
-    if info.log:
-        resp["log"] = info.log
-    if info.result is not None:
-        resp["result"] = info.result
-    if info.error is not None:
-        resp["error"] = info.error
-    return resp
+    return info.snapshot() if info else None
 
 
 @router.post("/tasks/{task_id}/cancel")

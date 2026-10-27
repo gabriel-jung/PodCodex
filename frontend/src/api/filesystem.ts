@@ -1,4 +1,5 @@
 import type { DirListing } from "./types";
+import type { ExportSaveRequest } from "./generated-types";
 import { BASE, json, withToken } from "./client";
 import { episodeParams } from "./versions";
 import type { Platform } from "@/platform";
@@ -72,15 +73,9 @@ const exportUrl = (
 
 export type ExportFormat = "txt" | "srt" | "vtt" | "zip" | "audio";
 
-export const saveExport = (req: {
-  audio_path: string;
-  output_dir?: string;
-  source?: string;
-  /** Export this version instead of the step's default (the one on screen). */
-  version_id?: string;
-  format: ExportFormat;
-  dest: string;
-}) =>
+/** `version_id` exports that version instead of the step's default (the one
+ *  on screen). */
+export const saveExport = (req: ExportSaveRequest) =>
   json<{ status: string; path: string }>("/api/export/save", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

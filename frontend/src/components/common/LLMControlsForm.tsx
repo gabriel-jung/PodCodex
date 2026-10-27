@@ -17,22 +17,30 @@ import VersionPicker from "./VersionPicker";
 import { NumberInput } from "@/components/ui/number-input";
 
 interface LLMControlsFormProps {
-  episode: Episode;
+  /** The episode a single run targets; omitted for a batch, where the
+   *  batch size is set in minutes rather than as a count per episode. */
+  episode?: Episode;
   config: LLMConfig;
   patch: (p: Partial<LLMConfig>) => void;
   activePreset: LLMPresetKey;
 
-  /** Upstream versions the user can pick as input, or undefined to hide the row. */
+  /** Upstream versions the user can pick as input, or undefined to hide the
+   *  row (and with it the four source props). */
   inputVersions?: VersionEntry[];
-  sourceVersionId: string | null;
-  onSourceVersionChange: (id: string | null) => void;
-  sourceLabel: string;
-  sourceHelp: string;
+  sourceVersionId?: string | null;
+  onSourceVersionChange?: (id: string | null) => void;
+  sourceLabel?: string;
+  sourceHelp?: string;
 
   /** Slot for step-specific language rows (single "Language" or "From"/"To" pair). */
   languageRows: React.ReactNode;
 
-  contextHelp: string;
+  /** Help for the Context field, or undefined to hide it (a batch sends the
+   *  show's own context, edited in the show settings). */
+  contextHelp?: string;
+  /** False hides the batch size row (the batch dialog's manual flow sets a
+   *  count per episode instead). */
+  showBatches?: boolean;
 }
 
 /**
@@ -52,9 +60,10 @@ export default function LLMControlsForm({
   sourceHelp,
   languageRows,
   contextHelp,
+  showBatches = true,
 }: LLMControlsFormProps) {
-  const { profiles } = useProviderProfiles();
-  const { keys } = useApiKeys();
+  const { profiles, error: profilesError } = useProviderProfiles();
+  const { keys, error: keysError } = useApiKeys();
   const apiProfiles = useMemo(() => profiles.filter((p) => p.type !== "ollama"), [profiles]);
   const { episodeMinutes, batchCount, setBatchCount, minutesPerBatch } = useBatchCount(episode, config, patch);
   const hasOllama = useCapabilities().has("ollama");
@@ -91,12 +100,12 @@ export default function LLMControlsForm({
           ]}
         />
 
-        {inputVersions && inputVersions.length > 0 && (
+        {inputVersions && inputVersions.length > 0 && onSourceVersionChange && (
           <>
-            <HelpLabel label={sourceLabel} help={sourceHelp} />
+            <HelpLabel label={sourceLabel ?? "Source"} help={sourceHelp} />
             <VersionPicker
               versions={inputVersions}
-              value={sourceVersionId}
+              value={sourceVersionId ?? null}
               onChange={onSourceVersionChange}
             />
           </>
@@ -104,13 +113,14 @@ export default function LLMControlsForm({
 
         {activePreset === "cloud" && (
           <>
-            <HelpLabel label="Provider" help="Pick a built-in profile (OpenAI, Anthropic, Mistral) or a custom one you added in Settings → Credentials. Custom profiles use OpenAI-compatible endpoints with your own base URL." />
+            <HelpLabel label="Provider" htmlFor={`${datalistId}-0`} help="Pick a built-in profile (OpenAI, Anthropic, Mistral) or a custom one you added in Settings → Credentials. Custom profiles use OpenAI-compatible endpoints with your own base URL." />
             <select
+              id={`${datalistId}-0`}
               value={config.providerProfile}
               onChange={(e) => patch({ providerProfile: e.target.value, model: "" })}
               className={`${selectClass} max-w-full min-w-0`}
             >
-              <option value="">Pick a profile…</option>
+              <option value="">{profilesError ? "Could not load profiles" : "Pick a profile…"}</option>
               {apiProfiles.map((p) => (
                 <option key={p.name} value={p.name}>
                   {p.name}{p.builtin ? "" : " (custom)"}
@@ -118,14 +128,15 @@ export default function LLMControlsForm({
               ))}
             </select>
 
-            <HelpLabel label="LLM API key" help="Pick a key from your pool. Add or manage keys in Settings → Credentials." />
+            <HelpLabel label="LLM API key" htmlFor={`${datalistId}-1`} help="Pick a key from your pool. Add or manage keys in Settings → Credentials." />
             <select
+              id={`${datalistId}-1`}
               value={config.keyName}
               onChange={(e) => onPickKey(e.target.value)}
               className={`${selectClass} max-w-full min-w-0`}
             >
               <option value="">
-                {keys.length === 0 ? "No keys, add one in Settings" : "Pick a key…"}
+                {keysError ? "Could not load keys" : keys.length === 0 ? "No keys, add one in Settings" : "Pick a key…"}
               </option>
               {keys.map((k) => (
                 <option key={k.name} value={k.name}>
@@ -148,7 +159,7 @@ export default function LLMControlsForm({
           </>
         )}
 
-        <HelpLabel label="Model" help={
+        <HelpLabel label="Model" htmlFor={`${datalistId}-model`} help={
           activePreset === "cloud"
             ? "The AI model to use (e.g. gpt-4o for OpenAI, mistral-large for Mistral). Leave empty for the provider's default."
             : isLocal
@@ -157,6 +168,7 @@ export default function LLMControlsForm({
         } />
         {isLocal && ollama.data?.reachable && ollama.data.models.length > 0 ? (
           <select
+            id={`${datalistId}-model`}
             value={config.model}
             onChange={(e) => patch({ model: e.target.value })}
             className={`${selectClass} max-w-full min-w-0`}
@@ -171,6 +183,7 @@ export default function LLMControlsForm({
           </select>
         ) : (
           <input
+            id={`${datalistId}-model`}
             value={config.model}
             onChange={(e) => patch({ model: e.target.value })}
             list={modelSuggestions.length > 0 ? datalistId : undefined}
@@ -194,12 +207,14 @@ export default function LLMControlsForm({
 
         {languageRows}
 
-        <HelpLabel label="Batches" help={episodeMinutes
+        {showBatches && <>
+        <HelpLabel label="Batches" htmlFor={`${datalistId}-batches`} help={episodeMinutes
           ? "How many chunks to split the episode into. More batches keep each request small enough for the model's context window, but take longer overall."
           : "Maximum audio duration per LLM request, in minutes. Larger batches are faster but risk exceeding the model's context window."} />
         {episodeMinutes ? (
           <div className="flex items-center gap-2">
             <NumberInput
+              id={`${datalistId}-batches`}
               value={batchCount}
               onChange={setBatchCount}
               min={1}
@@ -207,13 +222,14 @@ export default function LLMControlsForm({
             />
             {minutesPerBatch !== null && (
               <span className="text-xs text-muted-foreground">
-                ≈ {minutesPerBatch} min each ({formatDuration(episode.duration)} total)
+                ≈ {minutesPerBatch} min each ({formatDuration(episode?.duration)} total)
               </span>
             )}
           </div>
         ) : (
           <div className="flex items-center gap-1.5">
             <NumberInput
+              id={`${datalistId}-batches`}
               value={config.batchMinutes}
               onChange={(n) => patch({ batchMinutes: n })}
               min={1}
@@ -223,18 +239,22 @@ export default function LLMControlsForm({
             <span className="text-xs text-muted-foreground">min per batch</span>
           </div>
         )}
+        </>}
       </FormGrid>
 
-      <div className="space-y-1.5">
-        <HelpLabel label="Context" help={contextHelp} />
-        <textarea
-          value={config.context}
-          onChange={(e) => patch({ context: e.target.value })}
-          placeholder="Describe the podcast, hosts, topics…"
-          rows={4}
-          className="input resize-y w-full"
-        />
-      </div>
+      {contextHelp !== undefined && (
+        <div className="space-y-1.5">
+          <HelpLabel label="Context" htmlFor={`${datalistId}-2`} help={contextHelp} />
+          <textarea
+              id={`${datalistId}-2`}
+            value={config.context}
+            onChange={(e) => patch({ context: e.target.value })}
+            placeholder="Describe the podcast, hosts, topics…"
+            rows={4}
+            className="input resize-y w-full"
+          />
+        </div>
+      )}
     </>
   );
 }

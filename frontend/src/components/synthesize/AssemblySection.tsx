@@ -1,3 +1,4 @@
+import { useId } from "react";
 import type { UseMutationResult } from "@tanstack/react-query";
 import { countLabel } from "@/lib/showCounts";
 import type { AssembleStrategy, PipelineConfig, SynthesisStatus } from "@/api/types";
@@ -41,6 +42,7 @@ export default function AssemblySection({
   missingGeneratedCount,
   assembleMutation,
 }: AssemblySectionProps) {
+  const fieldId = useId();
   return (
     <section className="space-y-3 border-t border-border/50 pt-3">
       <SectionHeader help="Stitch generated segments into the final episode audio.">
@@ -48,8 +50,8 @@ export default function AssemblySection({
       </SectionHeader>
 
       <FormGrid>
-        <HelpLabel label="Strategy" help="How to handle pauses between segments in the final audio." />
-        <select
+        <HelpLabel label="Strategy" htmlFor={`${fieldId}-0`} help="How to handle pauses between segments in the final audio." />
+        <select id={`${fieldId}-0`}
           value={assembleStrategy}
           onChange={(e) => setAssembleStrategy(e.target.value as AssembleStrategy)}
           className={selectClass}
@@ -65,8 +67,8 @@ export default function AssemblySection({
 
       <AdvancedToggle className="space-y-3">
         <FormGrid className="pl-3 border-l-2 border-border">
-          <HelpLabel label="Pause on turn change (s)" help="Pause inserted between segments when the speaker changes. Same-speaker pauses are auto-scaled to ~40% of this value (min 0.05s) so a turn feels continuous." />
-          <input
+          <HelpLabel label="Pause on turn change (s)" htmlFor={`${fieldId}-1`} help="Pause inserted between segments when the speaker changes. Same-speaker pauses are auto-scaled to ~40% of this value (min 0.05s) so a turn feels continuous." />
+          <input id={`${fieldId}-1`}
             type="number"
             value={silenceDuration}
             onChange={(e) => setSilenceDuration(Number(e.target.value))}

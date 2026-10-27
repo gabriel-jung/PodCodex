@@ -1,9 +1,14 @@
-import type { CorrectRequest, Segment, TaskResponse } from "./types";
+import type { CorrectManualPromptsRequest, CorrectApplyManualRequest, CorrectApplyBatchesRequest, CorrectRequest, Segment, TaskResponse } from "./types";
 import { createLLMPipelineApi } from "./versions";
 
 type AudioRef = string | null | undefined;
 
-const api = createLLMPipelineApi("correct");
+const api = createLLMPipelineApi<{
+  start: CorrectRequest;
+  manualPrompts: CorrectManualPromptsRequest;
+  applyManual: CorrectApplyManualRequest;
+  applyBatches: CorrectApplyBatchesRequest;
+}>("correct");
 
 export const getCorrectSegments = (audioPath: AudioRef, outputDir?: string) =>
   api.getSegments(audioPath, { output_dir: outputDir });
@@ -18,24 +23,10 @@ export const loadCorrectVersion = (audioPath: AudioRef, versionId: string, outpu
 export const deleteCorrectVersion = (audioPath: AudioRef, versionId: string, outputDir?: string) =>
   api.deleteVersion(audioPath, versionId, { output_dir: outputDir });
 
-export const startCorrect = (req: CorrectRequest) =>
-  api.start(req as unknown as Record<string, unknown>) as Promise<TaskResponse>;
+export const startCorrect = (req: CorrectRequest): Promise<TaskResponse> => api.start(req);
 
-export const getCorrectManualPrompts = (params: {
-  audio_path?: string;
-  output_dir?: string;
-  context?: string;
-  source_lang?: string;
-  batch_minutes?: number;
-  batch_count?: number;
-  source_version_id?: string;
-}) => api.getManualPrompts(params);
+export const getCorrectManualPrompts = (params: CorrectManualPromptsRequest) => api.getManualPrompts(params);
 
-export const applyCorrectManual = (params: { audio_path?: string; output_dir?: string; corrections: unknown[]; source_version_id?: string }) =>
-  api.applyManual(params);
+export const applyCorrectManual = (params: CorrectApplyManualRequest) => api.applyManual(params);
 
-export const applyCorrectBatches = (params: {
-  audio_path?: string;
-  output_dir?: string;
-  fixes: { batch: number; corrections: unknown[] }[];
-}) => api.applyBatches(params);
+export const applyCorrectBatches = (params: CorrectApplyBatchesRequest) => api.applyBatches(params);
