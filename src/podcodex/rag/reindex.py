@@ -1,14 +1,21 @@
 """podcodex-reindex — rebuild a show's LanceDB index from its transcripts.
 
-LanceDB tables are treated as derived state: they can be wiped and rebuilt
-from the per-episode transcripts + versions on disk with no data loss.
-This command is the recovery path after index corruption, schema changes,
-or when re-embedding with a different model.
+LanceDB tables are treated as derived state: they can be rebuilt from the
+per-episode transcripts + versions on disk with no data loss. This command is
+the recovery path after index corruption, schema changes, or when
+re-embedding with a different model.
+
+The rebuild is in place: each episode is re-embedded over its old rows, and
+episodes the scan no longer produces are removed at the end, so a run that is
+killed or fails part way leaves the rest of the index searchable and a rerun
+picks up from there. ``--fresh`` drops the collections first instead, for an
+index whose tables themselves are broken.
 
 Usage::
 
     podcodex-reindex <show-folder> [--model bge-m3] [--chunker semantic]
     podcodex-reindex <show-folder> --all-models        # every model+chunker
+    podcodex-reindex <show-folder> --fresh             # drop, then rebuild
     podcodex-reindex <show-folder> --list              # show current collections
     podcodex-reindex <show-folder> --dry-run
 """
@@ -38,56 +45,75 @@ def _reindex_show(
     model_keys: list[str],
     chunkers: list[str],
     dry_run: bool,
+    fresh: bool = False,
 ) -> bool:
-    """Drop then rebuild every (model × chunker) collection for a show.
+    """Rebuild every (model × chunker) collection for a show, in place.
+
+    Every episode with a transcript is re-embedded with ``overwrite``, which
+    replaces that episode's rows in one write. Rows of episodes the scan did
+    not re-index are removed afterwards, and only when no episode failed, so
+    a failure never costs more than what it failed to rebuild. ``fresh``
+    drops the collections up front instead (the old behaviour).
 
     Returns:
-        True when every episode with a transcript was re-indexed. The
-        collections are dropped first, so a False here can mean an index
-        left emptier than before the run.
+        True when every episode with a transcript was re-indexed.
     """
-    from podcodex.core.source import build_index_transcript
-    from podcodex.rag.indexing import IndexingError, vectorize_batch
-
-    store = get_index_store()
-
-    # 1. Drop every target collection so stale rows can't linger.
+    from podcodex.core.device import device_str
+    from podcodex.core.source import NoTranscriptError, build_index_transcript
     from podcodex.ingest.show_registry import show_id_for_folder
+    from podcodex.rag.indexing import IndexingError, vectorize_batch
 
     # From the folder being reindexed, never by display name: with two shows
     # of one name, the name picked the oldest one, whose tables were dropped
     # and then rebuilt from this folder's episodes. Minted when writing, so
     # the rebuilt collections carry the id.
     sid = show_id_for_folder(folder, mint=not dry_run)
-    for model in model_keys:
-        for chunker in chunkers:
-            # Strict: a show with no id owns only id-less rows. Loose, this
-            # matched a same-named show that has an id, and dropped its table.
-            col = store.resolve_collection(
-                sid, model, chunker, show_label=show_name, strict=True
+    if dry_run and not _index_exists():
+        # Opening a store creates the index and stamps this machine as its
+        # owner; a dry run must not, so there is nothing to drop or prune.
+        logger.info("[dry-run] no index yet: every episode would be indexed fresh")
+        store, targets = None, []
+    else:
+        store = get_index_store()
+        # Strict: a show with no id owns only id-less rows. Loose, this
+        # matched a same-named show that has an id, and dropped or pruned
+        # its table.
+        targets = [
+            col
+            for model in model_keys
+            for chunker in chunkers
+            if (
+                col := store.resolve_collection(
+                    sid, model, chunker, show_label=show_name, strict=True
+                )
             )
-            if not col:
-                continue
+        ]
+    if fresh:
+        for col in targets:
             if dry_run:
                 logger.info(f"[dry-run] would drop collection: {col}")
-            else:
-                try:
-                    store.delete_collection(col)
-                    logger.info(f"Dropped {col}")
-                except Exception as exc:
-                    # Refused on a replica, or already gone. Either way the
-                    # rebuild below writes over whatever is still there.
-                    logger.warning(f"Could not drop {col}: {exc}")
+                continue
+            try:
+                store.delete_collection(col)
+                logger.info(f"Dropped {col}")
+            except Exception as exc:
+                # Refused on a replica, or already gone. Either way the
+                # rebuild below writes over whatever is still there.
+                logger.warning(f"Could not drop {col}: {exc}")
 
-    # 2. Re-vectorize every episode with a transcript. Audio-less episodes
-    #    (YouTube subtitle imports, flat extraction) index through output_dir
-    #    exactly as the app does; skipping them emptied a subtitle-driven show
-    #    on every rebuild while still reporting success.
+    # Re-vectorize every episode with a transcript. Audio-less episodes
+    # (YouTube subtitle imports, flat extraction) index through output_dir
+    # exactly as the app does; skipping them emptied a subtitle-driven show
+    # on every rebuild while still reporting success.
     episodes = scan_folder(folder)
     if not episodes:
-        logger.warning(f"No episodes found in {folder}")
+        # Nothing is pruned: a folder that resolves to nothing is far more
+        # likely a wrong path than a show whose every episode was deleted.
+        logger.warning(f"No episodes found in {folder}; index left as it was")
         return True
 
+    device = "cpu" if dry_run else device_str()
+    indexed: set[str] = set()
     reindexed = 0
     skipped = 0
     failed = 0
@@ -100,9 +126,17 @@ def _reindex_show(
                 ep.stem,
                 output_dir=None if audio else str(ep.output_dir),
             )
-        except Exception as exc:
-            logger.warning(f"[skip] {ep.stem}: {exc}")
+        except NoTranscriptError:
+            # Never transcribed: nothing to index, and its old rows (if any)
+            # are stale, so the prune below removes them.
+            logger.warning(f"[skip] {ep.stem}: no transcript")
             skipped += 1
+            continue
+        except Exception as exc:
+            # Unreadable, not absent: a failure, which keeps the episode's
+            # current rows (no prune) and fails the run.
+            logger.error(f"[failed] {ep.stem}: could not read its transcript: {exc}")
+            failed += 1
             continue
 
         if dry_run:
@@ -111,6 +145,7 @@ def _reindex_show(
                 f"(chunks={len(transcript.get('segments') or [])} segments)"
             )
             reindexed += 1
+            indexed.add(ep.stem)
             continue
 
         try:
@@ -123,6 +158,7 @@ def _reindex_show(
                 store,
                 show_id=sid,
                 overwrite=True,
+                device=device,
             )
         except IndexingError as exc:
             logger.error(f"[failed] {ep.stem}: {exc}")
@@ -134,8 +170,22 @@ def _reindex_show(
             continue
         logger.success(f"{ep.stem}: +{n} chunks")
         reindexed += 1
+        indexed.add(ep.stem)
 
-    if not dry_run:
+    # Rows the scan did not rebuild: deleted episodes, and episodes whose
+    # transcript is gone or now yields nothing. Kept after any failure, so
+    # the run stays resumable and never ends emptier than its failures.
+    if not fresh and not failed:
+        for col in targets:
+            stale = [e for e in store.list_episodes(col) if e not in indexed]
+            for stem in stale:
+                if dry_run:
+                    logger.info(f"[dry-run] would remove {stem} from {col}")
+                else:
+                    store.delete_episode(col, stem)
+                    logger.info(f"Removed {stem} from {col}")
+
+    if store is not None and not dry_run:
         # A full rebuild is the biggest producer of superseded Lance
         # fragments; reclaim them before the index is shipped anywhere.
         store.compact()
@@ -146,6 +196,13 @@ def _reindex_show(
         return False
     logger.info(f"Done: {summary}")
     return True
+
+
+def _index_exists() -> bool:
+    from podcodex.rag.index_store import _dir_has_data, _resolve_default_index_path
+
+    path, _reason = _resolve_default_index_path()
+    return _dir_has_data(Path(path))
 
 
 def _list_collections(folder: Path, show_name: str) -> None:
@@ -199,6 +256,12 @@ def main() -> None:
         help="Rebuild every model × chunker combination present in MODELS.",
     )
     ap.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Drop the collections before rebuilding (for broken tables). "
+        "A killed or failed --fresh run leaves the show partly indexed.",
+    )
+    ap.add_argument(
         "--list",
         action="store_true",
         help="Show current collections for this show and exit.",
@@ -206,7 +269,7 @@ def main() -> None:
     ap.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print what would happen without touching LanceDB.",
+        help="Print what would happen without writing to LanceDB.",
     )
     args = ap.parse_args()
 
@@ -234,7 +297,9 @@ def main() -> None:
         f"models={model_keys}, chunkers={chunkers}"
         + (" [dry-run]" if args.dry_run else "")
     )
-    if not _reindex_show(folder, name, model_keys, chunkers, dry_run=args.dry_run):
+    if not _reindex_show(
+        folder, name, model_keys, chunkers, dry_run=args.dry_run, fresh=args.fresh
+    ):
         sys.exit(1)
 
 

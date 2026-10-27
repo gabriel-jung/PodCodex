@@ -295,7 +295,7 @@ def search_query(req: SearchRequest) -> list[dict]:
         raise HTTPException(400, str(e))
     except Exception as exc:
         # Surfaced, not turned into [], so an index fault never reads as a
-        # query that matched nothing (exact and random already surface it).
+        # query that matched nothing (exact and random do the same).
         logger.opt(exception=True).warning("Search failed for show {}", req.show_id)
         raise HTTPException(503, f"Search failed: {exc}") from exc
 
@@ -373,6 +373,11 @@ def exact_search(req: ExactRequest) -> list[dict]:
             )
     except ValueError as e:
         raise HTTPException(400, str(e))
+    except Exception as exc:
+        logger.opt(exception=True).warning(
+            "Exact search failed for show {}", req.show_id
+        )
+        raise HTTPException(503, f"Search failed: {exc}") from exc
     audio_lookup = _audio_lookup(folder)
     return [_result_to_dict(h, audio_lookup) for h, _col in hits]
 
@@ -413,6 +418,11 @@ def random_quote(req: RandomRequest) -> dict | None:
             )
     except ValueError as e:
         raise HTTPException(400, str(e))
+    except Exception as exc:
+        logger.opt(exception=True).warning(
+            "Random quote failed for show {}", req.show_id
+        )
+        raise HTTPException(503, f"Search failed: {exc}") from exc
     if picked is None:
         return None
     chunk, _col = picked

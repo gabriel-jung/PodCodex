@@ -242,20 +242,6 @@ def test_adoption_does_not_steal_another_shows_collection(env):
 
 
 @pytest.mark.legacy("show-id")
-def test_relabel_adopts_rows_that_never_had_an_id(env):
-    """Rows carrying neither the new label nor an id must still be found."""
-    store, folder = env
-    sid = show_id(folder)
-    store.set_collection_identity(
-        "my_show__bge-m3__semantic", show_id="", show="My Show"
-    )
-
-    assert store.set_show_label(sid, "Renamed", previous_label="My Show") == 1
-
-    assert store.resolve_collection(sid, "bge-m3", "semantic") is not None
-
-
-@pytest.mark.legacy("show-id")
 def test_password_set_before_indexing_is_rekeyed(env):
     """A show can be protected before it is ever indexed; that row still has
     to be migrated, or the app reports it public while the bot locks it."""
@@ -271,3 +257,21 @@ def test_password_set_before_indexing_is_rekeyed(env):
     assert sid in entries
     assert entries[sid]["password_hash"] == "sha256:deadbeef"
     assert "My Show" not in entries
+
+
+@pytest.mark.parametrize("app", [True, False], ids=["app", "bot"])
+def test_get_index_store_migrates_only_in_the_app(isolated_index, monkeypatch, app):
+    """The migration runs off the first store open, and only where the API
+    registered a folder resolver: the bot has no show.toml and would mint ids
+    that diverge from the app's."""
+    import podcodex.rag.index_store as index_store
+    import podcodex.rag.show_id_migration as migration
+
+    calls: list[IndexStore] = []
+    monkeypatch.setattr(
+        migration, "migrate_index_to_show_ids", lambda s: calls.append(s) or 0
+    )
+    with show_folder_resolver((lambda _name: None) if app else None):
+        index_store.get_index_store.cache_clear()
+        store = index_store.get_index_store()
+    assert calls == ([store] if app else [])

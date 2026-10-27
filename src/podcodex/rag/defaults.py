@@ -27,6 +27,12 @@ class ModelSpec:
         description: Human-readable summary, also used in Discord command choices.
         hf_query_model: Separate query model if different from ``hf_model``
             (used by Perplexity only; empty string otherwise).
+        revision, query_revision: Commit sha of ``hf_model`` and
+            ``hf_query_model``. Set for every model loaded with
+            ``trust_remote_code``: that code runs in the app and on a bot
+            host, so it is pinned to a known commit instead of whatever
+            the repo holds at download time. Bump deliberately, and
+            re-embed the collections that model built.
     """
 
     label: str
@@ -34,6 +40,8 @@ class ModelSpec:
     dim: int
     description: str
     hf_query_model: str = ""
+    revision: str | None = None
+    query_revision: str | None = None
 
 
 MODELS: dict[str, ModelSpec] = {
@@ -61,6 +69,9 @@ MODELS: dict[str, ModelSpec] = {
         dim=1024,
         description="Context-aware, slow on CPU",
         hf_query_model="perplexity-ai/pplx-embed-v1-0.6B",
+        # main on 2026-06-16 and 2026-06-02 (pinned 2026-10-27).
+        revision="b42df969d4d78d1840769e45c68c4e4ce763768b",
+        query_revision="2c4d510dd4a732063c31a0f70193e35067b51fd8",
     ),
     "pplx-4B": ModelSpec(
         label="Perplexity 4B",
@@ -68,6 +79,9 @@ MODELS: dict[str, ModelSpec] = {
         dim=2560,
         description="Context-aware, GPU strongly recommended",
         hf_query_model="perplexity-ai/pplx-embed-v1-4B",
+        # main on 2026-06-16 and 2026-06-02 (pinned 2026-10-27).
+        revision="679845b2236c653177fff8fa3ffc1b22f3090d30",
+        query_revision="06456497a00540a582918fe8dcd3a5eabb207772",
     ),
 }
 
@@ -86,7 +100,7 @@ CHUNKING_STRATEGIES: dict[str, str] = {
 DEFAULT_CHUNKING = "semantic"
 
 # Chonkie's internal splitting model — not exposed to users
-CHUNKER_MODEL = MODELS["e5-small"].hf_model
+CHUNKER_MODEL_KEY = "e5-small"
 
 
 # ──────────────────────────────────────────────

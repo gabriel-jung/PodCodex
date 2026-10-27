@@ -736,19 +736,7 @@ async def _collections_allowed(
         return True
     if not collections:
         return False
-
-    from podcodex.rag.index_store import IndexStore
-
-    settings = client._server_settings(guild_id)
-    loop = asyncio.get_running_loop()
-    col_info = await loop.run_in_executor(None, client.local.get_all_collection_info)
-    for name in collections:
-        meta = col_info.get(name)
-        if meta is None or not client._show_allowed(
-            IndexStore.show_key(meta), settings
-        ):
-            return False
-    return True
+    return await _names_allowed(client, guild_id, list(collections))
 
 
 async def _refs_allowed(
@@ -764,19 +752,29 @@ async def _refs_allowed(
     """
     if not client._locked_show_ids:
         return True
+    return await _names_allowed(client, guild_id, [r.collection for r in refs])
 
-    from podcodex.rag.index_store import IndexStore
 
+async def _names_allowed(
+    client: PodCodexBot, guild_id: int | None, names: list[str]
+) -> bool:
+    """Every named collection passes the bot's one access rule (``_row_allowed``).
+
+    Off the event loop: the rule may look a label up in the index.
+    """
     settings = client._server_settings(guild_id)
-    loop = asyncio.get_running_loop()
-    col_info = await loop.run_in_executor(None, client.local.get_all_collection_info)
-    for ref in refs:
-        meta = col_info.get(ref.collection)
-        if meta is None or not client._show_allowed(
-            IndexStore.show_key(meta), settings
-        ):
-            return False
-    return True
+
+    def _check() -> bool:
+        info = client.local.get_all_collection_info()
+        for name in names:
+            meta = info.get(name)
+            if meta is None or not client._row_allowed(
+                meta.get("show_id") or "", meta.get("show") or name, settings
+            ):
+                return False
+        return True
+
+    return await asyncio.get_running_loop().run_in_executor(None, _check)
 
 
 async def build_results_view(

@@ -1,11 +1,11 @@
-"""`podcodex-reindex`: a user-facing CLI whose first act is destructive.
+"""`podcodex-reindex`: a user-facing CLI that rewrites a show's index.
 
-`_reindex_show` drops the show's collections and only then scans for
-episodes, so a folder that resolves wrong or holds nothing logs its warning
-after the data is already gone. Dropping is what the user asked for (the
-tables are derived state), but the dry run must not touch anything, and the
-audio-less episodes a subtitle-driven show is made of must be rebuilt rather
-than skipped, since skipping them empties such a show on every rebuild.
+The rebuild is in place: episodes are re-embedded over their old rows and
+only rows the scan did not rebuild are removed, after a run with no failure,
+so a kill or a failed episode never leaves the show emptier than its
+failures. The dry run must not touch anything, a same-named show's table is
+never touched, and the audio-less episodes a subtitle-driven show is made of
+must be rebuilt rather than skipped.
 """
 
 from __future__ import annotations
@@ -40,9 +40,6 @@ def store(isolated_index):
 @pytest.fixture
 def wiring(monkeypatch):
     """Resolve the show id, and record what gets vectorized."""
-    monkeypatch.setattr(
-        reindex_mod, "show_id_for_label", lambda _n: "show_1111aaaa", raising=False
-    )
     import podcodex.ingest.show_registry as registry
 
     monkeypatch.setattr(registry, "show_id_for_label", lambda _n: "show_1111aaaa")
@@ -95,17 +92,104 @@ def test_dry_run_drops_nothing(store, wiring, monkeypatch, tmp_path):
     assert wiring == []  # nothing was written
 
 
-def test_an_empty_folder_still_drops_the_collection(
+def test_an_empty_folder_leaves_the_index_as_it_was(
     store, wiring, monkeypatch, tmp_path
 ):
-    """The documented behaviour, pinned so the ordering is a decision rather
-    than an accident: the drop happens before the scan, so a folder that
-    resolves to nothing leaves the show unindexed."""
+    """A folder that resolves to nothing is likelier a wrong path than a show
+    whose every episode was deleted: nothing is pruned."""
     _seed_scan(monkeypatch, [])
 
     reindex_mod._reindex_show(tmp_path, "Show", ["bge-m3"], ["semantic"], dry_run=False)
 
+    assert store.list_episodes(COLLECTION) == ["old-ep"]
+
+
+def test_episodes_the_scan_did_not_rebuild_are_pruned(
+    store, wiring, monkeypatch, tmp_path
+):
+    _seed_scan(monkeypatch, [_Episode("ep1", tmp_path / "ep1")])
+    _seed_transcript(monkeypatch, [])
+
+    ok = reindex_mod._reindex_show(
+        tmp_path, "Show", ["bge-m3"], ["semantic"], dry_run=False
+    )
+
+    assert ok is True
+    assert "old-ep" not in store.list_episodes(COLLECTION)
+
+
+def test_a_failed_run_prunes_nothing(store, monkeypatch, tmp_path):
+    """Resumable: what was indexed before the failure stays searchable."""
+    import podcodex.ingest.show_registry as registry
+    import podcodex.rag.indexing as indexing
+
+    monkeypatch.setattr(
+        registry, "show_id_for_folder", lambda *_a, **_k: "show_1111aaaa"
+    )
+
+    def _fail(*_a, **_kw):
+        raise indexing.IndexingError("embedder failed to load")
+
+    monkeypatch.setattr(indexing, "vectorize_batch", _fail)
+    _seed_scan(monkeypatch, [_Episode("ep1", tmp_path / "ep1")])
+    _seed_transcript(monkeypatch, [])
+
+    reindex_mod._reindex_show(tmp_path, "Show", ["bge-m3"], ["semantic"], dry_run=False)
+
+    assert store.list_episodes(COLLECTION) == ["old-ep"]
+
+
+def test_fresh_drops_the_collection_first(store, wiring, monkeypatch, tmp_path):
+    _seed_scan(monkeypatch, [])
+
+    reindex_mod._reindex_show(
+        tmp_path, "Show", ["bge-m3"], ["semantic"], dry_run=False, fresh=True
+    )
+
     assert COLLECTION not in store.list_collections()
+
+
+def test_a_same_named_show_is_never_touched(store, monkeypatch, tmp_path):
+    """An id-less folder owns only id-less rows. Resolved loosely, the other
+    "Show" (which has an id) was dropped or pruned in its place."""
+    import podcodex.ingest.show_registry as registry
+
+    monkeypatch.setattr(registry, "show_id_for_folder", lambda *_a, **_k: "")
+    _seed_scan(monkeypatch, [_Episode("ep1", tmp_path / "ep1")])
+    _seed_transcript(monkeypatch, [])
+    import podcodex.rag.indexing as indexing
+
+    monkeypatch.setattr(indexing, "vectorize_batch", lambda *_a, **_kw: 1)
+
+    reindex_mod._reindex_show(
+        tmp_path, "Show", ["bge-m3"], ["semantic"], dry_run=False, fresh=True
+    )
+    reindex_mod._reindex_show(tmp_path, "Show", ["bge-m3"], ["semantic"], dry_run=False)
+
+    assert store.list_episodes(COLLECTION) == ["old-ep"]
+
+
+def test_the_rebuild_embeds_on_the_resolved_device(store, monkeypatch, tmp_path):
+    import podcodex.core.device as device
+    import podcodex.ingest.show_registry as registry
+    import podcodex.rag.indexing as indexing
+
+    monkeypatch.setattr(
+        registry, "show_id_for_folder", lambda *_a, **_k: "show_1111aaaa"
+    )
+    monkeypatch.setattr(device, "device_str", lambda: "cuda")
+    devices: list[str] = []
+    monkeypatch.setattr(
+        indexing,
+        "vectorize_batch",
+        lambda *_a, device="cpu", **_kw: devices.append(device) or 1,
+    )
+    _seed_scan(monkeypatch, [_Episode("ep1", tmp_path / "ep1")])
+    _seed_transcript(monkeypatch, [])
+
+    reindex_mod._reindex_show(tmp_path, "Show", ["bge-m3"], ["semantic"], dry_run=False)
+
+    assert devices == ["cuda"]
 
 
 def test_an_audio_less_episode_is_indexed_through_its_output_dir(
@@ -144,28 +228,54 @@ def test_an_episode_with_audio_is_indexed_through_its_audio_path(
     assert calls[0]["output_dir"] is None
 
 
-def test_an_unreadable_episode_is_skipped_not_fatal(
-    store, wiring, monkeypatch, tmp_path
-):
+def _seed_builder(monkeypatch, failures: dict):
+    """build_index_transcript raising ``failures[stem]`` for listed stems."""
     import podcodex.core.source as helpers
 
     def _build(audio_path, _show, stem, output_dir=None):
-        if stem == "bad":
-            raise ValueError("no transcript")
+        if stem in failures:
+            raise failures[stem]
         return {"segments": [{"text": "hi", "start": 0.0, "end": 1.0, "speaker": "sp"}]}
 
     monkeypatch.setattr(helpers, "build_index_transcript", _build)
+
+
+def test_an_untranscribed_episode_is_skipped_and_its_rows_pruned(
+    store, wiring, monkeypatch, tmp_path
+):
+    from podcodex.core.source import NoTranscriptError
+
+    _seed_builder(monkeypatch, {"old-ep": NoTranscriptError("no transcript")})
     _seed_scan(
         monkeypatch,
-        [
-            _Episode("bad", tmp_path / "bad"),
-            _Episode("good", tmp_path / "good"),
-        ],
+        [_Episode("old-ep", tmp_path / "old-ep"), _Episode("good", tmp_path / "good")],
     )
 
-    reindex_mod._reindex_show(tmp_path, "Show", ["bge-m3"], ["semantic"], dry_run=False)
+    ok = reindex_mod._reindex_show(
+        tmp_path, "Show", ["bge-m3"], ["semantic"], dry_run=False
+    )
 
-    assert len(wiring) == 1
+    assert ok is True and len(wiring) == 1
+    assert "old-ep" not in store.list_episodes(COLLECTION)
+
+
+def test_an_unreadable_transcript_fails_the_run_and_keeps_its_rows(
+    store, wiring, monkeypatch, tmp_path
+):
+    """Unreadable is not absent: pruning would delete good chunks while the
+    run reported success."""
+    _seed_builder(monkeypatch, {"old-ep": OSError("corrupt version file")})
+    _seed_scan(
+        monkeypatch,
+        [_Episode("old-ep", tmp_path / "old-ep"), _Episode("good", tmp_path / "good")],
+    )
+
+    ok = reindex_mod._reindex_show(
+        tmp_path, "Show", ["bge-m3"], ["semantic"], dry_run=False
+    )
+
+    assert ok is False and len(wiring) == 1
+    assert "old-ep" in store.list_episodes(COLLECTION)
 
 
 def test_cli_rejects_an_unknown_model_and_chunker():
@@ -203,7 +313,7 @@ def test_dry_run_reports_without_writing(store, wiring, monkeypatch, tmp_path, c
 
 
 def test_a_failed_episode_fails_the_run(store, monkeypatch, tmp_path):
-    """The collections are already dropped; reporting "Done" hid an empty index."""
+    """Reporting "Done" would hide an episode missing from the index."""
     import podcodex.ingest.show_registry as registry
     import podcodex.rag.indexing as indexing
 
@@ -225,3 +335,19 @@ def test_a_failed_episode_fails_the_run(store, monkeypatch, tmp_path):
     )
 
     assert ok is False
+
+
+def test_a_dry_run_never_creates_an_index(
+    isolated_index, wiring, monkeypatch, tmp_path
+):
+    """Opening a store creates the index and stamps this machine as its
+    owner; on a machine with no index yet, a dry run must leave none behind."""
+    _seed_scan(monkeypatch, [_Episode("ep1", tmp_path / "ep1")])
+    _seed_transcript(monkeypatch, [])
+
+    ok = reindex_mod._reindex_show(
+        tmp_path, "Show", ["bge-m3"], ["semantic"], dry_run=True
+    )
+
+    assert ok is True
+    assert not isolated_index.exists() or not any(isolated_index.iterdir())

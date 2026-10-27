@@ -84,7 +84,7 @@ Both trailing flags matter on a typical GPU-less VPS:
 - `--extra cpu` pulls the CPU-only PyTorch wheel. Without it, torch resolves from PyPI, which on Linux means the CUDA build plus ~6 GB of `nvidia-*` and `triton` packages the host can never use.
 - `--no-dev` skips the dev dependency group (Jupyter, pre-commit, pytest), which `uv sync` installs by default.
 
-If the VPS does have an NVIDIA GPU and you want the embedder on it, swap `--extra cpu` for `--extra gpu` (or `--extra gpu-pascal` on GTX 10xx / P40 / P100, see [PASCAL.md](PASCAL.md)). The extras are mutually exclusive.
+The bot encodes search queries on CPU whatever the host has: one query takes milliseconds, so a GPU buys it nothing. Keep `--extra cpu` even on a GPU host, unless the same environment also runs indexing, which does use the GPU (`--extra gpu`, or `--extra gpu-pascal` on GTX 10xx / P40 / P100, see [PASCAL.md](PASCAL.md)). The extras are mutually exclusive.
 
 Already synced without these flags? Re-run the command above with `--reinstall` to drop the CUDA stack.
 

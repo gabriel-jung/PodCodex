@@ -12,8 +12,8 @@ writer, and the replica is read-only for that record.
 in the index and that two machines can meaningfully disagree about: show
 passwords, collection identity and labels, and collection deletion. Derived
 data is exempt on purpose, because the bot legitimately repairs its own
-replica: the pub_date and episode_title backfills, and the collection-meta
-heal, all write during ordinary reads, and every one of them is regenerable
+replica: the empty pub_date column given to old tables and the
+collection-meta heal both write during ordinary reads, and every one of them is regenerable
 and overwritten wholesale by the next sync. Guarding those would turn a read
 into a failure to protect data nobody can lose.
 

@@ -37,37 +37,75 @@ class PplxEmbedder:
     episode are passed together so each embedding is influenced by its neighbors.
     Query encoding uses the separate pplx-embed-v1 query model.
 
-    Dense vectors (dim from MODELS registry). Unnormalized — the retriever
-    normalizes at cache-build time for cosine similarity.
+    Dense vectors (dim from MODELS registry), unnormalized: the vector search
+    uses the cosine metric, which ignores magnitude.
+
+    Both models load on first use: a search only encodes queries and an
+    index job only encodes passages, and holding both doubled the memory of
+    either (4B each for pplx-4B).
     """
 
     def __init__(self, model_key: str = "pplx-0.6B", device: str = "cpu"):
-        """Initialize the Perplexity embedder, loading both context and query models.
+        """Initialize the Perplexity embedder; nothing is loaded yet.
 
         Args:
             model_key: Registry key (``"pplx-0.6B"`` or ``"pplx-4B"``).
             device: Torch device string (e.g. ``"cpu"``, ``"cuda"``, ``"mps"``).
         """
-        from transformers import AutoModel
-        from sentence_transformers import SentenceTransformer
-
-        spec = MODELS[model_key]
-        from podcodex.core._hf_logging import timed_load
         from podcodex.core.cache import get_hf_cache_dir
 
-        cache_dir = str(get_hf_cache_dir())
-        with timed_load(f"PplxEmbedder ctx {spec.hf_model} on {device}"):
-            self._ctx_model = AutoModel.from_pretrained(
-                spec.hf_model, trust_remote_code=True, cache_dir=cache_dir
-            ).to(device)
-        with timed_load(f"PplxEmbedder query {spec.hf_query_model} on {device}"):
-            self._query_model = SentenceTransformer(
-                spec.hf_query_model,
-                trust_remote_code=True,
-                device=device,
-                cache_folder=cache_dir,
-            )
-        self._dim = spec.dim
+        self._spec = MODELS[model_key]
+        self._device = device
+        self._cache_dir = str(get_hf_cache_dir())
+        self._loaded: dict[str, object] = {}
+        self._load_lock = threading.Lock()
+        self._dim = self._spec.dim
+
+    def _load(self, which: str):
+        """Load the ``"ctx"`` (passage) or ``"query"`` model once."""
+        model = self._loaded.get(which)
+        if model is not None:
+            return model
+        with self._load_lock:
+            model = self._loaded.get(which)
+            if model is not None:
+                return model
+            from podcodex.core._hf_logging import timed_load
+
+            spec = self._spec
+            if which == "ctx":
+                from transformers import AutoModel
+
+                with timed_load(f"PplxEmbedder ctx {spec.hf_model} on {self._device}"):
+                    model = AutoModel.from_pretrained(
+                        spec.hf_model,
+                        revision=spec.revision,
+                        trust_remote_code=True,
+                        cache_dir=self._cache_dir,
+                    ).to(self._device)
+            else:
+                from sentence_transformers import SentenceTransformer
+
+                with timed_load(
+                    f"PplxEmbedder query {spec.hf_query_model} on {self._device}"
+                ):
+                    model = SentenceTransformer(
+                        spec.hf_query_model,
+                        revision=spec.query_revision,
+                        trust_remote_code=True,
+                        device=self._device,
+                        cache_folder=self._cache_dir,
+                    )
+            self._loaded[which] = model
+            return model
+
+    @property
+    def _ctx_model(self):
+        return self._load("ctx")
+
+    @property
+    def _query_model(self):
+        return self._load("query")
 
     def encode_passages(self, chunks: list[dict]) -> np.ndarray:
         """
@@ -210,15 +248,19 @@ class BGEEmbedder:
     )
 
     def __init__(
-        self, device: str = "cpu", use_fp16: bool = True, batch_size: int = 32
+        self, device: str = "cpu", use_fp16: bool | None = None, batch_size: int = 32
     ):
         """Initialize the BGE-M3 embedder.
 
         Args:
             device: Torch device string.
-            use_fp16: Whether to use half-precision for faster inference.
+            use_fp16: Half precision. Default: on a CUDA device whose
+                ``core.device.torch_dtype`` is not float32, so Pascal (where
+                FP16 matmul is unusably slow) and CPU run in full precision.
             batch_size: Encoding batch size.
         """
+        if use_fp16 is None:
+            use_fp16 = _half_precision(device)
         from FlagEmbedding import BGEM3FlagModel
         from podcodex.core._hf_logging import timed_load
         from podcodex.core.cache import get_hf_hub_dir
@@ -269,12 +311,24 @@ class BGEEmbedder:
         return np.array(output["dense_vecs"][0], dtype=np.float32)
 
 
+def _half_precision(device: str) -> bool:
+    """Whether a model on *device* should run in half precision."""
+    if not (device or "").startswith("cuda"):
+        return False
+    import torch
+
+    from podcodex.core.device import torch_dtype
+
+    return torch_dtype() != torch.float32
+
+
 # ──────────────────────────────────────────────
 # Factory
 # ──────────────────────────────────────────────
 
 
-_embedder_cache: dict[str, BGEEmbedder | E5Embedder | PplxEmbedder] = {}
+# Embedders, plus the chunker's sentence model (get_chunker_embeddings).
+_embedder_cache: dict[str, object] = {}
 _embedder_lock = threading.Lock()
 
 
@@ -284,6 +338,31 @@ def clear_embedder_cache() -> None:
         if _embedder_cache:
             logger.info("Clearing embedder cache ({} model(s))", len(_embedder_cache))
         _embedder_cache.clear()
+
+
+def get_chunker_embeddings(device: str):
+    """The semantic chunker's sentence model, wrapped for chonkie.
+
+    The chunker's model is E5 Small (``defaults.CHUNKER_MODEL_KEY``), the same
+    weights as that embedder, so it reuses the cached embedder's model: one
+    copy in memory when E5 Small also indexes, freed by
+    ``clear_embedder_cache`` like every other model.
+    """
+    from chonkie import SentenceTransformerEmbeddings
+
+    from podcodex.rag.defaults import CHUNKER_MODEL_KEY
+
+    key = f"chunker|{device}"
+    cached = _embedder_cache.get(key)
+    if cached is not None:
+        return cached
+    e5 = get_embedder(CHUNKER_MODEL_KEY, device=device)  # takes the lock itself
+    with _embedder_lock:
+        cached = _embedder_cache.get(key)
+        if cached is None:
+            cached = SentenceTransformerEmbeddings(e5._model)
+            _embedder_cache[key] = cached
+        return cached
 
 
 def get_embedder(

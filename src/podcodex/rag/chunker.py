@@ -19,7 +19,6 @@ from loguru import logger
 
 from podcodex.ingest.rss import clean_description
 from podcodex.core._utils import normalize_pub_date
-from podcodex.rag.defaults import CHUNKER_MODEL
 
 
 # ──────────────────────────────────────────────
@@ -318,6 +317,22 @@ def speaker_chunks(transcript: dict, min_chars: int = 30) -> list[dict]:
 # ──────────────────────────────────────────────
 
 
+def _chunker_embeddings():
+    """The semantic chunker's sentence model, from the embedder cache.
+
+    Built there rather than from a model name: a name lets
+    sentence-transformers pick CUDA or MPS on its own, past
+    ``PODCODEX_DEVICE`` and the kernel guard's demotion to CPU, and download
+    into its own cache, where the model list cannot see it. Living in the
+    embedder cache, it is loaded once per process and freed by
+    ``clear_embedder_cache`` like every other model.
+    """
+    from podcodex.core.device import device_str
+    from podcodex.rag.embedder import get_chunker_embeddings
+
+    return get_chunker_embeddings(device_str())
+
+
 def semantic_chunks(
     transcript: dict,
     chunk_size: int = 256,
@@ -377,7 +392,7 @@ def semantic_chunks(
         padded_text, inserts = full_text, []
 
     chunker = SemanticChunker(
-        embedding_model=CHUNKER_MODEL,
+        embedding_model=_chunker_embeddings(),
         chunk_size=chunk_size,
         threshold=threshold,
         skip_window=1,

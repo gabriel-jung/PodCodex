@@ -366,9 +366,6 @@ def _register_show_folder_resolver() -> None:
     This is also the "am I the app, not the bot" signal, since the bot reads
     an rsynced index with no show folders and never registers one. It gates:
 
-    - the ``episode_title`` backfill (``_ensure_episode_title_backfill``),
-      which locates each episode's ``.episode_meta.json`` to heal chunks
-      whose RSS title never made it into the transcript meta;
     - the collection-metadata heal (``_heal_collection_meta``), which
       reconciles each collection's label and artwork against ``show.toml``;
     - the one-time show-id migration (``migrate_to_show_ids_if_owner``),

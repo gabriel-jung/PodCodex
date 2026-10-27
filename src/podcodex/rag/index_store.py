@@ -17,7 +17,10 @@ import json
 import os
 import re
 import threading
+import time
 import unicodedata
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from functools import cache
@@ -156,6 +159,12 @@ _MIN_PROBE_LEN = 3
 # drops neighbours once a common word has more than 50 terms within reach,
 # so a typo query missed most chunks holding a word one edit away.
 _FTS_MAX_EXPANSIONS = 1000
+# Per-collection marker files next to the tables (``<collection>.<suffix>``):
+# the FTS rebuild and its folded predecessor, plus the markers of the removed
+# pub_date and episode_title backfills, which old indexes still carry.
+_SENTINEL_SUFFIXES = ("fts_v2", "fts_folded_v1", "pub_date_col_v1", "episode_title_v1")
+# Seconds before an FTS index build that failed is attempted again.
+_FTS_RETRY_S = 300.0
 
 
 def _levenshtein(a: str, b: str, max_dist: int = 999) -> int:
@@ -492,9 +501,10 @@ class IndexStore:
             via :func:`_resolve_default_index_path`.
     """
 
-    # Global resolver (set by the API/bot at startup) mapping a show name to
-    # its on-disk folder. Used by the ``episode_title`` backfill to heal
-    # chunks where the RSS title never made it into the transcript meta.
+    # Global resolver mapping a show name to its on-disk folder, set by the
+    # API only (never the bot, which has no show folders). Its presence is
+    # also the "am I the app" gate for the show-id migration and the
+    # collection-meta heal.
     _show_folder_resolver: "callable | None" = None
 
     @classmethod
@@ -521,8 +531,11 @@ class IndexStore:
             with _MIGRATION_LOCK:
                 return migrate_index_to_show_ids(self)
         except Exception:
+            # Not "unchanged": rows and show.toml ids written before the
+            # failure stay written. The migration is idempotent, so the next
+            # open resumes from them.
             logger.opt(exception=True).warning(
-                "show-id migration failed; index unchanged"
+                "show-id migration failed part way; it resumes on the next open"
             )
             return 0
 
@@ -548,21 +561,25 @@ class IndexStore:
         # Serializes mutating ops (password set/delete, chunk saves,
         # episode/collection delete, FTS index builds) within this process:
         # the store is a process-wide singleton shared across threadpool
-        # handlers, LanceDB writes are not internally locked, and e.g.
-        # set_show_password is a non-atomic delete-then-add. It does not reach
-        # index subprocesses, which write chunks from their own store, so
-        # cross-process writes must be safe on their own (see the
-        # compare-and-swap in _ensure_episode_title_backfill). Reentrant
-        # because locked sections call _table() and other locked helpers.
+        # handlers, and LanceDB writes are not internally locked. It does not
+        # reach index subprocesses, which write chunks from their own store,
+        # so cross-process writes must be safe on their own (see
+        # _retry_concurrent and the merge_insert in ensure_collection).
+        # Reentrant because locked sections call _table() and other locked
+        # helpers.
         self._write_lock = threading.RLock()
+        # Per-thread metadata memo of read_snapshot().
+        self._snap = threading.local()
         self._fts_ready: set[str] = set()
-        # Collections whose FTS build failed in this process: not retried
-        # until the next start, or every probe would rebuild and log again.
-        self._fts_failed: set[str] = set()
+        # Collections whose FTS build failed, with the monotonic time of the
+        # failure: retried after _FTS_RETRY_S, not on every probe (each would
+        # rebuild and log again) and not never (the bot runs for weeks).
+        self._fts_failed: dict[str, float] = {}
         # Chunk tables this process has written to and not yet compacted.
         self._uncompacted: set[str] = set()
         self._pub_date_ready: set[str] = set()
-        self._episode_title_ready: set[str] = set()
+        # Old tables whose pub_date column could not be added (see _row_cols).
+        self._no_pub_date: set[str] = set()
         self._collections_schema_ready = False
         self._passwords_schema_ready = False
         # (index_mtime, collection-info); collection metadata is read on
@@ -642,24 +659,62 @@ class IndexStore:
         self._fts_ready.clear()
         self._fts_failed.clear()
         self._pub_date_ready.clear()
-        self._episode_title_ready.clear()
+        self._no_pub_date.clear()
         logger.info(f"IndexStore reconnected: {self._path}")
 
     # ── Internal: collections metadata table ─────────────────────────────
 
+    @contextmanager
+    def read_snapshot(self) -> Iterator[None]:
+        """Read the index's metadata once for a whole read-only fan-out.
+
+        A search over N collections asked, per collection, for the table list,
+        the collection info (a stat of every table directory) and a fresh
+        table handle, so its fixed cost grew with N squared. Inside this block
+        the calling thread reuses the first answer to each. Per thread, since
+        the store is shared across request threads; re-entrant; never wrap a
+        write in it, the table list would go stale.
+        """
+        if getattr(self._snap, "state", None) is not None:
+            yield
+            return
+        self._snap.state = {"tables": None, "info": None, "handles": {}}
+        try:
+            yield
+        finally:
+            self._snap.state = None
+
     def _table_names(self) -> list[str]:
         """Return LanceDB table names as a plain list."""
+        snap = getattr(self._snap, "state", None)
+        if snap is not None and snap["tables"] is not None:
+            return snap["tables"]
         # Some LanceDB versions wrap the names in a response object with a
         # ``.tables`` attribute; fall back to iterating the result directly.
         result = self._db.list_tables()
-        return list(getattr(result, "tables", result))
+        names = list(getattr(result, "tables", result))
+        if snap is not None:
+            snap["tables"] = names
+        return names
+
+    def _open_or_create(self, name: str, schema: pa.Schema):
+        """Open a table, creating it if absent, safe against another process.
+
+        An index subprocess can create the same table at the same moment, and
+        _write_lock does not reach it; see ``_retry_concurrent``.
+        """
+
+        def _attempt():
+            if name in self._table_names():
+                return self._db.open_table(name)
+            return self._db.create_table(name, schema=schema, exist_ok=True)
+
+        return _retry_concurrent(_attempt)
 
     def _collections_table(self):
-        if _COLLECTIONS_TABLE in self._table_names():
-            table = self._db.open_table(_COLLECTIONS_TABLE)
-            self._ensure_collections_schema(table)
-            return table
-        return self._db.create_table(_COLLECTIONS_TABLE, schema=_COLLECTIONS_SCHEMA)
+        table = self._open_or_create(_COLLECTIONS_TABLE, _COLLECTIONS_SCHEMA)
+        self._ensure_collections_schema(table)
+        return table
 
     def _ensure_collections_schema(self, table) -> None:
         """Add later columns (``artwork_url``, ``show_id``) to older tables."""
@@ -681,230 +736,79 @@ class IndexStore:
 
     def _table(self, name: str):
         """Open an existing collection table; raise if missing."""
+        snap = getattr(self._snap, "state", None)
+        if snap is not None and name in snap["handles"]:
+            return snap["handles"][name]
         if name not in self._table_names():
             raise KeyError(f"Collection '{name}' does not exist")
         t = self._db.open_table(name)
         self._ensure_pub_date_column(name, t)
-        self._ensure_episode_title_backfill(name, t)
+        if snap is not None:
+            snap["handles"][name] = t
         return t
 
+    @classmethod
+    def _folder_for_row(cls, entry: dict) -> Path | None:
+        """Show folder of a ``_collections`` row, in the app; else None.
+
+        Identity first; the label is only a fallback for rows the migration
+        has not stamped yet, since two shows can share one.
+        """
+        resolver = cls._show_folder_resolver
+        if resolver is None:
+            return None
+        from podcodex.ingest.show_registry import folder_for_id
+
+        row_id = (entry.get("show_id") or "").strip()
+        folder = folder_for_id(row_id) if row_id else None
+        if folder is None and entry.get("show"):
+            found = resolver(entry["show"])
+            folder = Path(found) if found else None
+        return folder
+
     def _ensure_pub_date_column(self, collection: str, table) -> None:
-        """Add ``pub_date`` top-level column to pre-migration tables.
+        """Give a table from before the scalar ``pub_date`` column an empty one.
 
-        Older tables stored the RSS publication date only in the ``meta``
-        JSON blob. Range filters need a dedicated scalar column; this
-        helper adds it + backfills.
-
-        Skip decision uses a filesystem sentinel rather than the schema,
-        so a process that crashed after ``add_columns`` but before the
-        backfill finished retries on the next open.
+        Only the schema: ``save_chunks`` writes the column, so without it
+        re-indexing any episode of an old table would fail. Existing rows are
+        not backfilled; they carry "" and drop out of date filters until
+        their episode is re-indexed, so a show upgrades episode by episode
+        (dates still display, from the meta blob via ``Hit.effective_pub_date``).
         """
         if collection in self._pub_date_ready:
             return
-        sentinel = self._path / f"{collection}.pub_date_col_v1"
-        if sentinel.exists():
-            self._pub_date_ready.add(collection)
-            return
         try:
-            schema_names = set(table.schema.names)
-        except Exception:
-            schema_names = set()
-        if "pub_date" not in schema_names:
-            try:
+            if "pub_date" not in set(table.schema.names):
                 table.add_columns({"pub_date": "CAST('' AS STRING)"})
-            except Exception:
-                logger.opt(exception=True).warning(
-                    f"Could not add pub_date column to '{collection}'"
-                )
-                return
-        try:
-            rows = (
-                table.search().select(["episode", "meta"]).limit(10_000_000).to_list()
-            )
-            per_ep: dict[str, str] = {}
-            for r in rows:
-                ep = r.get("episode")
-                if not ep or ep in per_ep:
-                    continue
-                try:
-                    meta = json.loads(r.get("meta") or "{}")
-                except Exception:
-                    continue
-                norm = normalize_pub_date(
-                    meta.get("pub_date") or meta.get("rss_pub_date")
-                )
-                if norm:
-                    per_ep[ep] = norm
-            for ep, dt in per_ep.items():
-                table.update(
-                    where=f"episode = '{_escape(ep)}'",
-                    values={"pub_date": dt},
-                )
-            if per_ep:
-                self._uncompacted.add(collection)
-            sentinel.touch()
-            logger.info(
-                f"pub_date column backfilled for '{collection}' "
-                f"({len(per_ep)} episodes)"
-            )
+                logger.info(f"pub_date column added to '{collection}' (empty)")
         except Exception:
+            # Reads must not select a column the table lacks (_row_cols);
+            # date filters on it still fail, which is the truth. Not retried
+            # on every open (each would log again): reconnect() or a restart
+            # tries again.
             logger.opt(exception=True).warning(
-                f"pub_date backfill skipped for '{collection}'"
+                f"Could not add pub_date column to '{collection}'"
             )
+            self._no_pub_date.add(collection)
         self._pub_date_ready.add(collection)
 
-    def _ensure_episode_title_backfill(self, collection: str, table) -> None:
-        """Backfill ``episode_title`` in chunk meta from ``.episode_meta.json``.
+    def _row_cols(self, collection: str, *extra: str) -> list[str]:
+        """The no-vector read projection for *collection*, plus *extra*.
 
-        Some episodes were indexed before RSS metadata was merged into the
-        transcript (e.g. a corrupt or empty ``.episode_meta.json``), leaving
-        ``meta.episode_title`` unset. ``episode_display`` then falls back to a
-        humanised stem, which leaks a normalised slug into search results and
-        MCP replies. This one-shot pass walks the stems with a missing title,
-        reloads each episode's meta file (``load_episode_meta`` now self-heals
-        from the show-level feed cache), and promotes the title into every
-        chunk's JSON meta blob. Skip-gated by a filesystem sentinel — if the
-        resolver is not registered yet (bot/CLI contexts) we simply return.
+        ``_FILTER_COLUMNS``, minus ``pub_date`` on an old table that could
+        not be given the column, so its reads keep working without it.
         """
-        if collection in self._episode_title_ready:
-            return
-        sentinel = self._path / f"{collection}.episode_title_v1"
-        if sentinel.exists():
-            self._episode_title_ready.add(collection)
-            return
-        resolver = type(self)._show_folder_resolver
-        if resolver is None:
-            return  # try again next time once the API has registered one
-
-        info = self.get_collection_info(collection)
-        show_name = (info or {}).get("show", "")
-        if not show_name:
-            return
-        show_folder = resolver(show_name)
-        if not show_folder:
-            return
-        try:
-            from podcodex.ingest.rss import (
-                episode_stem as rss_episode_stem,
-                load_feed_cache,
-            )
-        except Exception:
-            return
-
-        try:
-            row_count = int(table.count_rows())
-        except Exception:
-            row_count = -1
-        if row_count == 0:
-            # Nothing to heal; drop the sentinel so a freshly-indexed table
-            # isn't rescanned on every later open.
-            try:
-                sentinel.touch()
-            except OSError:
-                pass
-            self._episode_title_ready.add(collection)
-            return
-
-        try:
-            rows = (
-                table.search()
-                .select(["episode", "chunk_index", "meta"])
-                .limit(10_000_000)
-                .to_list()
-            )
-        except Exception:
-            logger.opt(exception=True).warning(
-                f"episode_title backfill scan skipped for '{collection}'"
-            )
-            return
-
-        # Group all chunks by stem in one pass so we can detect missing titles
-        # and rewrite meta blobs without a second full-table scan per stem.
-        chunks_by_stem: dict[str, list[tuple[int, dict, str]]] = {}
-        for r in rows:
-            ep = r.get("episode")
-            if not ep:
-                continue
-            raw = r.get("meta") or ""
-            try:
-                meta = json.loads(raw or "{}")
-            except Exception:
-                meta = {}
-            chunks_by_stem.setdefault(ep, []).append(
-                (int(r.get("chunk_index", -1)), meta, raw)
-            )
-
-        # Feed cache is the only authoritative fallback for a healed title —
-        # read it once here rather than once per stem inside the loop.
-        show_folder_path = Path(show_folder)
-        cached_eps = load_feed_cache(show_folder_path) or []
-        stem_to_title: dict[str, str] = {}
-        for ep in cached_eps:
-            try:
-                stem = rss_episode_stem(ep, show_folder_path)
-            except Exception:
-                continue
-            if ep.title and ep.title != stem:
-                stem_to_title[stem] = ep.title
-
-        healed = 0
-        failed = 0
-        for stem, chunks in chunks_by_stem.items():
-            # Per chunk, not per episode: after a partial failure the retry
-            # has to find the chunks that are still missing their title.
-            missing = [c for c in chunks if not c[1].get("episode_title")]
-            if not missing:
-                continue
-            title = stem_to_title.get(stem)
-            if not title:
-                continue
-            for ci, meta, raw in missing:
-                meta["episode_title"] = title
-                try:
-                    # Compare-and-swap on the meta read above: chunks are
-                    # written by index subprocesses, which no lock here
-                    # reaches, and a re-index in between must not get this
-                    # stale blob written over its fresh one.
-                    table.update(
-                        where=(
-                            f"episode = '{_escape(stem)}' AND chunk_index = {ci} "
-                            f"AND meta = '{_escape(raw)}'"
-                        ),
-                        values={"meta": json.dumps(meta, ensure_ascii=False)},
-                    )
-                except Exception:
-                    logger.opt(exception=True).warning(
-                        f"episode_title update failed for {collection}/{stem}"
-                    )
-                    failed += 1
-            healed += 1
-
-        if healed:
-            self._uncompacted.add(collection)
-        if failed:
-            # No sentinel, so the next process retries, rewriting only the
-            # chunks still missing a title. Not this process: the full scan
-            # would rerun on every table open.
-            self._episode_title_ready.add(collection)
-            return
-        try:
-            sentinel.touch()
-        except OSError:
-            pass
-        if healed:
-            logger.info(
-                f"episode_title backfilled for '{collection}' ({healed} episodes)"
-            )
-        self._episode_title_ready.add(collection)
+        cols = [
+            c
+            for c in _FILTER_COLUMNS
+            if not (c == "pub_date" and collection in self._no_pub_date)
+        ]
+        return [*cols, *extra]
 
     def _passwords_table(self):
-        if _SHOW_PASSWORDS_TABLE in self._table_names():
-            table = self._db.open_table(_SHOW_PASSWORDS_TABLE)
-            self._ensure_passwords_schema(table)
-            return table
-        return self._db.create_table(
-            _SHOW_PASSWORDS_TABLE, schema=_SHOW_PASSWORDS_SCHEMA
-        )
+        table = self._open_or_create(_SHOW_PASSWORDS_TABLE, _SHOW_PASSWORDS_SCHEMA)
+        self._ensure_passwords_schema(table)
+        return table
 
     def _ensure_passwords_schema(self, table) -> None:
         """Add ``show_id`` / ``show_label`` to pre-id password tables."""
@@ -952,6 +856,27 @@ class IndexStore:
             }
         return out
 
+    def password_entry_for_show(
+        self, show_id: str, show_label: str = ""
+    ) -> tuple[str, dict] | None:
+        """``(key, entry)`` of a show's password row, or None if it has none.
+
+        The id-keyed row first; else a legacy row keyed by one of the show's
+        display names, compared the way the migration and
+        ``_delete_legacy_password_rows`` compare them (case and surrounding
+        whitespace ignored). *key* is what ``delete_show_password`` takes.
+        """
+        entries = self.get_show_password_entries()
+        if show_id and show_id in entries:
+            return show_id, entries[show_id]
+        wanted = _norm_label(show_label)
+        if not wanted:
+            return None
+        for key, entry in entries.items():
+            if not entry["show_id"] and _norm_label(key) == wanted:
+                return key, entry
+        return None
+
     def get_show_passwords(self) -> dict[str, str]:
         """Return ``{key: password_hash}``; see ``get_show_password_entries``."""
         return {
@@ -981,16 +906,16 @@ class IndexStore:
             IndexOwnershipError: when this index is a replica of another
                 machine's, where the next sync would erase the change.
         """
+        _require_show_key(show)
         self._require_owner(f"set the password for show {show!r}")
         label = (show_label or "").strip()
         with self._write_lock:
             t = self._passwords_table()
-            t.delete(f"show_id = '{_escape(show)}'")
-            # Also clears a legacy row for the same show that the migration
-            # has not rekeyed yet, which would otherwise unlock under its old
-            # name forever.
-            self._delete_legacy_password_rows(t, label, legacy_label)
-            t.add(
+            # One commit: a delete then an add left the show public if the
+            # process died, or the add failed, in between.
+            t.merge_insert(
+                "show_id"
+            ).when_matched_update_all().when_not_matched_insert_all().execute(
                 [
                     {
                         "show_id": show,
@@ -1001,6 +926,12 @@ class IndexStore:
                         "password_hash": password_hash,
                     }
                 ]
+            )
+            # Only after the id-keyed row is in: a legacy row for the same
+            # show that the migration has not rekeyed yet would otherwise
+            # unlock under its old name forever.
+            self._delete_legacy_password_rows(
+                t, legacy_label, *self._labels_owned_by(show, label)
             )
         logger.debug(f"Password set for show {show!r}")
 
@@ -1023,13 +954,19 @@ class IndexStore:
             if _norm_label(raw) in wanted:
                 table.delete(f"show = '{_escape(raw)}' AND {legacy}")
 
-    def delete_show_password(self, show: str) -> None:
+    def delete_show_password(self, show: str, show_label: str = "") -> None:
         """Remove password protection for a show (makes it public).
+
+        Args:
+            show: The show's id, or the label a legacy row is keyed by.
+            show_label: The show's display name, whose legacy (name-keyed)
+                row is cleared too, unless another show carries that name.
 
         Raises:
             IndexOwnershipError: when this index is a replica of another
                 machine's, where the next sync would erase the change.
         """
+        _require_show_key(show)
         self._require_owner(f"remove the password for show {show!r}")
         with self._write_lock:
             if _SHOW_PASSWORDS_TABLE not in self._table_names():
@@ -1038,8 +975,36 @@ class IndexStore:
             # Matches both shapes: an id-keyed row, and a legacy row whose
             # only key is the display name.
             t.delete(f"show_id = '{_escape(show)}'")
-            self._delete_legacy_password_rows(t, show)
+            self._delete_legacy_password_rows(
+                t, show, *self._labels_owned_by(show, show_label)
+            )
         logger.debug(f"Password removed for show {show!r}")
+
+    def _labels_owned_by(self, show_id: str, label: str) -> list[str]:
+        """``[label]`` when no other show carries it, else ``[]``.
+
+        A legacy password row is keyed by a display name only, so it cannot
+        say whose it is. Clearing one under a name another show also uses
+        would unprotect that show; leaving it is the safe miss (it still
+        protects only what it always protected). Callers that know a row is
+        theirs (a former name) pass it explicitly instead.
+        """
+        wanted = _norm_label(label)
+        if not wanted:
+            return []
+        for meta in self.rows_for_label(label):
+            # An id-less row counts too: it may be another, unmigrated show.
+            # (The migration names its own legacy row via ``legacy_label``.)
+            if (meta.get("show_id") or "").strip() != show_id:
+                return []
+        for key, entry in self.get_show_password_entries().items():
+            if (
+                entry["show_id"]
+                and key != show_id
+                and _norm_label(entry["label"]) == wanted
+            ):
+                return []
+        return [label]
 
     # ── Collection management ────────────────────────────────────────────
 
@@ -1148,13 +1113,32 @@ class IndexStore:
         app has a folder-backed equivalent in ``ingest.show_registry`` that
         also covers shows with no collection yet.
         """
+        if not (label or "").strip():
+            return ""
+        ids = sorted(
+            {(m.get("show_id") or "").strip() for m in self.rows_for_label(label)}
+            - {""}
+        )
+        # A real id first: an id-less row's identity is its label, which must
+        # not be handed back while an id exists for the name.
+        return ids[0] if ids else label
+
+    def rows_for_label(self, label: str) -> list[dict]:
+        """``_collections`` rows carrying this display name (case-insensitive).
+
+        Labels are not unique (a registered show may keep a colliding name,
+        and an unregistered show's label stays in the index), so a caller
+        deciding access looks at all of them, not the first one found. The
+        one definition of matching a typed name against stored labels.
+        """
         target = (label or "").strip().lower()
         if not target:
-            return ""
-        for meta in self.get_all_collection_info().values():
-            if (meta.get("show") or "").strip().lower() == target:
-                return self.show_key(meta)
-        return label
+            return []
+        return [
+            meta
+            for meta in self.get_all_collection_info().values()
+            if (meta.get("show") or "").strip().lower() == target
+        ]
 
     def label_for_show_id(self, show_id: str) -> str:
         """Display name registered for a show id, else the id itself."""
@@ -1174,39 +1158,6 @@ class IndexStore:
         return (
             (self.get_all_collection_info().get(name) or {}).get("show") or ""
         ).strip()
-
-    def set_show_label(self, show_id: str, label: str, previous_label: str = "") -> int:
-        """Update the carried display label for every collection of a show.
-
-        Also stamps the id onto rows that match only by the previous label:
-        a show indexed before it was minted an id has collections carrying
-        neither, and matching on the id alone would leave them behind exactly
-        as a rename used to.
-
-        Returns the number of collection rows updated. This is what a rename
-        does now: identity is untouched, only the label travels.
-        """
-        if not show_id:
-            return 0
-        self._require_owner(f"relabel the collections of show {show_id!r}")
-        names = [
-            name
-            for name, meta in self.get_all_collection_info().items()
-            if self.row_is_show(meta, show_id, previous_label)
-            and (meta.get("show") != label or not (meta.get("show_id") or "").strip())
-        ]
-        if not names:
-            return 0
-        with self._write_lock:
-            meta_table = self._collections_table()
-            for name in names:
-                meta_table.update(
-                    where=f"name = '{_escape(name)}'",
-                    values={"show": label, "show_id": show_id},
-                )
-            self._collection_info_cache = None
-        logger.info(f"Relabelled {len(names)} collection(s) for show {show_id!r}")
-        return len(names)
 
     def set_collection_identity(self, name: str, show_id: str, show: str) -> None:
         """Write the id and display label onto a collection's metadata row."""
@@ -1273,36 +1224,46 @@ class IndexStore:
                 predate ids (legacy bundle imports); the migration fills
                 those in later.
         """
-        tables = self._table_names()
-        if name not in tables:
-            self._db.create_table(name, schema=_chunk_schema(dim))
+        # Both writes tolerate another process doing the same first index at
+        # the same time (two compute tasks run at once, each from its own
+        # subprocess store, which _write_lock does not reach): the table goes
+        # through _open_or_create, and the row is inserted only if absent.
+        # Lance does not serialize two concurrent inserts, so a duplicate row
+        # is still possible in that instant; every reader keys rows by name
+        # (get_all_collection_info, list_collections), which makes it inert.
+        self._open_or_create(name, _chunk_schema(dim))
 
-        meta = self._collections_table()
-        existing = meta.search().where(f"name = '{_escape(name)}'").limit(1).to_list()
-        if not existing:
-            meta.add(
-                [
-                    {
-                        "name": name,
-                        "show_id": show_id,
-                        "show": show,
-                        "model": model,
-                        "chunker": chunker,
-                        "dim": dim,
-                        "created_at": datetime.now(timezone.utc).isoformat(),
-                        "artwork_url": artwork_url,
-                    }
-                ]
-            )
-        else:
-            updates: dict[str, str] = {}
-            if artwork_url and not (existing[0].get("artwork_url") or "").strip():
-                updates["artwork_url"] = artwork_url
-            if show_id and not (existing[0].get("show_id") or "").strip():
-                updates["show_id"] = show_id
-            if updates:
-                meta.update(where=f"name = '{_escape(name)}'", values=updates)
+        def _write_row() -> None:
+            meta = self._collections_table()
+            where = f"name = '{_escape(name)}'"
+            existing = meta.search().where(where).limit(1).to_list()
+            if not existing:
+                meta.merge_insert("name").when_not_matched_insert_all().execute(
+                    [
+                        {
+                            "name": name,
+                            "show_id": show_id,
+                            "show": show,
+                            "model": model,
+                            "chunker": chunker,
+                            "dim": dim,
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                            "artwork_url": artwork_url,
+                        }
+                    ]
+                )
                 self._collection_info_cache = None
+            else:
+                updates: dict[str, str] = {}
+                if artwork_url and not (existing[0].get("artwork_url") or "").strip():
+                    updates["artwork_url"] = artwork_url
+                if show_id and not (existing[0].get("show_id") or "").strip():
+                    updates["show_id"] = show_id
+                if updates:
+                    meta.update(where=f"name = '{_escape(name)}'", values=updates)
+                    self._collection_info_cache = None
+
+        _retry_concurrent(_write_row)
 
     def list_collections(
         self, show: str = "", model: str = "", chunker: str = ""
@@ -1329,7 +1290,9 @@ class IndexStore:
         q = self._collections_table().search().select(["name"])
         if clauses:
             q = q.where(" AND ".join(clauses))
-        return sorted(r["name"] for r in q.limit(10_000).to_list())
+        # A set: two processes creating one collection at the same instant
+        # can both insert its row (see ensure_collection).
+        return sorted({r["name"] for r in q.limit(10_000).to_list()})
 
     def delete_collection(self, name: str) -> None:
         """Drop a collection table and its metadata row.
@@ -1339,12 +1302,22 @@ class IndexStore:
         """
         self._require_owner(f"delete collection {name!r}")
         with self._write_lock:
+            # Table first. If the drop fails nothing has changed; if the row
+            # delete then fails, a listed collection with no table reads as
+            # empty and the next ensure_collection recreates the table. The
+            # other order could leave a hidden table that a later index
+            # reopens, old chunks and all.
             if name in self._table_names():
                 self._db.drop_table(name)
-            meta = self._collections_table()
-            meta.delete(f"name = '{_escape(name)}'")
+            self._collections_table().delete(f"name = '{_escape(name)}'")
+            # The one-shot upgrade markers belong to the table: a collection
+            # recreated under this name must run them again.
+            for suffix in _SENTINEL_SUFFIXES:
+                (self._path / f"{name}.{suffix}").unlink(missing_ok=True)
             self._fts_ready.discard(name)
-            self._fts_failed.discard(name)
+            self._fts_failed.pop(name, None)
+            self._pub_date_ready.discard(name)
+            self._no_pub_date.discard(name)
         logger.debug(f"Deleted collection '{name}'")
 
     def get_collection_info(self, name: str) -> dict | None:
@@ -1358,6 +1331,15 @@ class IndexStore:
         on-disk change rather than once per caller (hot path: MCP tools,
         bot-access, the ``search_vector`` dim guard).
         """
+        snap = getattr(self._snap, "state", None)
+        if snap is not None and snap["info"] is not None:
+            return snap["info"]
+        info = self._read_all_collection_info()
+        if snap is not None:
+            snap["info"] = info
+        return info
+
+    def _read_all_collection_info(self) -> dict[str, dict]:
         mtime = self.index_mtime()
         cached = self._collection_info_cache
         if cached is not None and cached[0] == mtime:
@@ -1399,16 +1381,9 @@ class IndexStore:
         if resolver is None:
             return
         from podcodex.ingest.show import load_show_meta, show_display
-        from podcodex.ingest.show_registry import folder_for_id
 
         for name, entry in info.items():
-            row_id = (entry.get("show_id") or "").strip()
-            # Identity first; the label is only a fallback for rows the
-            # migration has not stamped yet.
-            folder = folder_for_id(row_id) if row_id else None
-            if folder is None and entry.get("show"):
-                found = resolver(entry["show"])
-                folder = Path(found) if found else None
+            folder = self._folder_for_row(entry)
             if folder is None:
                 continue
 
@@ -1417,7 +1392,7 @@ class IndexStore:
             if label and label != entry.get("show"):
                 updates["show"] = label
             meta = load_show_meta(folder)
-            if not row_id and meta and meta.id:
+            if not (entry.get("show_id") or "").strip() and meta and meta.id:
                 updates["show_id"] = meta.id
             if not entry.get("artwork_url"):
                 url = (meta.artwork_url if meta else "").strip()
@@ -1502,7 +1477,7 @@ class IndexStore:
             t = self._table(collection)
             t.delete(f"episode = '{_escape(episode)}'")
             self._fts_ready.discard(collection)
-            self._fts_failed.discard(collection)
+            self._fts_failed.pop(collection, None)
             self._uncompacted.add(collection)
         logger.debug(f"Deleted episode '{episode}' from '{collection}'")
 
@@ -1552,14 +1527,14 @@ class IndexStore:
         commits a new table version and leaves the previous data files in
         place. Nothing reclaims them on its own, so without this the index
         directory grows monotonically with every re-index (a delete plus an
-        add per episode), every pub_date/episode_title backfill and every
-        heal, and the whole history is what an rsync to the bot host ships.
+        add per episode) and every metadata heal, and the whole history is
+        what an rsync to the bot host ships.
 
         Called at the end of an index job, a batch and ``podcodex-reindex``,
-        not on the read path: it rewrites data files, so it belongs where a
-        write already happened. ``optimize`` keeps a week of history by
-        default, which is what makes it safe to run while another process
-        holds an open reader.
+        and after an episode delete. Never on the read path: it rewrites
+        data files, so it belongs where a write already happened.
+        ``optimize`` keeps a week of history by default, which is what makes
+        it safe to run while another process holds an open reader.
 
         Args:
             collections: Tables to compact. Defaults to the chunk tables this
@@ -1705,7 +1680,7 @@ class IndexStore:
             else:
                 t.add(rows)
         self._fts_ready.discard(collection)
-        self._fts_failed.discard(collection)
+        self._fts_failed.pop(collection, None)
         self._uncompacted.add(collection)
         logger.debug(f"Saved {len(rows)} chunks for '{episode}' in '{collection}'")
 
@@ -1729,7 +1704,7 @@ class IndexStore:
         rows = (
             t.search()
             .where(f"episode = '{_escape(episode)}'")
-            .select([*_FILTER_COLUMNS, "meta"])
+            .select(self._row_cols(collection, "meta"))
             .limit(100_000)
             .to_list()
         )
@@ -1753,7 +1728,7 @@ class IndexStore:
         rows = (
             t.search()
             .where(f"episode = '{_escape(episode)}'")
-            .select([*_FILTER_COLUMNS, "vector", "meta"])
+            .select(self._row_cols(collection, "vector", "meta"))
             .limit(100_000)
             .to_list()
         )
@@ -1889,7 +1864,12 @@ class IndexStore:
         )
         if clause:
             q = q.where(clause)
-        rows = q.select([*_FILTER_COLUMNS, "meta"]).offset(offset).limit(1).to_list()
+        rows = (
+            q.select(self._row_cols(collection, "meta"))
+            .offset(offset)
+            .limit(1)
+            .to_list()
+        )
         return (
             _row_to_chunk(rows[0], self.collection_label(collection)) if rows else None
         )
@@ -1956,7 +1936,13 @@ class IndexStore:
         )
         if clause:
             q = q.where(clause)
-        rows = q.limit(top_k).to_list()
+        # Project away the vector: no caller reads it back, and marshalling
+        # dim floats per row dominates the read.
+        rows = (
+            q.select(self._row_cols(collection, "meta", "_distance"))
+            .limit(top_k)
+            .to_list()
+        )
         label = self.collection_label(collection)
         out: list[Hit] = []
         for r in rows:
@@ -1997,10 +1983,12 @@ class IndexStore:
         Returns:
             Hits with BM25 ``score`` attached.
         """
-        q = self._fts_query(
+        rows = self._fts_rows(
             collection,
             query,
             fuzziness,
+            self._row_cols(collection, "meta"),
+            top_k,
             episode=episode,
             episodes=episodes,
             source=source,
@@ -2008,13 +1996,6 @@ class IndexStore:
             pub_date_min=pub_date_min,
             pub_date_max=pub_date_max,
         )
-        if q is None:
-            return []
-        try:
-            rows = q.limit(top_k).to_list()
-        except Exception:
-            logger.opt(exception=True).warning("FTS query failed — treating as empty")
-            return []
         label = self.collection_label(collection)
         out: list[Hit] = []
         for r in rows:
@@ -2023,67 +2004,68 @@ class IndexStore:
             out.append(hit)
         return out
 
-    def _search_fts_keys(
+    def _fts_rows(
         self,
         collection: str,
         query: str,
-        top_k: int,
+        fuzziness: int,
+        columns: list[str],
+        limit: int,
         *,
-        episode: str | None = None,
-        episodes: list[str] | None = None,
-        source: str | None = None,
-        speaker: str | None = None,
-        pub_date_min: str | None = None,
-        pub_date_max: str | None = None,
-        fuzziness: int = 0,
         table=None,
-    ) -> set[str]:
-        """Chunk keys matching an FTS probe, without building Hit objects.
+        **filters,
+    ) -> list[dict]:
+        """Rows of one filtered FTS probe, the read behind every FTS search.
 
-        ``search_fts`` inflates every candidate row through ``_row_to_chunk``,
-        which json.loads the meta blob and runs a pydantic validation. The
-        intersection probes in ``search_literal`` only need to know *which*
-        chunks matched, one probe per query token over the whole collection,
-        so they read the two key columns instead and let the surviving
-        candidates be hydrated once.
-        """
-        q = self._fts_query(
-            collection,
-            query,
-            fuzziness,
-            table=table,
-            episode=episode,
-            episodes=episodes,
-            source=source,
-            speaker=speaker,
-            pub_date_min=pub_date_min,
-            pub_date_max=pub_date_max,
-        )
-        if q is None:
-            return set()
-        try:
-            rows = q.select(["episode", "chunk_index"]).limit(top_k).to_list()
-        except Exception:
-            logger.opt(exception=True).warning("FTS query failed — treating as empty")
-            return set()
-        return {chunk_row_key(r["episode"], r["chunk_index"]) for r in rows}
+        ``[]`` when the collection does not exist. *table* is an already open
+        handle: a caller running many probes (``search_literal``) opens the
+        table once, which saves a table listing and open per probe and keeps
+        every probe on the same version of the index.
 
-    def _fts_query(
-        self, collection: str, query: str, fuzziness: int, *, table=None, **filters
-    ):
-        """The filtered FTS query behind ``search_fts`` and ``_search_fts_keys``.
-
-        ``None`` when the collection does not exist. Callers add their own
-        projection and limit. *table* is an already open handle: a caller
-        running many probes (``search_literal``) opens the table once, which
-        saves a table listing and open per probe and keeps every probe on
-        the same version of the index.
+        A probe that fails raises: an empty list would tell exact search and
+        ``exact_counts`` that the phrase is absent when the truth is unknown.
+        The one failure handled here is a missing inverted index on a table
+        this store believed indexed, which is what another process dropping
+        and recreating the table (``podcodex-reindex``) leaves behind: the
+        readiness mark is dropped and the probe retried once after a rebuild.
+        Matched by message (Lance raises it untyped);
+        ``test_fts_rebuilds_after_another_process_recreates_the_table``
+        produces the real error, so a reworded one fails there.
         """
         if table is None:
             if not self.collection_exists(collection):
-                return None
+                return []
             table = self._table(collection)
-        t = table
+        # _score named explicitly: Lance only adds it to a projection by
+        # default for now, and warns on every probe that this will stop.
+        # pub_date re-checked here: the caller built *columns* before the
+        # table was opened, and opening is what finds it missing.
+        columns = [
+            c
+            for c in [*columns, "_score"]
+            if not (c == "pub_date" and collection in self._no_pub_date)
+        ]
+        try:
+            return (
+                self._fts_probe(table, collection, query, fuzziness, filters)
+                .select(columns)
+                .limit(limit)
+                .to_list()
+            )
+        except Exception as exc:
+            if "INVERTED index" not in str(exc) or collection not in self._fts_ready:
+                raise
+        logger.info(f"FTS index missing on '{collection}': rebuilding once")
+        self._fts_ready.discard(collection)
+        return (
+            self._fts_probe(table, collection, query, fuzziness, filters)
+            .select(columns)
+            .limit(limit)
+            .to_list()
+        )
+
+    def _fts_probe(self, t, collection: str, query: str, fuzziness: int, filters):
+        """The filtered FTS query of ``_fts_rows``, before projection and limit."""
         self._ensure_fts(collection, t)
         if fuzziness > 0:
             from lancedb.query import MatchQuery
@@ -2186,8 +2168,32 @@ class IndexStore:
             return [(form, fuzziness) for form in forms for fuzziness in edits]
 
         label = self.collection_label(collection)
-        # One handle for every probe below; see _fts_query.
+        # One handle for every probe below; see _fts_rows.
         table = self._table(collection)
+
+        def _probe(form: str, fuzziness: int, columns: list[str]) -> list[dict]:
+            # An exact-token probe that fails raises: without it the answer is
+            # unknown. A fuzzy one only widens the near-typo tier, so its
+            # failure (a Lance error on an odd expansion) costs that tier for
+            # this form, logged, not the whole search.
+            try:
+                return self._fts_rows(
+                    collection,
+                    form,
+                    fuzziness,
+                    columns,
+                    limit,
+                    table=table,
+                    **filters,
+                )
+            except Exception:
+                if not fuzziness:
+                    raise
+                logger.opt(exception=True).warning(
+                    f"Fuzzy FTS probe failed for {form!r} on '{collection}': "
+                    "near-typo matches may be missing"
+                )
+                return []
 
         def _hydrate(token: str, keep: set[str] | None = None) -> list[Hit]:
             # Rows are deduped before they are built: the exact and fuzzy
@@ -2196,16 +2202,7 @@ class IndexStore:
             hits: list[Hit] = []
             seen: set[str] = set()
             for form, fuzziness in _variants(token):
-                q = self._fts_query(collection, form, fuzziness, table=table, **filters)
-                if q is None:
-                    continue
-                try:
-                    rows = q.limit(limit).to_list()
-                except Exception:
-                    logger.opt(exception=True).warning(
-                        "FTS query failed: treating as empty"
-                    )
-                    continue
+                rows = _probe(form, fuzziness, self._row_cols(collection, "meta"))
                 for r in rows:
                     k = chunk_row_key(r["episode"], r["chunk_index"])
                     if k not in seen and (keep is None or k in keep):
@@ -2226,14 +2223,10 @@ class IndexStore:
             for token in probe_tokens:
                 token_keys: set[str] = set()
                 for form, fuzziness in _variants(token):
-                    token_keys |= self._search_fts_keys(
-                        collection,
-                        form,
-                        limit,
-                        fuzziness=fuzziness,
-                        table=table,
-                        **filters,
-                    )
+                    rows = _probe(form, fuzziness, ["episode", "chunk_index"])
+                    token_keys |= {
+                        chunk_row_key(r["episode"], r["chunk_index"]) for r in rows
+                    }
                 sizes[token] = len(token_keys)
                 keys = token_keys if keys is None else keys & token_keys
                 if not keys:
@@ -2320,7 +2313,10 @@ class IndexStore:
         The earlier ``.fts_folded_v1`` (accent-folding upgrade) is superseded
         and removed on migration.
         """
-        if collection in self._fts_ready or collection in self._fts_failed:
+        if collection in self._fts_ready:
+            return
+        failed_at = self._fts_failed.get(collection)
+        if failed_at is not None and time.monotonic() - failed_at < _FTS_RETRY_S:
             return
         sentinel = self._path / f"{collection}.fts_v2"
         legacy_sentinel = self._path / f"{collection}.fts_folded_v1"
@@ -2351,16 +2347,14 @@ class IndexStore:
                         logger.info(
                             f"FTS index rebuilt (v2, fuzzy-capable) for {collection}"
                         )
+                self._fts_failed.pop(collection, None)
                 self._fts_ready.add(collection)
-            return
         except Exception:
-            # Not marked ready, so no sentinel: the next process retries.
+            # Not marked ready, so no sentinel: retried after _FTS_RETRY_S.
             logger.opt(exception=True).warning(
                 f"FTS index creation failed for {collection}"
             )
-            self._fts_failed.add(collection)
-            return
-        self._fts_ready.add(collection)
+            self._fts_failed[collection] = time.monotonic()
 
     # ── Stats ────────────────────────────────────────────────────────────
 
@@ -2452,14 +2446,15 @@ class IndexStore:
             .limit(1_000_000)
             .to_list()
         )
-        from podcodex.core._utils import NARRATOR_SPEAKER
+        from podcodex.core._utils import LEGACY_NARRATOR_SPEAKER, is_unattributed
 
         groups: dict[str, dict] = {}
         for r in rows:
             sp = r.get("dominant_speaker")
-            # The legacy "Narrator" placeholder stays: a show may declare a
-            # real speaker by that name, and the index cannot tell which.
-            if not sp or sp == NARRATOR_SPEAKER:
+            # Placeholders ("", UNKNOWN, NoDiarization) are nobody. The legacy
+            # "Narrator" stays: a show may declare a real speaker by that
+            # name, and the index cannot tell which.
+            if is_unattributed(sp, declared=(LEGACY_NARRATOR_SPEAKER,)):
                 continue
             g = groups.setdefault(
                 sp, {"chunk_count": 0, "total_duration": 0.0, "episodes": set()}
@@ -2596,12 +2591,15 @@ class IndexStore:
         """
         if not self.collection_exists(collection):
             return {}
-        cols = ["episode", "pub_date", "end", "meta"]
+        table = self._table(collection)  # opening fills _no_pub_date
+        cols = ["episode", "end", "meta"]
+        if collection not in self._no_pub_date:
+            cols.append("pub_date")
         if with_speakers or "source" in meta_fields:
             cols.append("source")
         if with_speakers:
             cols.append("dominant_speaker")
-        q = self._table(collection).search()
+        q = table.search()
         if where:
             q = q.where(where)
         rows = q.select(cols).limit(1_000_000).to_list()
@@ -2616,6 +2614,7 @@ class IndexStore:
         for field in meta_fields:
             defaults[field] = None if field in _INT_META_FIELDS else ""
         groups: dict[str, dict] = {}
+        meta_dated: set[str] = set()
         for r in rows:
             ep = r.get("episode")
             if not ep:
@@ -2642,11 +2641,23 @@ class IndexStore:
                 for f in meta_fields
                 if (g[f] is None if f in _INT_META_FIELDS else not g[f])
             ]
-            if missing:
+            # A row from before the scalar column carries its date only in
+            # the meta blob (old tables upgrade episode by episode). Looked up
+            # once per episode: an undated one would otherwise parse every row.
+            need_date = not g["pub_date"] and ep not in meta_dated
+            if missing or need_date:
                 try:
                     meta = json.loads(r.get("meta") or "{}")
                 except Exception:
                     meta = {}
+                if need_date:
+                    meta_dated.add(ep)
+                    g["pub_date"] = (
+                        normalize_pub_date(
+                            meta.get("pub_date") or meta.get("rss_pub_date")
+                        )
+                        or ""
+                    )
                 for f in missing:
                     v = meta.get(f)
                     if f in _INT_META_FIELDS:
@@ -2669,6 +2680,46 @@ class IndexStore:
 # ──────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────
+
+
+def _retry_concurrent(fn, attempts: int = 5):
+    """Run *fn*, retrying what another process writing the same table causes.
+
+    Two index subprocesses can create one table or commit to one metadata
+    table at the same instant, and no lock reaches across processes. Lance
+    then reports a table it lists but cannot open yet ("was not found") or
+    refuses the later commit ("Incompatible transaction", a commit conflict);
+    both succeed on a re-read. Anything else raises at once.
+
+    Lance raises these untyped, so they are matched by message; a lancedb
+    upgrade that rewords them fails
+    ``test_two_stores_creating_one_collection_at_once_both_succeed``, which
+    produces them for real, rather than silently disabling the retry.
+    """
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except (ValueError, RuntimeError) as exc:
+            msg = str(exc)
+            transient = (
+                "was not found" in msg
+                or "Incompatible transaction" in msg
+                or "onflict" in msg
+            )
+            if not transient or attempt == attempts - 1:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+    return None
+
+
+def _require_show_key(show: str) -> None:
+    """Refuse an empty show key on a password write.
+
+    ``show_id = ''`` is exactly how a legacy (pre-id) row is stored, so an
+    empty key would rewrite or delete every legacy password at once.
+    """
+    if not (show or "").strip():
+        raise ValueError("show id is required")
 
 
 def _escape(s: str) -> str:
@@ -2811,6 +2862,10 @@ def _row_to_chunk(row: dict, show_label: str = "") -> Hit:
                 for turn in value
             ]
         chunk[key] = value
+    if chunk.get("pub_date") and not row.get("pub_date"):
+        # A row from before the scalar column (never backfilled): keep the
+        # meta date for display, where Hit.effective_pub_date normalizes it.
+        chunk.setdefault("rss_pub_date", chunk["pub_date"])
     for key in _FILTER_COLUMNS:
         if key in row and row[key] is not None:
             chunk[key] = row[key]
@@ -2841,8 +2896,8 @@ def _row_to_chunk(row: dict, show_label: str = "") -> Hit:
 def get_index_store() -> IndexStore:
     """Process-wide cached IndexStore using the default path resolution.
 
-    Path resolution lives in ``_resolve_default_index_path`` — env var,
-    canonical ``<data_dir>/index``, legacy XDG fallback, repo-local. Callers
+    Path resolution lives in ``_resolve_default_index_path``: env var,
+    canonical ``<data_dir>/index``, repo-local fallback. Callers
     that need a different path should instantiate ``IndexStore(custom_path)``
     directly.
     """

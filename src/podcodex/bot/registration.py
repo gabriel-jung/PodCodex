@@ -7,6 +7,7 @@ from dataclasses import replace
 import discord
 from discord import app_commands
 
+from podcodex.bot.resolution import explicit_combo
 from podcodex.rag.defaults import (
     ALPHA,
 )
@@ -94,17 +95,9 @@ class RegistrationMixin:
             if await self._reject_bad_date(interaction, after, before):
                 return
             await self._refresh_if_stale()
-            # Model/chunker are threaded separately as `explicit` rather than
-            # pre-merged into `settings`, so a typo'd explicit combo still
-            # falls back through show.toml prefs and the server default
-            # instead of collapsing straight to first-by-name.
             base = self._server_settings(interaction.guild_id)
             settings = replace(base, top_k=top_k or base.top_k)
-            explicit = (
-                (model or base.model, chunker or base.chunker)
-                if (model or chunker)
-                else None
-            )
+            explicit = explicit_combo(model, chunker, base)
             effective_source = source or settings.default_source or None
             use_compact = compact == "true" if compact else settings.compact
             shows = self._resolve_shows(settings, show)

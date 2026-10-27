@@ -420,6 +420,18 @@ def test_exact_count_first_hit():
     assert entry["first"]["start_hms"] == "0m03"
 
 
+def test_exact_count_raises_when_every_collection_failed(monkeypatch):
+    """A broken index must not read as "this phrase never occurs"."""
+    from podcodex.rag.retriever import Retriever
+
+    def broken(self, *_a, **_k):
+        raise RuntimeError("no INVERTED index")
+
+    monkeypatch.setattr(Retriever, "exact_counts", broken)
+    with pytest.raises(RuntimeError):
+        mcp_server.exact_count(queries=["chunk 3"])
+
+
 def test_exact_count_requires_queries():
     with pytest.raises(ValueError):
         mcp_server.exact_count(queries=[])

@@ -291,3 +291,46 @@ def test_semantic_chunks_include_source_field():
 
     assert len(result) == 1
     assert result[0]["source"] == "english"
+
+
+# ── Offset bookkeeping (no model) ───────────────────────────────────────
+
+
+def test_padding_round_trips_every_offset_to_the_unpadded_text():
+    """Chonkie sees periods inserted after unpunctuated turns; every offset it
+    returns must map back to the same character of the original text."""
+    from podcodex.rag.chunker import (
+        _build_episode_text,
+        _padded_for_chunker,
+        _unpadded_pos,
+    )
+
+    segments = [
+        {"text": "no punctuation here", "speaker": "A", "start": 0.0, "end": 1.0},
+        {"text": "this one ends.", "speaker": "B", "start": 1.0, "end": 2.0},
+        {"text": "and another bare turn", "speaker": "A", "start": 2.0, "end": 3.0},
+    ]
+    full, offsets = _build_episode_text(segments)
+    padded, inserts = _padded_for_chunker(full, offsets)
+
+    assert padded.count(".") == full.count(".") + 2  # two bare turns padded
+    for p, ch in enumerate(padded):
+        if p in inserts:
+            continue
+        assert full[_unpadded_pos(p, inserts)] == ch
+    assert _unpadded_pos(len(padded), inserts) == len(full)
+
+
+def test_an_oversized_chunk_is_split_on_words_with_faithful_offsets():
+    from podcodex.rag.chunker import _split_oversized, _SplitChunk
+
+    full = " ".join(f"word{i}" for i in range(300))
+    raw = _SplitChunk(text=full, start_index=0, end_index=len(full), token_count=900)
+
+    parts = list(_split_oversized([raw], full, max_tokens=768, target_tokens=256))
+
+    assert len(parts) >= 3
+    for part in parts:
+        assert part.text == full[part.start_index : part.end_index].strip()
+        assert not part.text.startswith(" ") and "word" in part.text
+    assert " ".join(p.text for p in parts) == full

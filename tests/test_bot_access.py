@@ -15,7 +15,7 @@ from podcodex.api.app import app  # noqa: E402
 from podcodex.rag import index_store as rag_index_store  # noqa: E402
 from tests.fixtures.api_client import client_for
 from tests.fixtures.bot import make_bot
-from tests.fixtures.index import add_show
+from tests.fixtures.index import add_show, relabel
 
 
 DIM = 8
@@ -216,7 +216,7 @@ def test_a_protected_legacy_entry_reads_as_an_unlock(tmp_path):
     bot._reload_shows()
 
     assert settings.allowed_shows == ["alpha_1234abcd"]  # names → ids, nothing more
-    assert bot._show_allowed_by_label("Alpha", settings) is True
+    assert bot._show_allowed(bot._show_id_for_label("Alpha"), settings) is True
     # Not offered as a pin: it is an unlock as far as anything can tell, and
     # counting it as both made `/setup show_remove` silently fail to unpin.
     assert bot._pinned_ids(settings) == []
@@ -278,16 +278,16 @@ def test_unlocked_show_survives_a_rename(tmp_path):
     settings = ServerSettings(allowed_shows=["Alpha"])
     bot = _bare_bot(tmp_path, {1: settings})
     bot._reload_shows()
-    assert bot._show_allowed_by_label("Alpha", settings) is True
+    assert bot._show_allowed(bot._show_id_for_label("Alpha"), settings) is True
 
     # Rename: label changes in the index, identity does not.
-    store.set_show_label("alpha_1234abcd", "Renamed")
+    relabel(store, "alpha_1234abcd", "Renamed")
     store.set_show_password(
         "alpha_1234abcd", hash_show_password("x" * 16), show_label="Renamed"
     )
     bot._reload_shows()
 
-    assert bot._show_allowed_by_label("Renamed", settings) is True
+    assert bot._show_allowed(bot._show_id_for_label("Renamed"), settings) is True
     assert settings.allowed_shows == ["alpha_1234abcd"]
 
 
@@ -307,10 +307,45 @@ def test_protected_show_stays_locked_for_other_guilds(tmp_path):
     bot = _bare_bot(tmp_path, {2: other})
     bot._reload_shows()
 
-    assert bot._show_allowed_by_label("Alpha", other) is False
-    store.set_show_label("alpha_1234abcd", "Renamed")
+    assert bot._show_allowed(bot._show_id_for_label("Alpha"), other) is False
+    relabel(store, "alpha_1234abcd", "Renamed")
     bot._reload_shows()
-    assert bot._show_allowed_by_label("Renamed", other) is False
+    assert bot._show_allowed(bot._show_id_for_label("Renamed"), other) is False
+
+
+def test_a_locked_show_sharing_a_public_shows_label_stays_hidden(tmp_path):
+    """Labels are not unique. Access is decided per collection by show id, so
+    a public show named "Tech" never carries a locked "Tech" along with it,
+    whether the command names the show or searches everything."""
+    from podcodex.bot.access import ResolvedShows, ShowAccess
+    from podcodex.bot.config import ServerSettings
+
+    store = rag_index_store.get_index_store()
+    add_show(store, "Tech", show_id="aaa_public", collection="aaa__bge-m3__semantic")
+    add_show(
+        store,
+        "Tech",
+        show_id="zzz_private",
+        collection="zzz__bge-m3__semantic",
+        password="x" * 16,
+    )
+    settings = ServerSettings()
+    bot, _ = make_bot(tmp_path, {1: settings})
+    info = store.get_all_collection_info()
+
+    for shows in (ResolvedShows(ShowAccess.ALL), bot._resolve_shows(settings, "Tech")):
+        picked = bot._resolve_show_collections(shows, settings, info)
+        assert [c.name for c in picked if c.show == "Tech"] == ["aaa__bge-m3__semantic"]
+
+    # Unlocked here, both come back.
+    settings.unlocked_shows.append("zzz_private")
+    picked = bot._resolve_show_collections(
+        ResolvedShows(ShowAccess.ALL), settings, info
+    )
+    assert {c.name for c in picked if c.show == "Tech"} == {
+        "aaa__bge-m3__semantic",
+        "zzz__bge-m3__semantic",
+    }
 
 
 # ── DM guard: guild_id is None outside a guild ──────────────────────────
@@ -735,3 +770,80 @@ def test_setting_a_password_mints_an_id_for_an_unminted_folder(
     assert minted and r.json()["show_id"] == minted
     status = client.get("/api/bot-access/password", params={"show_id": minted})
     assert status.json()["is_protected"] is True
+
+
+def test_a_locked_legacy_collection_is_not_judged_by_a_public_twins_id(tmp_path):
+    """A row with no id has only its label. When that label also names a
+    public show with an id, the legacy row (protected under its label) must
+    stay hidden rather than borrow the twin's identity."""
+    from podcodex.bot.access import ResolvedShows, ShowAccess
+    from podcodex.bot.config import ServerSettings
+
+    store = rag_index_store.get_index_store()
+    add_show(
+        store, "Émile", show_id="emile_1a2b3c4d", collection="new__bge-m3__semantic"
+    )
+    add_show(
+        store,
+        "Émile",
+        show_id="",
+        collection="old__bge-m3__semantic",
+        password="x" * 16,
+    )
+    settings = ServerSettings()
+    bot, _ = make_bot(tmp_path, {1: settings})
+
+    picked = bot._resolve_show_collections(
+        ResolvedShows(ShowAccess.ALL), settings, store.get_all_collection_info()
+    )
+    # The protected legacy row never borrows the twin's id. The twin is
+    # hidden too while the name is legacy-locked (fails closed) until the
+    # migration gives both their own ids.
+    assert "old__bge-m3__semantic" not in [c.name for c in picked]
+
+
+def test_an_unmigrated_show_with_an_id_keyed_password_is_locked_everywhere(tmp_path):
+    """Rows with no id, password keyed by the show's id (set from the app
+    after minting, collections not yet migrated): the name reads as locked,
+    and a result message posted earlier stops rebuilding."""
+    import asyncio
+
+    from podcodex.bot.access import ShowAccess
+    from podcodex.bot.config import ServerSettings
+    from podcodex.bot.ui import _names_allowed
+    from podcodex.core.show_passwords import hash_show_password
+
+    store = rag_index_store.get_index_store()
+    add_show(store, "Foo", show_id="", collection="foo__bge-m3__semantic")
+    store.set_show_password(
+        "foo_1234abcd", hash_show_password("x" * 16), show_label="Foo"
+    )
+    settings = ServerSettings()
+    bot, _ = make_bot(tmp_path, {1: settings})
+
+    assert bot._resolve_shows(settings, "Foo").access is ShowAccess.LOCKED
+    assert asyncio.run(_names_allowed(bot, 1, ["foo__bge-m3__semantic"])) is False
+
+    settings.unlocked_shows.append("foo_1234abcd")
+    assert bot._resolve_shows(settings, "Foo").access is ShowAccess.SPECIFIC
+    assert asyncio.run(_names_allowed(bot, 1, ["foo__bge-m3__semantic"])) is True
+
+
+def test_a_password_still_keyed_by_name_locks_an_id_carrying_collection(tmp_path):
+    """A replica synced mid-migration: collections already carry the id, the
+    password row is still keyed by the display name. The show stays locked."""
+    from podcodex.bot.access import ResolvedShows, ShowAccess
+    from podcodex.bot.config import ServerSettings
+
+    store = rag_index_store.get_index_store()
+    add_show(store, "Foo", show_id="foo_1234abcd", collection="foo__bge-m3__semantic")
+    store._passwords_table().add(
+        [{"show_id": "", "show_label": "", "show": "Foo", "password_hash": "h"}]
+    )
+    settings = ServerSettings()
+    bot, _ = make_bot(tmp_path, {1: settings})
+
+    picked = bot._resolve_show_collections(
+        ResolvedShows(ShowAccess.ALL), settings, store.get_all_collection_info()
+    )
+    assert "foo__bge-m3__semantic" not in [c.name for c in picked]

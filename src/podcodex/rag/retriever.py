@@ -48,19 +48,27 @@ class Retriever:
 
         self._model_key = model
         self._device = device
-        self._embedder = None  # loaded lazily on first retrieve()
+        # Test injection only. The real embedder is looked up in get_embedder's
+        # cache on every use, never kept here: a reference held by this
+        # (itself cached) Retriever would survive clear_embedder_cache(), and
+        # the model would stay in memory through the GPU step it was cleared
+        # for.
+        self._embedder = None
         self._local = local or IndexStore()
 
     @property
     def embedder(self):
-        if self._embedder is None:
-            from podcodex.rag.embedder import get_embedder
+        if self._embedder is not None:
+            return self._embedder
+        from podcodex.rag.embedder import get_embedder
 
-            self._embedder = get_embedder(self._model_key, device=self._device)
-            logger.info(f"Retriever ready (model={self._model_key})")
-        return self._embedder
+        return get_embedder(self._model_key, device=self._device)
 
     # ── Public API ───────────────────────────────────────────────────────
+
+    def read_snapshot(self):
+        """``IndexStore.read_snapshot`` of this retriever's store."""
+        return self._local.read_snapshot()
 
     def encode_query(self, query: str) -> np.ndarray:
         """Return the float32 query vector (kept separate so callers can hoist
@@ -182,7 +190,15 @@ class Retriever:
             def _keep(chunks: list[Hit], needle: str, folded: bool) -> list[Hit]:
                 out: list[Hit] = []
                 for c in chunks:
-                    for t in c.speakers or []:
+                    if not c.speakers:
+                        # Speaker-chunked rows carry no turns: the whole chunk
+                        # is one speaker's, folded into dominant_speaker.
+                        if c.dominant_speaker == speaker:
+                            hay = fold_text(c.text) if folded else c.text.lower()
+                            if needle in hay:
+                                out.append(c)
+                        continue
+                    for t in c.speakers:
                         if t.speaker != speaker:
                             continue
                         hay = fold_text(t.text) if folded else t.text.lower()
@@ -428,17 +444,29 @@ class Retriever:
                 query_vector,
             )
         )
-        fts_hits = self._fts(
-            query,
-            collection,
-            k,
-            episode,
-            episodes,
-            source,
-            speaker,
-            pub_date_min,
-            pub_date_max,
-        )
+        try:
+            fts_hits = self._fts(
+                query,
+                collection,
+                k,
+                episode,
+                episodes,
+                source,
+                speaker,
+                pub_date_min,
+                pub_date_max,
+            )
+        except ValueError:
+            raise
+        except Exception:
+            # The keyword half only refines the ranking here: a broken or
+            # not-yet-built FTS index degrades to dense results rather than
+            # failing the search. Pure-FTS and exact search have no such
+            # fallback and raise.
+            logger.opt(exception=True).warning(
+                f"FTS failed for '{collection}': ranking by dense similarity only"
+            )
+            fts_hits = []
 
         combined: dict[str, float] = {}
         payloads: dict[str, Hit] = {}
@@ -499,7 +527,8 @@ def get_retriever(model: str = DEFAULT_MODEL) -> Retriever:
     return _get_retriever_cached(model)
 
 
-# Tests and reindex flows clear the embedder cache through this name.
+# Drops the cached Retrievers (and their store handle), not the embedders:
+# those live in embedder.clear_embedder_cache().
 get_retriever.cache_clear = _get_retriever_cached.cache_clear  # type: ignore[attr-defined]
 
 

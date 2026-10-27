@@ -305,8 +305,6 @@ def test_replica_refuses_identity_and_label_writes(monkeypatch, tmp_path):
     with pytest.raises(IndexOwnershipError):
         replica.set_collection_identity("s__bge-m3__semantic", "other_id", "Other")
     with pytest.raises(IndexOwnershipError):
-        replica.set_show_label("s_abcd1234", "Renamed")
-    with pytest.raises(IndexOwnershipError):
         replica.delete_collection("s__bge-m3__semantic")
 
     assert replica.collection_exists("s__bge-m3__semantic")

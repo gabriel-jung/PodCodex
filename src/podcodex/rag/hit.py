@@ -20,7 +20,12 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
-from podcodex.core._utils import normalize_pub_date, resolve_episode_title
+from podcodex.core._utils import (
+    LEGACY_NARRATOR_SPEAKER,
+    is_unattributed,
+    normalize_pub_date,
+    resolve_episode_title,
+)
 
 
 class SpeakerTurn(BaseModel):
@@ -136,10 +141,20 @@ def merge_display_turns(turns: list[SpeakerTurn]) -> list[dict]:
     duration caps, or break sentinels. Intended for rendering a single
     search-result chunk (``Hit.speakers``) where readers just want a clean
     paragraph per speaker. Output entries are plain display dicts.
+
+    Every label that names nobody (``is_unattributed``) comes out as ``""``,
+    so adjacent placeholder turns merge and the display layer drops the
+    attribution instead of printing a placeholder as a name. The legacy
+    "Narrator" is kept, as ``list_speakers`` and ``speaker_stats`` keep it: a
+    show may have a real speaker by that name, and the index cannot tell.
     """
     out: list[dict] = []
     for t in turns:
-        speaker = t.speaker or "Unknown"
+        speaker = (
+            ""
+            if is_unattributed(t.speaker, declared=(LEGACY_NARRATOR_SPEAKER,))
+            else t.speaker
+        )
         text = t.text.strip()
         if not text:
             continue

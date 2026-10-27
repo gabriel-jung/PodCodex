@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 
+import numpy as np
 from loguru import logger
 
 from podcodex.rag.chunker import semantic_chunks, speaker_chunks
@@ -141,6 +142,9 @@ def vectorize_episode(
         f"in {time.perf_counter() - t0:.1f}s"
     )
 
+    _check_embeddings(embeddings, len(chunks), dim, model_key)
+    _warn_truncated(chunks, model_key, episode)
+
     logger.info(f"Upserting {len(chunks)} chunks into '{col}'")
     t0 = time.perf_counter()
     local.save_chunks(col, episode, chunks, embeddings)
@@ -149,6 +153,67 @@ def vectorize_episode(
         f"(upsert {time.perf_counter() - t0:.1f}s)"
     )
     return chunks, len(chunks)
+
+
+# Tokens an embedder reads per passage: BGE-M3 is called with max_length=512,
+# and the E5 models cap at 512 positions. Anything past this is not embedded.
+_EMBED_WINDOW = 512
+
+
+def _check_embeddings(embeddings, n: int, dim: int, model_key: str) -> None:
+    """Refuse model output that cannot be a valid embedding of *n* chunks.
+
+    A NaN vector scores 0 in cosine search and a zero vector matches nothing,
+    so either would be saved as a chunk dense search can never return, with
+    no sign anything went wrong. Raised as a combination failure instead.
+    """
+    shape = getattr(embeddings, "shape", None)
+    if shape != (n, dim):
+        raise ValueError(
+            f"{model_key} returned embeddings of shape {shape}, expected {(n, dim)}"
+        )
+    if not np.isfinite(embeddings).all():
+        raise ValueError(f"{model_key} returned non-finite embeddings")
+    if not np.any(embeddings, axis=1).all():
+        raise ValueError(f"{model_key} returned an all-zero embedding")
+
+
+def _warn_truncated(chunks: list[dict], model_key: str, episode: str) -> None:
+    """Say when chunks run past the embedder's window (only their head is
+    embedded): speaker chunks have no length cap, so a long monologue loses
+    most of its text from dense search. Keyword search still sees it all."""
+    if model_key.startswith("pplx"):
+        return  # long-context model
+
+    def tokens(c: dict) -> int:
+        # Speaker chunks carry no count: estimate (subword tokenizers average
+        # well over one token per word, so this errs low).
+        return c.get("token_count") or int(len(c.get("text", "").split()) * 1.3)
+
+    over = [t for c in chunks if (t := tokens(c)) > _EMBED_WINDOW]
+    if over:
+        longest = max(over)
+        logger.warning(
+            f"{len(over)} of {len(chunks)} chunks of '{episode}' exceed the "
+            f"{_EMBED_WINDOW}-token window of {model_key} (longest {longest}): "
+            "dense search sees only their beginning"
+        )
+
+
+def _drop_episode(
+    local: IndexStore,
+    show_id: str,
+    show: str,
+    episode: str,
+    model_keys: list[str],
+    chunking: str,
+) -> None:
+    """Remove *episode* from each (model, *chunking*) collection of the show."""
+    for model_key in model_keys:
+        col = local.resolve_collection(show_id, model_key, chunking, show_label=show)
+        if col and local.episode_is_indexed(col, episode):
+            local.delete_episode(col, episode)
+            logger.info(f"Removed '{episode}' from '{col}': it now yields no chunks")
 
 
 def vectorize_batch(
@@ -219,6 +284,12 @@ def vectorize_batch(
                     total_processed += len(chunks_for_strategy)
             except NoChunksError as e:
                 logger.warning(str(e))
+                if overwrite:
+                    # Overwrite means "these combinations now hold what the
+                    # transcript yields": nothing, for this strategy. Left in
+                    # place, the old chunks would answer searches forever
+                    # (podcodex-reindex prunes by episode, not by strategy).
+                    _drop_episode(local, show_id, show, episode, model_keys, chunking)
                 step += len(model_keys) - model_keys.index(model_key)
                 break
             except Exception as exc:

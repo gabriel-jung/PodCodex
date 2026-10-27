@@ -300,17 +300,19 @@ def test_merge_display_turns_preserves_alternation():
 
 
 def test_merge_display_turns_skips_empty_and_unknown_speaker():
-    """Empty text is dropped; blank speaker labels default to ``Unknown``."""
+    """Empty text is dropped; placeholder labels come out empty, never as a name."""
     turns = [
         SpeakerTurn(speaker="Alice", text="   ", start=0.0, end=1.0),
         SpeakerTurn(speaker="", text="ghost line", start=1.0, end=2.0),
-        SpeakerTurn(speaker="", text="another ghost", start=2.0, end=3.0),
+        SpeakerTurn(speaker="UNKNOWN", text="another ghost", start=2.0, end=3.0),
         SpeakerTurn(speaker="Alice", text="real line", start=3.0, end=4.0),
+        SpeakerTurn(speaker="Narrator", text="a named voice", start=4.0, end=5.0),
     ]
     merged = merge_display_turns(turns)
-    # Whitespace-only turn dropped; ghost turns collapse under "Unknown"; Alice
-    # closes as a separate block.
-    assert [m["speaker"] for m in merged] == ["Unknown", "Alice"]
+    # Whitespace-only turn dropped; the blank and UNKNOWN turns collapse into
+    # one unattributed run; Alice closes as a separate block.
+    # The legacy "Narrator" may be a real person: kept, as list_speakers does.
+    assert [m["speaker"] for m in merged] == ["", "Alice", "Narrator"]
     assert merged[0]["text"] == "ghost line another ghost"
     assert merged[1]["text"] == "real line"
 

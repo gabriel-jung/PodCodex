@@ -11,6 +11,7 @@ from loguru import logger
 
 from podcodex.bot.config import ServerSettings
 from podcodex.bot.guards import require_guild
+from podcodex.bot.resolution import explicit_combo
 from podcodex.rag.defaults import (
     MODELS,
 )
@@ -92,7 +93,7 @@ class SettingsMixin:
         """
         settings = self._effective_settings(guild_id, model or "", 0)
         base = self._server_settings(guild_id)
-        explicit = (model, base.chunker) if model else None
+        explicit = explicit_combo(model or "", "", base)
         return settings, base, explicit
 
     @staticmethod

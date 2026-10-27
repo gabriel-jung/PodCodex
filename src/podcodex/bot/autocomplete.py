@@ -10,6 +10,7 @@ import discord
 from discord import app_commands
 
 from podcodex.bot.config import ServerSettings
+from podcodex.bot.resolution import explicit_combo
 from podcodex.core._utils import resolve_episode_title
 from podcodex.rag.defaults import (
     CHUNKING_STRATEGIES,
@@ -123,6 +124,37 @@ class AutocompleteMixin:
         ]
         return self._filter_collections(cols, settings, col_info), col_info
 
+    async def _command_collections(
+        self, interaction: discord.Interaction, settings: ServerSettings
+    ) -> list[str] | None:
+        """Collections the command being typed will search, or None if locked.
+
+        Picked exactly as the command will pick them (``_resolve_show_collections``:
+        explicit model/chunker, show.toml prefs, server default, first by name),
+        so a show indexed under another model still gets suggestions.
+        """
+        ns = interaction.namespace
+        explicit = explicit_combo(
+            getattr(ns, "model", "") or "", getattr(ns, "chunker", "") or "", settings
+        )
+        show = getattr(ns, "show", "") or ""
+        col_info = await self._cached_col_info()
+
+        def _pick() -> list[str] | None:
+            resolved = self._resolve_shows(settings, show)
+            if resolved.is_locked:
+                return None
+            return [
+                c.name
+                for c in self._resolve_show_collections(
+                    resolved, settings, col_info, explicit=explicit
+                )
+            ]
+
+        # Index reads (label lookups, access checks): off the event loop, as
+        # every other autocomplete read is, since this runs per keystroke.
+        return await asyncio.get_running_loop().run_in_executor(None, _pick)
+
     async def _known_show_labels(
         self, settings: ServerSettings, model: str = "", chunker: str = ""
     ) -> list[str]:
@@ -185,30 +217,11 @@ class AutocompleteMixin:
         await self._refresh_if_stale()
         self._cache_clear_if_stale()
         settings = self._server_settings(interaction.guild_id)
-        model = getattr(interaction.namespace, "model", "") or settings.model
-        chunker = settings.chunker
-
-        # Determine which show(s) to look at
-        show = getattr(interaction.namespace, "show", "")
-        resolved = self._resolve_shows(settings, show)
-        if resolved.is_locked:
+        cols = await self._command_collections(interaction, settings)
+        if cols is None:
             return []
 
         all_episodes: dict[str, str] = {}  # stem -> display name
-        if resolved.is_specific:
-            # Resolved through the store, never rebuilt: the bot has no
-            # show.toml, so a display name is all it has, and the collection
-            # it maps to is the store's business.
-            cols = [
-                col
-                for col in (
-                    self.local.resolve_collection("", model, chunker, show_label=s)
-                    for s in resolved.shows
-                )
-                if col
-            ]
-        else:
-            cols, _ = await self._visible_collections(settings, model, chunker)
         for col in cols:
             stems = await self._cached_episodes(col)
             titles = await self._cached_episode_titles(col)
@@ -231,13 +244,12 @@ class AutocompleteMixin:
         await self._refresh_if_stale()
         self._cache_clear_if_stale()
         settings = self._server_settings(interaction.guild_id)
-        model = getattr(interaction.namespace, "model", "") or settings.model
-        chunker = settings.chunker
-
-        collections, _ = await self._visible_collections(settings, model, chunker)
+        cols = await self._command_collections(interaction, settings)
+        if cols is None:
+            return []
 
         all_sources: set[str] = set()
-        for col in collections:
+        for col in cols:
             all_sources.update(await self._cached_sources(col))
 
         return [
@@ -303,24 +315,13 @@ class AutocompleteMixin:
         await self._refresh_if_stale()
         self._cache_clear_if_stale()
         settings = self._server_settings(interaction.guild_id)
-        model = getattr(interaction.namespace, "model", "") or settings.model
-        chunker = settings.chunker
-
-        show = getattr(interaction.namespace, "show", "")
-        resolved = self._resolve_shows(settings, show)
-        if resolved.is_locked:
+        cols = await self._command_collections(interaction, settings)
+        if cols is None:
             return []
 
         all_speakers: set[str] = set()
-        if resolved.is_specific:
-            for s in resolved.shows:
-                col = self.local.resolve_collection("", model, chunker, show_label=s)
-                if col:
-                    all_speakers.update(await self._cached_speakers(col))
-        else:
-            collections, _ = await self._visible_collections(settings, model, chunker)
-            for col in collections:
-                all_speakers.update(await self._cached_speakers(col))
+        for col in cols:
+            all_speakers.update(await self._cached_speakers(col))
 
         return [
             app_commands.Choice(name=s, value=s)

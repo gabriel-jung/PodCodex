@@ -154,3 +154,24 @@ def test_episode_autocomplete_returns_nothing_for_an_explicit_locked_show(store)
     bot = _bot(store)
     interaction = _Interaction(show="Locked")
     assert asyncio.run(bot._episode_autocomplete(interaction, "")) == []
+
+
+def test_pickers_offer_a_show_indexed_only_under_another_model(store):
+    """Suggestions come from the collections the command will search, which
+    fall back past the server's default combo; an exact-combo match offered
+    nothing for such a show while /search found its hits."""
+    add_show(
+        store,
+        "Other",
+        {"other-ep1": [chunk(episode="other-ep1", show="Other", speaker="Olive")]},
+        show_id="other_3333cccc",
+        model="e5-small",
+    )
+    bot = _bot(store)
+    interaction = _Interaction(show="Other")
+
+    episodes = asyncio.run(bot._episode_autocomplete(interaction, ""))
+    speakers = asyncio.run(bot._speaker_autocomplete(interaction, ""))
+
+    assert [c.value for c in episodes] == ["other-ep1"]
+    assert [c.value for c in speakers] == ["Olive"]

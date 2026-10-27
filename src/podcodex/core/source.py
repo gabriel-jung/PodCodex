@@ -163,6 +163,14 @@ def _extract_broadcast_number(show_dir: Path, title: str) -> int | None:
         return None
 
 
+class NoTranscriptError(ValueError):
+    """The episode has no transcript of any kind yet (nothing to index).
+
+    A ``ValueError`` so existing callers keep treating it as one; callers
+    that must tell "not transcribed" from "unreadable" catch this instead.
+    """
+
+
 class SourceRef(NamedTuple):
     """Which version a step reads, without its segments."""
 
@@ -224,7 +232,7 @@ def _resolve_source_segments(p, source: str) -> SourceVersion:
             found = latest(step)
             if found and found.segments:
                 return found
-        raise ValueError("No transcript found, transcribe first")
+        raise NoTranscriptError("No transcript found, transcribe first")
 
     # Explicit steps read from ``p.base`` directly. Going through the audio
     # path would rebuild AudioPaths from ``p.audio_path``, which for an
@@ -235,7 +243,7 @@ def _resolve_source_segments(p, source: str) -> SourceVersion:
     if found and found.segments:
         return found
     if step == "transcript":
-        raise ValueError("No transcript found, transcribe first")
+        raise NoTranscriptError("No transcript found, transcribe first")
     if step == "corrected":
         raise ValueError("No corrected segments found")
     raise ValueError(f"No translation found for '{source}'")

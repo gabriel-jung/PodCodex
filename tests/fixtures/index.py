@@ -97,6 +97,13 @@ def add_show(
     return col
 
 
+def relabel(store, show_id: str, label: str) -> None:
+    """Rename a show inside the index, as the app's read-time heal writes it
+    (``IndexStore._heal_collection_meta``) and as a replica receives it."""
+    for col in store.collections_for_show(show_id):
+        store.set_collection_identity(col, show_id=show_id, show=label)
+
+
 def show_id_of(store, label: str) -> str:
     """The id ``add_show`` gave *label*, read back from the index."""
     return store.show_id_for_label(label)

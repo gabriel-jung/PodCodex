@@ -34,6 +34,11 @@ _SCRATCH = Path(tempfile.mkdtemp(prefix="podcodex-tests-"))
 atexit.register(shutil.rmtree, _SCRATCH, ignore_errors=True)
 os.environ["XDG_CONFIG_HOME"] = str(_SCRATCH / "config")
 os.environ["PODCODEX_DATA_DIR"] = str(_SCRATCH / "data")
+# An index override inherited from the shell (deploy/BOT.md and MCP.md
+# document exporting it) would otherwise win over the scratch data dir, and
+# make_client defers to it: the suite would run against that index, which the
+# guard below cannot see because it only knows the scratch <data_dir>/index.
+os.environ.pop("PODCODEX_INDEX", None)
 
 import podcodex.rag.index_store as _index_store  # noqa: E402
 

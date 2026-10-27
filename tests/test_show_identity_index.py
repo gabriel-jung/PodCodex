@@ -8,7 +8,7 @@ import pytest
 
 from podcodex.ingest.show import ShowMeta, save_show_meta, show_id
 from podcodex.rag.index_store import IndexStore
-from tests.fixtures.index import DIM, add_show
+from tests.fixtures.index import DIM, add_show, relabel
 from tests.fixtures.show_resolver import show_folder_resolver
 
 
@@ -57,7 +57,7 @@ def test_a_new_combo_is_created_under_the_id_and_survives_a_rename(env):
 
     col = store.ensure_collection_for_show(sid, "My Show", "bge-m3", "sentence", DIM)
     save_show_meta(folder, ShowMeta(id=sid, name="Renamed"))
-    assert store.set_show_label(sid, "Renamed", previous_label="My Show") >= 1
+    relabel(store, sid, "Renamed")
 
     assert store.resolve_collection(sid, "bge-m3", "sentence") == col
     assert store.collection_label(col) == "Renamed"
@@ -68,7 +68,7 @@ def test_rename_propagates_the_label_into_the_index(env):
     store, folder = env
     sid = show_id(folder)
 
-    assert store.set_show_label(sid, "Brand New Name") == 1
+    relabel(store, sid, "Brand New Name")
     col = store.resolve_collection(sid, "bge-m3", "semantic")
     assert store.get_collection_info(col)["show"] == "Brand New Name"
     # And a bot with only a label still finds it.
@@ -83,7 +83,7 @@ def test_rename_relabels_hits_without_touching_chunks(env):
     sid = show_id(folder)
     col = store.resolve_collection(sid, "bge-m3", "semantic")
 
-    store.set_show_label(sid, "Brand New Name")
+    relabel(store, sid, "Brand New Name")
 
     assert [h.show for h in store.load_chunks_no_embeddings(col, "ep1")] == [
         "Brand New Name"
@@ -95,7 +95,7 @@ def test_password_survives_a_rename(env):
     sid = show_id(folder)
     store.set_show_password(sid, "sha256:abc", show_label="My Show")
 
-    store.set_show_label(sid, "Brand New Name")
+    relabel(store, sid, "Brand New Name")
     store.set_show_password(sid, "sha256:abc", show_label="Brand New Name")
 
     entries = store.get_show_password_entries()

@@ -38,11 +38,10 @@ MIGRATIONS: dict[str, str] = {
     "LEGACY_NARRATOR_SPEAKER (Python and speakers.ts) and the declared "
     "clause of is_unattributed",
     "pub-date-column": "chunk tables from before the scalar pub_date column; "
-    "IndexStore._ensure_pub_date_column, Hit.rss_pub_date fallback",
+    "IndexStore._ensure_pub_date_column (empty column), Hit.rss_pub_date "
+    "fallback",
     "youtube-id-bridge": "episode meta from before the youtube_id field; "
     "ingest/rss._bridge_legacy_youtube_id",
-    "episode-title-backfill": "chunks indexed before titles reached chunk "
-    "meta; IndexStore._ensure_episode_title_backfill",
     "fts-v2": "FTS indexes from older lancedb or before accent folding; the "
     "rebuild branch of IndexStore._ensure_fts",
     "bundle-v1": "archives with manifest schema 1 (no show id); the mint "

@@ -16,6 +16,21 @@ from podcodex.rag.search_service import (
 )
 
 
+def explicit_combo(
+    model: str, chunker: str, settings: ServerSettings
+) -> tuple[str, str] | None:
+    """The (model, chunker) a user typed on a command, or None if neither.
+
+    Kept apart from ``settings`` rather than merged into it, so a typo'd
+    combo still falls back through show.toml prefs and the server default
+    instead of collapsing straight to first-by-name. The command and its
+    autocompletes both build it here, so suggestions match what runs.
+    """
+    if not (model or chunker):
+        return None
+    return (model or settings.model, chunker or settings.chunker)
+
+
 class ResolutionMixin:
     """Collection-resolution methods mixed into PodCodexBot (bot.py).
 
@@ -103,17 +118,16 @@ class ResolutionMixin:
         if shows.is_locked:
             return []
         wanted = list(shows.shows) if shows.is_specific else None
-        return [
-            c
-            for c in resolve_collections(
-                col_info,
-                shows=wanted,
-                show_prefs=load_show_rag_prefs(),
-                override=explicit,
-                default=(
-                    settings.model or DEFAULT_MODEL,
-                    settings.chunker or DEFAULT_CHUNKING,
-                ),
-            )
-            if self._show_allowed_by_label(c.show, settings)
-        ]
+        picked = resolve_collections(
+            col_info,
+            shows=wanted,
+            show_prefs=load_show_rag_prefs(),
+            override=explicit,
+            default=(
+                settings.model or DEFAULT_MODEL,
+                settings.chunker or DEFAULT_CHUNKING,
+            ),
+        )
+        if not self._locked_show_ids:
+            return picked  # nothing protected: no lookups on the event loop
+        return [c for c in picked if self._row_allowed(c.show_id, c.show, settings)]

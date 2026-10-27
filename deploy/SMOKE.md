@@ -71,8 +71,9 @@ Start with `make dev` on the host platform (or `make dev-no-tauri` for WSL / bro
 ### 8. Reindex CLI
 
 - [ ] `podcodex-reindex <show> --list` prints current collections.
-- [ ] `podcodex-reindex <show> --dry-run` reports what would happen without touching LanceDB.
+- [ ] `podcodex-reindex <show> --dry-run` reports what would happen without writing to LanceDB.
 - [ ] Real reindex completes and downstream search returns results.
+- [ ] Killing a real reindex part way leaves the show searchable, and rerunning it completes.
 
 ### 9. Recovery
 

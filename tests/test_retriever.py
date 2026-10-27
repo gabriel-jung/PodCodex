@@ -243,6 +243,16 @@ def test_exact_speaker_filter_is_turn_level(tmp_path):
     assert hits == []
 
 
+def test_exact_speaker_filter_on_turnless_chunks(tmp_path):
+    """Speaker-chunked rows carry no turns: the speaker filter falls back to
+    the chunk's dominant speaker instead of dropping every hit."""
+    retriever, _, col = _make_retriever(tmp_path)  # Alice on chunk 0, Bob on 1
+
+    hits = retriever.exact("chunk 0 of ep1", col, speaker="Alice")
+    assert [(h.episode, h.chunk_index) for h in hits] == [("ep1", 0)]
+    assert retriever.exact("chunk 0 of ep1", col, speaker="Bob") == []
+
+
 def test_random_returns_chunk(tmp_path):
     retriever, _, col = _make_retriever(tmp_path)
     result = retriever.random(col)
@@ -439,3 +449,17 @@ def test_chunk_key_distinguishes_chunks_with_the_same_start():
     a = Hit(show="S", episode="ep1", chunk_index=0, start=0.0)
     b = Hit(show="S", episode="ep1", chunk_index=1, start=0.0)
     assert _chunk_key(a) != _chunk_key(b)
+
+
+def test_hybrid_falls_back_to_dense_when_fts_fails(tmp_path, monkeypatch):
+    """The keyword half only refines hybrid ranking; a broken FTS index must
+    not turn a search that has dense answers into an error."""
+    retriever, _, col = _make_retriever(tmp_path)
+
+    def broken(*_a, **_k):
+        raise RuntimeError("Cannot perform full text search unless an INVERTED index")
+
+    monkeypatch.setattr(retriever._local, "search_fts", broken)
+    assert retriever.retrieve("neural networks", col, top_k=3, alpha=0.5)
+    with pytest.raises(RuntimeError):
+        retriever.retrieve("neural networks", col, top_k=3, alpha=0.0)

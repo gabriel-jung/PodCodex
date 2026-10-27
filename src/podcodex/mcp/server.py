@@ -36,6 +36,8 @@ from podcodex.rag.hit import Hit
 from podcodex.rag.index_store import chunk_map_from_chunks, get_index_store
 from podcodex.rag.retriever import get_retriever
 from podcodex.rag.search_service import (
+    FanOutFailures,
+    FanOutSnapshots,
     SearchCollection,
     exact_search as _svc_exact,
     hybrid_search as _svc_hybrid,
@@ -591,9 +593,19 @@ def exact_count(
     if not collections:
         return {}
     merged: dict[str, dict] = {q: {} for q in valid}
-    for c in collections:
-        try:
-            counts = get_retriever(c.model).exact_counts(
+    # Counts feed "is this phrase present" decisions, where a missing group
+    # reads as absence, so a partial answer is wrong, not degraded: a query
+    # that fails on any collection raises. Only a collection whose model is
+    # no longer registered is skipped (it can never be searched), and if
+    # every one is, that raises too.
+    failures = FanOutFailures("exact_count")
+    with FanOutSnapshots() as snaps:
+        for c in collections:
+            ret = failures.retriever(get_retriever, c.model, c.name, snaps)
+            if ret is None:
+                continue
+            failures.ok = True
+            counts = ret.exact_counts(
                 valid,
                 c.name,
                 group_by=group_by,
@@ -604,13 +616,9 @@ def exact_count(
                 pub_date_min=pub_date_min,
                 pub_date_max=pub_date_max,
             )
-        except ValueError:
-            raise
-        except Exception:
-            logger.exception(f"exact_count: collection {c.name!r} failed; skipping")
-            continue
-        for q, groups in counts.items():
-            merged[q].update(groups)
+            for q, groups in counts.items():
+                merged[q].update(groups)
+    failures.raise_if_all_failed()
     return merged
 
 

@@ -193,10 +193,25 @@ class AccessMixin:
         """
         if not explicit_show:
             return ResolvedShows(ShowAccess.ALL)
-        show_id = self._show_id_for_label(explicit_show)
-        if show_id in self._locked_show_ids and show_id not in self._unlocked_ids(
-            settings
-        ):
+        if not self._locked_show_ids:
+            # Nothing protected: no index read on the event loop.
+            return ResolvedShows(ShowAccess.SPECIFIC, (explicit_show,))
+        # Every collection carrying the name, judged by the same rule the
+        # collection filter applies (``_row_allowed``): the name is locked only
+        # if none is visible here, and a visible twin never exposes the locked
+        # one since collections are filtered by that rule downstream too. A
+        # protected show not indexed yet has no rows; its password entry
+        # still locks the name.
+        rows = self.local.rows_for_label(explicit_show)
+        visible = (
+            any(
+                self._row_allowed(m.get("show_id") or "", m.get("show") or "", settings)
+                for m in rows
+            )
+            if rows
+            else self._show_allowed(self._show_id_for_label(explicit_show), settings)
+        )
+        if not visible:
             return ResolvedShows(ShowAccess.LOCKED)
         # Downstream resolves collections by label, so the label travels.
         return ResolvedShows(ShowAccess.SPECIFIC, (explicit_show,))
@@ -210,16 +225,6 @@ class AccessMixin:
         return show_id not in self._locked_show_ids or show_id in self._unlocked_ids(
             settings
         )
-
-    def _show_allowed_by_label(self, label: str, settings: ServerSettings) -> bool:
-        """``_show_allowed`` for callers holding only a display name.
-
-        Short-circuits before any index read when nothing is protected, which
-        is the common case and the only state some callers have a store for.
-        """
-        if not self._locked_show_ids:
-            return True
-        return self._show_allowed(self._show_id_for_label(label), settings)
 
     def _filter_collections(
         self,
@@ -245,10 +250,28 @@ class AccessMixin:
         return [
             col
             for col in collections
-            if self._show_allowed(
-                self.local.show_key(info_map.get(col) or {}), settings
+            if self._row_allowed(
+                (info_map.get(col) or {}).get("show_id") or "",
+                (info_map.get(col) or {}).get("show") or col,
+                settings,
             )
         ]
+
+    def _row_allowed(self, show_id: str, label: str, settings: ServerSettings) -> bool:
+        """Whether this server may see one collection: the one access rule.
+
+        A collection is protected by its id and, until the migration rekeys
+        it, by a legacy password row keyed by its display name; an index read
+        mid-migration can hold either shape for either side. So a row must
+        pass under its id (or, with none, the id its label resolves to) and
+        under its label. This fails closed when two shows share a name and one
+        is protected by a legacy row: both stay hidden until the migration
+        separates them, rather than one exposing the other.
+        """
+        ident = show_id or self._show_id_for_label(label)
+        return self._show_allowed(ident, settings) and self._show_allowed(
+            label, settings
+        )
 
     async def _handle_unlock(
         self,

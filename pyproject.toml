@@ -49,10 +49,15 @@ desktop = [
     "mcp>=1.28.1,<2",
 ]
 rag = [
-    "chonkie>=0.5.0",
+    # 1.2.0: SemanticChunker(skip_window=...) and the top-level
+    # SentenceTransformerEmbeddings the chunker passes it.
+    "chonkie>=1.2.0",
     "flagembedding>=1.3.5",
     "lancedb>=0.30.0",
     "numpy>=1.26",
+    # Imported by rag.index_store at module scope; lancedb only brings it
+    # transitively, and the bot-only install has no pipeline extra to declare it.
+    "pyarrow>=23.0.0",
     "sentence-transformers>=5.2.3,<5.4.0",
     # 2.6 is the floor for transformers' or_mask_function / and_mask_function
     # ops — the Perplexity embedder triggers that path and dies on older torch.

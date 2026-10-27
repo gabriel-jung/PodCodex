@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from podcodex.rag.defaults import CHUNK_SIZE, CHUNK_THRESHOLD, DEFAULT_MODEL
+
 
 def run(
     *,
@@ -26,75 +28,174 @@ def run(
     threshold: float,
     overwrite: bool,
 ) -> dict[str, Any]:
-    """Vectorize one episode. Returns ``{chunks_upserted, source}``."""
-    from podcodex.core.provenance import build_provenance
-    from podcodex.core.source import build_index_transcript, load_source
-    from podcodex.rag.index_store import get_index_store
+    """Vectorize one episode. Returns ``{chunks_upserted, source, stem}``.
+
+    Raises when the transcript chunks to nothing: the episode panel asked for
+    this episode, so "nothing indexed" is an error there, not a skip.
+    """
     from podcodex.core._utils import AudioPaths
-    from podcodex.core.pipeline_db import mark_step
-    from podcodex.rag.indexing import vectorize_batch
+    from podcodex.core.source import load_source
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     episode = p.audio_path.stem
 
     progress_cb(0.0, "Resolving source...")
-
     consumed = load_source(audio_path, output_dir, version_id, step=source)
+    upserted, source_label = _index_episode(
+        progress_cb,
+        cancelled,
+        p,
+        audio_path=audio_path,
+        output_dir=output_dir,
+        show=show,
+        stem=episode,
+        consumed=consumed,
+        model_keys=model_keys,
+        chunkings=chunkings,
+        chunk_size=chunk_size,
+        threshold=threshold,
+        overwrite=overwrite,
+    )
+    if upserted == 0:
+        raise ValueError(
+            f"Indexing produced 0 chunks for '{episode}'. "
+            "The transcript may be too short or have unsupported format."
+        )
+    # `stem` rides along so the server-side completion hook can warm its
+    # indexed-stems cache without re-deriving the episode name.
+    return {"chunks_upserted": upserted, "source": source_label, "stem": episode}
+
+
+def run_for_batch(
+    *,
+    progress_cb: Callable[[float, str], None],
+    cancelled: Callable[[], bool],
+    audio_path: str,
+    stem: str,
+    show_name: str,
+    model_keys: list[str],
+    chunkings: list[str],
+    force: bool,
+    version_id: str | None = None,
+) -> dict[str, Any]:
+    """Batch-mode index entry. Returns ``{upserted, indexed, skipped}``.
+
+    The parent (``api/routes/batch.py``) has already skipped episodes that
+    are fully indexed unless ``force``, so this does not ask again.
+    ``indexed`` is False when the episode has no transcript to index or it
+    chunked to nothing: in a batch that is a skip, not an error.
+    """
+    from podcodex.core._utils import AudioPaths
+    from podcodex.core.source import NoTranscriptError, load_source
+
+    p = AudioPaths.from_audio(audio_path)
+    progress_cb(0.0, "Indexing...")
+    try:
+        consumed = load_source(audio_path, None, version_id)
+    except NoTranscriptError:
+        # No transcript of any kind yet: nothing to index in this batch. Any
+        # other error (a corrupt file, a missing version) fails the episode.
+        return {"upserted": 0, "indexed": False, "skipped": False}
+    upserted, _ = _index_episode(
+        progress_cb,
+        cancelled,
+        p,
+        audio_path=audio_path,
+        output_dir=None,
+        show=show_name,
+        stem=stem,
+        consumed=consumed,
+        model_keys=model_keys,
+        chunkings=chunkings,
+        chunk_size=CHUNK_SIZE,
+        threshold=CHUNK_THRESHOLD,
+        overwrite=force,
+    )
+    return {"upserted": upserted, "indexed": upserted > 0, "skipped": False}
+
+
+def _index_episode(
+    progress_cb: Callable[[float, str], None],
+    cancelled: Callable[[], bool],
+    p,
+    *,
+    audio_path: str,
+    output_dir: str | None,
+    show: str,
+    stem: str,
+    consumed,
+    model_keys: list[str],
+    chunkings: list[str],
+    chunk_size: int,
+    threshold: float,
+    overwrite: bool,
+) -> tuple[int, str]:
+    """The index sequence both entries share: build, vectorize, compact, mark.
+
+    Returns ``(chunks, source_label)``; 0 chunks means nothing was written
+    and the episode is not marked. ``IndexingError`` (a failed combination)
+    propagates before ``mark_step``, so a partial index is never flagged
+    indexed. A cancel is honoured between combinations: the runner SIGTERMs
+    the child a few seconds later anyway, and stopping at a boundary keeps
+    the half-written combination out of the provenance.
+    """
+    from podcodex.core.device import device_str
+    from podcodex.core.pipeline_db import mark_step
+    from podcodex.core.provenance import build_provenance
+    from podcodex.core.source import build_index_transcript
+    from podcodex.ingest.show_registry import show_id_for_folder
+    from podcodex.rag.index_store import get_index_store
+    from podcodex.rag.indexing import vectorize_batch
+
     transcript = build_index_transcript(
         audio_path,
         show,
-        episode,
+        stem,
         segments=consumed.segments,
         source=consumed.step,
         output_dir=output_dir,
     )
-
+    if not transcript.get("segments"):
+        return 0, ""
     source_label = transcript["meta"].get("source", "auto")
     local = get_index_store()
     progress_cb(0.05, "Starting vectorization...")
 
     def on_prog(step: int, total: int, label: str) -> None:
-        frac = 0.05 + 0.9 * (step / max(total, 1))
-        progress_cb(frac, f"{label} ({step + 1}/{total})")
-
-    from podcodex.core.device import device_str
-
-    device = device_str()
-
-    from podcodex.ingest.show_registry import show_id_for_folder
-
-    total_upserted = vectorize_batch(
-        transcript,
-        show,
-        episode,
-        model_keys,
-        chunkings,
-        local,
-        show_id=show_id_for_folder(p.show_dir, show, mint=True),
-        chunk_size=chunk_size,
-        threshold=threshold,
-        overwrite=overwrite,
-        device=device,
-        on_progress=on_prog,
-    )
-
-    # A failed combination raises IndexingError above, so 0 here really is
-    # a transcript that chunked to nothing.
-    if total_upserted == 0:
-        raise ValueError(
-            f"Indexing produced 0 chunks for '{episode}'. "
-            "The transcript may be too short or have unsupported format."
+        if cancelled():
+            raise RuntimeError("Cancelled")
+        progress_cb(
+            0.05 + 0.9 * (step / max(total, 1)), f"{label} ({step + 1}/{total})"
         )
 
-    # Lance keeps every superseded fragment until something reclaims it, and
-    # a re-index is a delete plus an add. Compacting here, at the end of the
-    # job that wrote them, keeps the index directory (and the rsync to the
-    # bot host) from growing with every run.
-    local.compact()
+    try:
+        upserted = vectorize_batch(
+            transcript,
+            show,
+            stem,
+            model_keys,
+            chunkings,
+            local,
+            show_id=show_id_for_folder(p.show_dir, show, mint=True),
+            chunk_size=chunk_size,
+            threshold=threshold,
+            overwrite=overwrite,
+            device=device_str(),
+            on_progress=on_prog,
+        )
+    finally:
+        # Lance keeps every superseded fragment until something reclaims it,
+        # and a re-index is a delete plus an add. Compacted here, at the end
+        # of the job that wrote them, including a cancelled or partly failed
+        # one: the combinations already written are on disk either way, and
+        # this subprocess's store (the only one that knows) exits next.
+        local.compact()
+    if upserted == 0:
+        return 0, source_label
 
     provenance = build_provenance(
         "indexed",
-        model=(model_keys or ["bge-m3"])[0],
+        model=(model_keys or [DEFAULT_MODEL])[0],
         audio_path=audio_path,
         output_dir=output_dir,
         source=consumed,
@@ -108,10 +209,7 @@ def run(
         },
     )
     mark_step(p.show_dir, p.base.name, indexed=True, provenance={"indexed": provenance})
-
-    # `stem` rides along so the server-side completion hook can warm its
-    # indexed-stems cache without re-deriving the episode name.
-    return {"chunks_upserted": total_upserted, "source": source_label, "stem": episode}
+    return upserted, source_label
 
 
 def already_indexed(
@@ -148,86 +246,3 @@ def already_indexed(
         and local.episode_is_indexed(col, stem)
         for m, c in wanted
     )
-
-
-def run_for_batch(
-    *,
-    progress_cb: Callable[[float, str], None],
-    cancelled: Callable[[], bool],
-    audio_path: str,
-    stem: str,
-    show_name: str,
-    model_keys: list[str],
-    chunkings: list[str],
-    force: bool,
-    version_id: str | None = None,
-) -> dict[str, Any]:
-    """Batch-mode index entry — skips already-indexed combinations unless forced.
-
-    Returns ``{upserted: int, indexed: bool}``. ``indexed`` is False when the
-    episode had no segments to vectorize or when everything is already
-    indexed and ``force`` is False.
-    """
-    from podcodex.core.provenance import build_provenance
-    from podcodex.core.source import build_index_transcript
-    from podcodex.rag.index_store import get_index_store
-    from podcodex.core._utils import AudioPaths
-    from podcodex.core.pipeline_db import mark_step
-    from podcodex.ingest.show_registry import show_id_for_folder
-    from podcodex.rag.indexing import vectorize_batch
-
-    p = AudioPaths.from_audio(audio_path)
-    local = get_index_store()
-    show_id = show_id_for_folder(p.show_dir, show_name, mint=True)
-
-    if not force and already_indexed(
-        audio_path, stem, show_name, model_keys, chunkings
-    ):
-        return {"upserted": 0, "indexed": False, "skipped": True}
-
-    progress_cb(0.0, "Indexing...")
-    from podcodex.core.source import load_source
-
-    try:
-        consumed = load_source(audio_path, None, version_id)
-    except ValueError:
-        return {"upserted": 0, "indexed": False, "skipped": False}
-    transcript = build_index_transcript(
-        audio_path, show_name, stem, segments=consumed.segments, source=consumed.step
-    )
-    if not transcript.get("segments"):
-        return {"upserted": 0, "indexed": False, "skipped": False}
-
-    def on_prog(step: int, total: int, label: str) -> None:
-        progress_cb(step / max(total, 1), f"{label} ({step + 1}/{total})")
-
-    from podcodex.core.device import device_str
-
-    upserted = vectorize_batch(
-        transcript,
-        show_name,
-        stem,
-        model_keys,
-        chunkings,
-        local,
-        show_id=show_id,
-        overwrite=force,
-        device=device_str(),
-        on_progress=on_prog,
-    )
-
-    if upserted == 0:
-        return {"upserted": 0, "indexed": False, "skipped": False}
-
-    local.compact()
-
-    provenance = build_provenance(
-        "indexed",
-        model=(model_keys or ["bge-m3"])[0],
-        audio_path=audio_path,
-        params={"model_keys": model_keys, "chunkings": chunkings},
-        source=consumed,
-    )
-    mark_step(p.show_dir, p.base.name, indexed=True, provenance={"indexed": provenance})
-
-    return {"upserted": upserted, "indexed": True, "skipped": False}

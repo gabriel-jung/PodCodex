@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import (
@@ -160,6 +160,7 @@ def episode_collections(
 
 @router.delete("/episode")
 def delete_episode_from_index(
+    background: BackgroundTasks,
     collection: str = Query(...),
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
@@ -177,6 +178,11 @@ def delete_episode_from_index(
 
     local = get_index_store()
     local.delete_episode(collection, episode)
+    # A delete is the write that frees space, and nothing else in this
+    # long-lived process would reclaim it. After the response: optimize
+    # rewrites the table's fragments, which a user deleting episodes one by
+    # one should not wait on each time.
+    background.add_task(local.compact, [collection])
 
     # If this episode is no longer in any collection of this show, clear flag.
     still_indexed = any(

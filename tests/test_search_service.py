@@ -62,6 +62,7 @@ def test_resolve_defaults_pick_default_model():
         model="bge-m3",
         show="Alpha",
         artwork_url="https://img/a.png",
+        show_id="alpha_1",
     )
 
 
@@ -300,6 +301,27 @@ def test_hybrid_skips_broken_collection():
     assert [c.text for c, _ in out] == ["b"]
 
 
+def test_hybrid_skips_a_model_that_cannot_load():
+    hits = {"beta__e5-small__semantic": [Hit(text="b", score=0.8)]}
+    good = _factory(hits, [])
+
+    def factory(model):
+        if model == "bge-m3":
+            raise OSError("weights missing")
+        return good(model)
+
+    out = hybrid_search("q", [ALPHA_COL, BETA_COL], top_k=5, retriever_factory=factory)
+    assert [c.text for c, _ in out] == ["b"]
+
+
+def test_hybrid_raises_when_every_collection_failed():
+    def factory(model):
+        raise OSError("weights missing")
+
+    with pytest.raises(OSError):
+        hybrid_search("q", [ALPHA_COL], top_k=5, retriever_factory=factory)
+
+
 def test_exact_chronological_order_bot_semantics():
     hits = {
         "alpha__bge-m3__semantic": [
@@ -333,7 +355,9 @@ def test_random_returns_chunk_and_collection():
     assert random_quote([], retriever_factory=_factory({}, [])) is None
 
 
-def test_random_swallows_runtime_error():
+def test_random_raises_when_every_collection_failed():
+    """An index fault is not "no excerpts": with nothing answered, it raises."""
+
     class Broken(StubRetriever):
         def random(self, collection, **kw):
             raise RuntimeError("lance io")
@@ -341,7 +365,32 @@ def test_random_swallows_runtime_error():
     def factory(model):
         return Broken({}, [])
 
-    assert random_quote([ALPHA_COL], retriever_factory=factory) is None
+    with pytest.raises(RuntimeError):
+        random_quote([ALPHA_COL], retriever_factory=factory)
+
+
+def test_random_tries_every_collection_until_one_matches():
+    """A filter that matches only one show still finds it, whichever
+    collection the shuffle tries first."""
+    hits = {"beta__e5-small__semantic": [Hit(text="b")]}
+    for _ in range(10):
+        out = random_quote([ALPHA_COL, BETA_COL], retriever_factory=_factory(hits, []))
+        assert out is not None and out[1] == "beta__e5-small__semantic"
+
+
+def test_random_skips_a_broken_collection():
+    class Flaky(StubRetriever):
+        def random(self, collection, **kw):
+            if collection.startswith("alpha"):
+                raise RuntimeError("lance io")
+            return Hit(text="b")
+
+    def factory(model):
+        return Flaky({}, [])
+
+    for _ in range(10):
+        out = random_quote([ALPHA_COL, BETA_COL], retriever_factory=factory)
+        assert out is not None and out[0].text == "b"
 
 
 def test_random_reraises_value_error():
@@ -416,6 +465,20 @@ def test_exact_reraises_value_error():
         exact_search("q", [ALPHA_COL], retriever_factory=factory)
 
 
+def test_exact_raises_when_every_collection_failed():
+    """A broken FTS index must not read as "the phrase is absent"."""
+
+    class Broken(StubRetriever):
+        def exact(self, *a, **k):
+            raise RuntimeError("no INVERTED index")
+
+    def factory(model):
+        return Broken({}, [])
+
+    with pytest.raises(RuntimeError):
+        exact_search("q", [ALPHA_COL], retriever_factory=factory)
+
+
 def test_exact_chronological_word_matches_before_superstring():
     hits = {
         "alpha__bge-m3__semantic": [
@@ -447,3 +510,110 @@ def test_exact_search_limit_stops_at_the_cap():
     out = exact_search("q", cols, limit=4, retriever_factory=lambda _m: _Ret())
     assert [h for h, _c in out] == ["a-0", "a-1", "a-2", "b-0"]
     assert searched == ["a", "b"]
+
+
+_FILTERS = dict(
+    episode="ep1",
+    episodes=["ep1", "ep2"],
+    source="corrected",
+    speaker="Alice",
+    pub_date_min="2024-01-01",
+    pub_date_max="2024-12-31",
+)
+
+
+@pytest.mark.parametrize("surface", ["hybrid", "exact", "random"])
+def test_every_filter_reaches_the_retriever(surface):
+    """A filter dropped on the way leaves results the user excluded."""
+    seen: list[dict] = []
+
+    class Spy(StubRetriever):
+        def retrieve(self, query, collection, *, query_vector=None, **kw):
+            seen.append(kw)
+            return []
+
+        def exact(self, query, collection, **kw):
+            seen.append(kw)
+            return []
+
+        def random(self, collection, **kw):
+            seen.append(kw)
+            return None
+
+    def factory(model):
+        return Spy({}, [])
+
+    if surface == "hybrid":
+        hybrid_search("q", [ALPHA_COL], top_k=5, retriever_factory=factory, **_FILTERS)
+    elif surface == "exact":
+        exact_search("q", [ALPHA_COL], retriever_factory=factory, **_FILTERS)
+    else:
+        random_quote([ALPHA_COL], retriever_factory=factory, **_FILTERS)
+
+    assert seen and all(kw.items() >= _FILTERS.items() for kw in seen)
+
+
+def test_a_fan_out_reads_the_index_metadata_once(tmp_path, monkeypatch):
+    """Per-collection table listings and directory stats made a search's
+    fixed cost grow with the square of the collection count."""
+    import numpy as np
+
+    from podcodex.rag.index_store import IndexStore
+    from podcodex.rag.retriever import Retriever
+    from tests.fixtures.index import add_show, chunk
+
+    monkeypatch.setenv("PODCODEX_MACHINE_ID", "test")
+    store = IndexStore(tmp_path / "index")
+    cols = [
+        SearchCollection(
+            add_show(
+                store, f"S{i}", {"ep": [chunk("giraffes talk", show=f"S{i}")]}, dim=8
+            ),
+            "bge-m3",
+            f"S{i}",
+        )
+        for i in range(6)
+    ]
+
+    class _Emb:
+        def encode_query(self, _q):
+            return np.ones(8, dtype=np.float32)
+
+    ret = Retriever("bge-m3", local=store)
+    ret._embedder = _Emb()
+    hybrid_search("giraffes", cols, top_k=5, retriever_factory=lambda _m: ret)  # warm
+
+    listings = []
+    real = store._db.list_tables
+    monkeypatch.setattr(
+        store._db, "list_tables", lambda *a: listings.append(1) or real(*a)
+    )
+    stats = []
+    real_mtime = store.index_mtime
+    monkeypatch.setattr(store, "index_mtime", lambda: stats.append(1) or real_mtime())
+
+    out = hybrid_search("giraffes", cols, top_k=5, retriever_factory=lambda _m: ret)
+    exact_search("giraffes", cols, retriever_factory=lambda _m: ret)
+
+    assert len({c for _, c in out}) == 5  # top_k across shows, still answered
+    assert len(listings) <= 2 and len(stats) <= 2  # once per fan-out
+
+
+def test_a_collection_of_an_unregistered_model_is_skipped():
+    """The index can outlive the model registry: a stale model key skips its
+    collections instead of failing every show's search."""
+    good = _factory({"alpha__bge-m3__semantic": [Hit(text="a", score=0.9)]}, [])
+
+    def factory(model):
+        if model == "e5-small":
+            raise ValueError("Unknown model 'e5-small'")
+        return good(model)
+
+    cols = [ALPHA_COL, BETA_COL]
+    assert [
+        c.text for c, _ in hybrid_search("q", cols, top_k=5, retriever_factory=factory)
+    ] == ["a"]
+    assert [c.text for c, _ in exact_search("q", cols, retriever_factory=factory)] == [
+        "a"
+    ]
+    assert random_quote([BETA_COL, ALPHA_COL], retriever_factory=factory)[0].text == "a"

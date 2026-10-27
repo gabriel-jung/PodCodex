@@ -559,21 +559,28 @@ def test_the_show_id_comes_from_the_folder_not_the_label(tmp_path, store, monkey
 
 
 def test_without_the_rag_extra_a_delete_still_runs(tmp_path, monkeypatch):
-    import builtins
+    """The real shape of that install: pyarrow and numpy come with the
+    pipeline extra, so ``rag.index_store`` imports fine, and only lancedb is
+    missing. An import probe passed there and the delete then failed."""
+    import importlib.util
 
+    import podcodex.rag.index_store as index_store
     from podcodex.core.delete_episode import delete_episode
 
     show = tmp_path / "MyShow"
     show.mkdir()
     ep_dir = _add_episode(show, "ep1")
-    real_import = builtins.__import__
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *a: None if name == "lancedb" else real_find_spec(name, *a),
+    )
 
-    def no_rag(name, *a, **k):
-        if name == "podcodex.rag.index_store":
-            raise ImportError("No module named 'lancedb'")
-        return real_import(name, *a, **k)
+    def no_lancedb():
+        raise ModuleNotFoundError("No module named 'lancedb'")
 
-    monkeypatch.setattr(builtins, "__import__", no_rag)
+    monkeypatch.setattr(index_store, "get_index_store", no_lancedb)
     report = delete_episode(show, "ep1")
 
     assert report.files_clean

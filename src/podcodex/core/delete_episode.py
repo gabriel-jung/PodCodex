@@ -59,14 +59,16 @@ def _delete_chunks(show_dir: Path, stem: str, report: DeleteReport) -> None:
     # registered show carries that label, so with two shows of one name the
     # other show's chunks went.
     show_name = show_display(show_dir)
-    try:
-        # Local: lancedb / pyarrow must stay off the API boot path.
-        from podcodex.rag.index_store import get_index_store
-    except ImportError:
+    from podcodex.rag import rag_available
+
+    if not rag_available():
         # No `rag` extra: this install never indexed anything, so there are
         # no chunks to remove, and refusing would make every delete fail.
         logger.info("delete_episode: rag extra not installed, no chunks to remove")
         return
+    # Local: lancedb / pyarrow must stay off the API boot path.
+    from podcodex.rag.index_store import get_index_store
+
     try:
         touched = get_index_store().delete_episode_everywhere(
             show_name, stem, show_id=show_id(show_dir)

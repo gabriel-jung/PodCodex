@@ -134,6 +134,38 @@ def test_collection_artwork_backfilled_from_show_meta(tmp_path):
         )
 
 
+def test_heal_stamps_the_id_and_never_copies_a_local_artwork_marker(tmp_path):
+    """An id-less row gets the folder's show.toml id, and the local-file
+    artwork marker never leaves show.toml (consumers would render it as a
+    URL)."""
+    s = _store(tmp_path)
+    s.ensure_collection("c", show="My Show", model="m", chunker="semantic", dim=8)
+    show_dir = tmp_path / "showfolder"
+    show_dir.mkdir()
+    (show_dir / "show.toml").write_text(
+        'id = "my_show_1"\nname = "My Show"\nartwork_url = "local"\n',
+        encoding="utf-8",
+    )
+    resolve = lambda name: str(show_dir) if name == "My Show" else None  # noqa: E731
+    with show_folder_resolver(resolve):
+        info = s.get_all_collection_info()["c"]
+    assert info["show_id"] == "my_show_1"
+    assert info["artwork_url"] == ""
+
+
+def test_delete_collection_clears_its_upgrade_markers(tmp_path):
+    """A collection recreated under the same name must run its one-shot
+    upgrades again, not inherit the dropped table's markers."""
+    s, col = _texts_seeded(tmp_path, ["hello there"])
+    s.search_fts(col, "hello", 5)  # builds FTS, touches .fts_v2
+    assert (s._path / f"{col}.fts_v2").exists()
+
+    s.delete_collection(col)
+
+    assert not list(s._path.glob(f"{col}.*_v*"))
+    assert (s._path / f"{col}.lance").exists() is False
+
+
 @pytest.mark.legacy("collections-schema")
 def test_legacy_collections_table_gains_artwork_column(tmp_path):
     import lancedb
@@ -671,8 +703,10 @@ def test_list_episodes_filtered_invalid_date_raises(tmp_path):
 
 
 @pytest.mark.legacy("pub-date-column")
-def test_pub_date_migration_backfills_from_meta(tmp_path):
-    """Opening a legacy table (no pub_date column) adds + backfills it."""
+def test_a_table_without_pub_date_upgrades_episode_by_episode(tmp_path):
+    """A table from before the scalar column gets an empty one, no backfill:
+    old rows keep their date for display but drop out of date filters until
+    their episode is re-indexed, which must then work on the old table."""
     import json
     import lancedb
     import pyarrow as pa
@@ -743,14 +777,34 @@ def test_pub_date_migration_backfills_from_meta(tmp_path):
     )
 
     store = IndexStore(db_path)
-    # Triggering _table() via any read path runs the migration.
-    rows = (
-        store._table("c").search().select(["episode", "pub_date"]).limit(10).to_list()
+    old = {h.episode: h for h in store.load_chunks_no_embeddings("c", "ep1")}
+    assert old["ep1"].pub_date == ""  # not backfilled
+    assert old["ep1"].effective_pub_date == "2024-01-15"  # still displayed
+    assert store.list_episodes_filtered("c", pub_date_min="2024-01-01") == []
+    # Episode views show the meta date too, normalized.
+    dates = {e["episode"]: e["pub_date"] for e in store.list_episodes_filtered("c")}
+    assert dates == {"ep1": "2024-01-15", "ep2": "2024-02-20"}
+
+    # Re-indexing one episode writes its date, on the old table.
+    store.save_chunks(
+        "c",
+        "ep1",
+        [
+            {
+                "text": "alpha",
+                "episode": "ep1",
+                "show": "S",
+                "source": "transcript",
+                "dominant_speaker": "A",
+                "start": 0.0,
+                "end": 1.0,
+                "pub_date": "2024-01-15",
+            }
+        ],
+        rng[:1],
     )
-    by_ep = {r["episode"]: r["pub_date"] for r in rows}
-    assert by_ep["ep1"] == "2024-01-15"
-    assert by_ep["ep2"] == "2024-02-20"
-    assert (db_path / "c.pub_date_col_v1").exists()
+    filtered = store.list_episodes_filtered("c", pub_date_min="2024-01-01")
+    assert [e["episode"] if isinstance(e, dict) else e for e in filtered] == ["ep1"]
 
 
 # ── chunk-map + timestamp resolver ───────────────────────────────────────
@@ -918,6 +972,24 @@ def _texts_seeded(tmp_path, texts: list[str], *, untimed: bool = False):
             chunk["start"] = chunk["end"] = 0.0
     s.save_chunks(col, "ep1", chunks, _rng_embeddings(len(texts)))
     return s, col
+
+
+def test_fts_rebuilds_after_another_process_recreates_the_table(tmp_path):
+    """podcodex-reindex drops and recreates tables from its own store; a
+    long-lived store that already built FTS must rebuild, not answer empty."""
+    a, col = _texts_seeded(tmp_path, ["a giraffe walks"])
+    assert len(a.search_fts(col, "giraffe", 5)) == 1
+
+    b = IndexStore(a._path)
+    b.delete_collection(col)
+    b.ensure_collection(col, show="S", model="bge-m3", chunker="semantic", dim=8)
+    chunks = _chunks(1)
+    chunks[0]["text"] = "a giraffe walks"
+    b.save_chunks(col, "ep1", chunks, _rng_embeddings(1))
+
+    assert len(a.search_fts(col, "giraffe", 5)) == 1
+    exact, _, _ = a.search_literal(col, "giraffe")
+    assert len(exact) == 1
 
 
 def test_search_literal_query_of_short_words_only(tmp_path):
@@ -1120,33 +1192,6 @@ def test_failed_fts_creation_is_retried(tmp_path):
     assert not (tmp_path / "index" / f"{col}.fts_v2").exists()
 
 
-@pytest.mark.legacy("episode-title-backfill")
-def test_partial_episode_title_backfill_is_retried(tmp_path, monkeypatch):
-    import podcodex.ingest.rss as rss
-
-    s, col = _empty_collection(tmp_path)
-    s.save_chunks(col, "ep1", _chunks(2), _rng_embeddings(2))
-
-    class _Ep:
-        title = "Real Title"
-
-    monkeypatch.setattr(rss, "load_feed_cache", lambda _folder: [_Ep()])
-    monkeypatch.setattr(rss, "episode_stem", lambda _ep, _folder: "ep1")
-    sentinel = tmp_path / "index" / f"{col}.episode_title_v1"
-    # Opened before the resolver is set: _table() runs the backfill itself.
-    table = s._table(col)
-
-    with show_folder_resolver(lambda _name: str(tmp_path)):
-        s._ensure_episode_title_backfill(col, _FailingTable(table, "update"))
-        assert not sentinel.exists()
-
-        s._episode_title_ready.discard(col)  # the next process
-        s._ensure_episode_title_backfill(col, table)
-        assert sentinel.exists()
-
-    assert s.get_episode(col, "ep1")["episode_title"] == "Real Title"
-
-
 def test_search_literal_phrase_matching_hundreds_of_episodes(tmp_path):
     """Survivors load without one filter clause per episode: Lance refuses
     (and can crash on) more than 500 conditions."""
@@ -1251,11 +1296,11 @@ def test_fuzzy_probes_allow_exactly_the_edits_the_check_accepts(tmp_path, monkey
 
     s, col = _texts_seeded(tmp_path, ["pour le moment", "un autre chunk"])
     seen: list[tuple[str, int]] = []
-    real_query = s._fts_query
+    real_rows = s._fts_rows
 
-    def spy_query(collection, query, fuzziness, **kw):
+    def spy_rows(collection, query, fuzziness, *a, **kw):
         seen.append((query, fuzziness))
-        return real_query(collection, query, fuzziness, **kw)
+        return real_rows(collection, query, fuzziness, *a, **kw)
 
     expansions: list[int] = []
     real_match = lancedb.query.MatchQuery
@@ -1264,7 +1309,7 @@ def test_fuzzy_probes_allow_exactly_the_edits_the_check_accepts(tmp_path, monkey
         expansions.append(kw.get("max_expansions"))
         return real_match(*a, **kw)
 
-    monkeypatch.setattr(s, "_fts_query", spy_query)
+    monkeypatch.setattr(s, "_fts_rows", spy_rows)
     monkeypatch.setattr(lancedb.query, "MatchQuery", spy_match)
 
     s.search_literal(col, "pouur")
@@ -1276,58 +1321,223 @@ def test_fuzzy_probes_allow_exactly_the_edits_the_check_accepts(tmp_path, monkey
     assert expansions and all(e >= 1000 for e in expansions)
 
 
-@pytest.mark.legacy("episode-title-backfill")
-def test_episode_title_backfill_does_not_overwrite_a_newer_save(tmp_path, monkeypatch):
-    """An index subprocess can re-save the episode between the scan and the
-    update; the stale meta blob must not be written over the fresh one."""
-    import podcodex.ingest.rss as rss
-
-    s, col = _empty_collection(tmp_path)
-    s.save_chunks(col, "ep1", _chunks(1), _rng_embeddings(1))
-
-    class _Ep:
-        title = "Real Title"
-
-    monkeypatch.setattr(rss, "load_feed_cache", lambda _folder: [_Ep()])
-    monkeypatch.setattr(rss, "episode_stem", lambda _ep, _folder: "ep1")
-    table = s._table(col)
-
-    class _ResaveFirst:
-        """Re-saves the episode (new speaker) right before the heal's update."""
-
-        def __init__(self, t):
-            self._t = t
-
-        def update(self, **kw):
-            fresh = _chunks(1)
-            fresh[0]["dominant_speaker"] = "new speaker"
-            fresh[0]["extra"] = "fresh"
-            s.save_chunks(col, "ep1", fresh, _rng_embeddings(1))
-            return s._table(col).update(**kw)
-
-        def __getattr__(self, name):
-            return getattr(self._t, name)
-
-    with show_folder_resolver(lambda _name: str(tmp_path)):
-        s._ensure_episode_title_backfill(col, _ResaveFirst(table))
-
-    [chunk] = s.load_chunks_no_embeddings(col, "ep1")
-    assert chunk.model_extra.get("extra") == "fresh"
-
-
 def test_speaker_stats_leaves_out_labels_that_name_nobody(tmp_path):
-    """Undiarized chunks carry the placeholder (or "" in legacy transcripts),
-    which would otherwise top /speakers. A legacy "Narrator" stays: a show can
+    """Undiarized chunks carry the placeholder (or "" in legacy transcripts,
+    "UNKNOWN" from the chunker, "UNK" from transcribe), which would otherwise
+    top /speakers. A legacy "Narrator" stays: a show can
     declare a real speaker by that name, and the index cannot tell."""
     from podcodex.core._utils import NARRATOR_SPEAKER
 
     s, col = _empty_collection(tmp_path)
-    chunks = _chunks(4)
-    for chunk, speaker in zip(chunks, ["Alice", NARRATOR_SPEAKER, "", "Narrator"]):
+    labels = ["Alice", NARRATOR_SPEAKER, "", "Narrator", "UNKNOWN", "UNK"]
+    chunks = _chunks(len(labels))
+    for chunk, speaker in zip(chunks, labels):
         chunk["dominant_speaker"] = speaker
-    s.save_chunks(col, "ep1", chunks, _rng_embeddings(4))
+    s.save_chunks(col, "ep1", chunks, _rng_embeddings(len(labels)))
 
     assert sorted(row["speaker"] for row in s.speaker_stats(col)) == [
         "Alice",
         "Narrator",
     ]
+
+
+def test_two_stores_creating_one_collection_at_once_both_succeed(tmp_path):
+    """Two index subprocesses doing a show's first index race on the table
+    and on its _collections row; _write_lock is per process, so creation has
+    to be safe on its own: none fails, and the collection is listed once."""
+    import threading
+
+    path = tmp_path / "index"
+    IndexStore(path)  # stamp the index once, outside the race
+    stores = [IndexStore(path) for _ in range(4)]
+    barrier = threading.Barrier(len(stores))
+    errors: list[BaseException] = []
+
+    def _create(s: IndexStore) -> None:
+        barrier.wait()
+        try:
+            s.ensure_collection("new__bge-m3__semantic", "New", "bge-m3", "semantic", 8)
+        except BaseException as exc:  # noqa: BLE001 - recorded for the assert
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_create, args=(s,)) for s in stores]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    assert IndexStore(path).list_collections().count("new__bge-m3__semantic") == 1
+
+
+def test_set_show_password_replaces_in_one_row(tmp_path):
+    s = _store(tmp_path)
+    s.set_show_password("s_1", "sha256:a", show_label="S")
+    s.set_show_password("s_1", "sha256:b", show_label="S")
+    assert s.get_show_passwords() == {"s_1": "sha256:b"}
+
+
+@pytest.mark.parametrize("key", ["", "  "])
+def test_password_writes_refuse_an_empty_show_key(tmp_path, key):
+    """``show_id = ''`` is how every legacy row is stored: an empty key would
+    rewrite or delete all of them."""
+    s = _store(tmp_path)
+    with pytest.raises(ValueError):
+        s.set_show_password(key, "sha256:a")
+    with pytest.raises(ValueError):
+        s.delete_show_password(key)
+
+
+def test_password_entry_for_show_matches_a_legacy_label_like_the_migration(tmp_path):
+    """A legacy row keyed "my show" belongs to "My Show": the rename and the
+    purge used to look it up case-sensitively and leave it behind."""
+    s = _store(tmp_path)
+    t = s._passwords_table()
+    t.add([{"show_id": "", "show_label": "", "show": "my show", "password_hash": "h"}])
+
+    key, entry = s.password_entry_for_show("my_show_1", "  My Show ")
+    assert key == "my show" and entry["password_hash"] == "h"
+    assert s.password_entry_for_show("other_1", "Other") is None
+
+    s.set_show_password("my_show_1", "h2", show_label="My Show")
+    key, entry = s.password_entry_for_show("my_show_1", "My Show")
+    assert key == "my_show_1" and entry["password_hash"] == "h2"
+
+
+def test_show_id_for_label_prefers_a_real_id_over_a_legacy_row(tmp_path):
+    """A show with one migrated and one id-less collection (a replica synced
+    mid-migration) resolves to its id, never to the label stand-in."""
+    from tests.fixtures.index import add_show
+
+    s = _store(tmp_path)
+    add_show(s, "My Show", show_id="my-show_ab12cd34", collection="a__bge-m3__semantic")
+    add_show(
+        s, "My Show", show_id="", collection="b__e5-small__semantic", model="e5-small"
+    )
+    assert s.show_id_for_label("My Show") == "my-show_ab12cd34"
+    assert len(s.rows_for_label(" my show ")) == 2
+
+
+def test_a_failing_fuzzy_probe_costs_only_the_near_typo_tier(tmp_path, monkeypatch):
+    """Exact-token probes must answer; a fuzzy one that throws inside Lance
+    only loses its own variant instead of failing the whole exact search."""
+    s, col = _texts_seeded(tmp_path, ["the giraffe walks", "nothing here"])
+    real = s._fts_rows
+
+    def flaky(collection, query, fuzziness, *a, **kw):
+        if fuzziness:
+            raise RuntimeError("lance error on expansion")
+        return real(collection, query, fuzziness, *a, **kw)
+
+    monkeypatch.setattr(s, "_fts_rows", flaky)
+    exact, _accent, fuzzy = s.search_literal(col, "giraffe")
+    assert len(exact) == 1 and fuzzy == []
+    exact, _, _ = s.search_literal(col, "giraffe walks")  # multi-token path
+    assert len(exact) == 1
+
+    def broken(collection, query, fuzziness, *a, **kw):
+        raise RuntimeError("no INVERTED index")
+
+    monkeypatch.setattr(s, "_fts_rows", broken)
+    with pytest.raises(RuntimeError):
+        s.search_literal(col, "giraffe")
+
+
+@pytest.mark.legacy("pub-date-column")
+def test_an_old_table_that_cannot_get_pub_date_still_answers(tmp_path, monkeypatch):
+    """If the column add fails, reads must not select the missing column:
+    the collection keeps answering searches, only date filters are lost."""
+    import json
+
+    import lancedb
+    import pyarrow as pa
+    from lancedb.table import LanceTable
+
+    from podcodex.rag.index_store import _COLLECTIONS_SCHEMA
+
+    db_path = tmp_path / "index"
+    db = lancedb.connect(str(db_path))
+    schema = pa.schema(
+        [
+            *(pa.field(n, pa.string()) for n in ("show", "episode", "source")),
+            pa.field("chunk_index", pa.int32()),
+            pa.field("dominant_speaker", pa.string()),
+            pa.field("start", pa.float64()),
+            pa.field("end", pa.float64()),
+            pa.field("text", pa.string()),
+            pa.field("vector", pa.list_(pa.float32(), 8)),
+            pa.field("meta", pa.string()),
+        ]
+    )
+    db.create_table("c", schema=schema).add(
+        [
+            {
+                "chunk_index": 0,
+                "show": "S",
+                "episode": "ep1",
+                "source": "transcript",
+                "dominant_speaker": "A",
+                "start": 0.0,
+                "end": 1.0,
+                "text": "a giraffe walks",
+                "vector": [1.0] * 8,
+                "meta": json.dumps({}),
+            }
+        ]
+    )
+    db.create_table("_collections", schema=_COLLECTIONS_SCHEMA).add(
+        [{"name": "c", "show": "S", "model": "m", "chunker": "semantic", "dim": 8}]
+    )
+
+    def refuse(*_a, **_k):
+        raise OSError("read-only index")
+
+    monkeypatch.setattr(LanceTable, "add_columns", refuse)
+
+    # Each read first, in a fresh store: the first open is what finds the
+    # column missing, so a projection built before it must not fail.
+    def fresh():
+        return IndexStore(db_path)
+
+    assert len(fresh().search_fts("c", "giraffe", 5)) == 1
+    assert len(fresh().search_vector("c", np.ones(8, dtype=np.float32), 5)) == 1
+    assert [e["episode"] for e in fresh().list_episodes_filtered("c")] == ["ep1"]
+    texts = [h.text for h in fresh().load_chunks_no_embeddings("c", "ep1")]
+    assert texts == ["a giraffe walks"]
+
+
+def _legacy_password(s: IndexStore, label: str, h: str = "h") -> None:
+    s._passwords_table().add(
+        [{"show_id": "", "show_label": "", "show": label, "password_hash": h}]
+    )
+
+
+def test_a_password_set_never_clears_another_shows_legacy_row(tmp_path):
+    """B is protected by a legacy row keyed "Foo"; A renamed to "Foo" sets
+    its own password under that name and must leave B's row alone."""
+    from tests.fixtures.index import add_show
+
+    s = _store(tmp_path)
+    add_show(s, "Foo", show_id="", collection="b__bge-m3__semantic")
+    add_show(s, "Bar", show_id="a_1", collection="a__bge-m3__semantic")
+    _legacy_password(s, "Foo")
+    s.set_collection_identity("a__bge-m3__semantic", show_id="a_1", show="Foo")
+
+    s.set_show_password("a_1", "h2", show_label="Foo")
+
+    assert s.get_show_passwords() == {"a_1": "h2", "Foo": "h"}
+
+
+def test_deleting_a_password_clears_the_shows_own_legacy_row(tmp_path):
+    """A show protected under both its id and its old name-keyed row is
+    public afterwards, not still locked by the forgotten legacy row."""
+    from tests.fixtures.index import add_show
+
+    s = _store(tmp_path)
+    add_show(s, "Foo", show_id="foo_1", collection="foo__bge-m3__semantic")
+    s.set_show_password("foo_1", "h", show_label="Other")  # id row, other label
+    _legacy_password(s, "Foo")
+
+    s.delete_show_password("foo_1", show_label="Foo")
+
+    assert s.get_show_passwords() == {}

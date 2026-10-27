@@ -985,8 +985,8 @@ def _relabel_password(show_id: str, label: str, previous_label: str = "") -> Non
     """
     try:
         store = get_index_store()
-        entries = store.get_show_password_entries()
-        entry = entries.get(show_id) or entries.get(previous_label)
+        found = store.password_entry_for_show(show_id, previous_label)
+        entry = found[1] if found else None
         if entry and entry.get("label") != label:
             # A legacy row keyed by the previous name must go, or the bot
             # keeps enforcing the password under that name.
@@ -1909,14 +1909,15 @@ def _purge_show_from_index(
         names = store.collections_for_show(show_id, show_label=show_label)
         for name in names:
             store.delete_collection(name)
-        entries = store.get_show_password_entries()
         # id-else-label, matching collections_for_show above: a row that the
         # migration has not rekeyed yet is still keyed by the display name,
         # and would otherwise keep protecting a show that no longer exists.
-        pw_key = show_id if show_id in entries else (show_label or "")
-        removed = bool(pw_key) and pw_key in entries
-        if removed:
-            store.delete_show_password(pw_key)
+        found = store.password_entry_for_show(show_id, show_label or "")
+        removed = found is not None
+        if found:
+            # The id row and any legacy row under its name (unless another
+            # show carries that name): both protect this show.
+            store.delete_show_password(found[0], show_label=show_label or "")
         if names or removed:
             logger.info(
                 f"Purged show {show_id!r} from the index: "

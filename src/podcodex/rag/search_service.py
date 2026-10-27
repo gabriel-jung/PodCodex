@@ -11,6 +11,7 @@ from __future__ import annotations
 import random
 import time
 from collections.abc import Callable, Iterable, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,6 +35,10 @@ class SearchCollection:
     model: str
     show: str
     artwork_url: str = ""
+    # The show's stable id, "" on a collection written before ids existed.
+    # Access checks key on this, never on ``show``: two shows can share a
+    # display label, and a label lookup picks one of them.
+    show_id: str = ""
 
 
 def resolve_collections(
@@ -106,6 +111,7 @@ def resolve_collections(
                 model=meta.get("model", ""),
                 show=meta.get("show") or name,
                 artwork_url=(meta.get("artwork_url") or "").strip(),
+                show_id=(meta.get("show_id") or "").strip(),
             )
         )
     out.sort(key=lambda c: c.show.lower())
@@ -162,6 +168,62 @@ def load_show_rag_prefs() -> dict[str, tuple[str, str]]:
     return prefs
 
 
+class FanOutFailures:
+    """Per-collection failures of one fan-out.
+
+    A failing collection is logged and skipped so one broken table never
+    blanks a multi-show answer. When every collection failed there is no
+    answer at all, and an empty list would read as "nothing matched", so the
+    last error is raised instead. ``ValueError`` from a query (bad filter,
+    dim mismatch) is the caller's fault and always re-raises; one from
+    building a retriever (a model key no longer registered) is the
+    collection's, and skips it like any other failure.
+    """
+
+    def __init__(self, what: str) -> None:
+        self.what = what
+        self.last: Exception | None = None
+        self.ok = False
+
+    def record(self, col: str, exc: Exception, *, query: bool = True) -> None:
+        if query and isinstance(exc, ValueError):
+            raise exc
+        logger.opt(exception=exc).error(f"search_service: {self.what} failed for {col}")
+        self.last = exc
+
+    def retriever(self, factory, model: str, cols: str, snaps) -> Retriever | None:
+        """``factory(model)`` inside the fan-out's snapshot, or None (recorded)."""
+        try:
+            return snaps.enter(factory(model))
+        except Exception as exc:
+            self.record(cols, exc, query=False)
+            return None
+
+    def raise_if_all_failed(self) -> None:
+        if not self.ok and self.last is not None:
+            raise self.last
+
+
+class FanOutSnapshots(ExitStack):
+    """One ``read_snapshot`` per store a fan-out touches, held until it ends.
+
+    Entered lazily as retrievers come in (one per model, usually one store).
+    Stub retrievers in tests have no snapshot and are passed through.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._seen: set[int] = set()
+
+    def enter(self, ret: Retriever) -> Retriever:
+        snap = getattr(ret, "read_snapshot", None)
+        store = getattr(ret, "_local", None)
+        if snap is not None and id(store) not in self._seen:
+            self._seen.add(id(store))
+            self.enter_context(snap())
+        return ret
+
+
 def _by_model(
     collections: Sequence[SearchCollection],
 ) -> dict[str, list[SearchCollection]]:
@@ -190,33 +252,41 @@ def hybrid_search(
     """Fan a semantic query across collections and merge.
 
     Groups by embedding model so the query is encoded once per model, not
-    once per collection. ``ValueError`` (bad filter, dim mismatch)
-    re-raises; any other per-collection failure is logged and skipped so one
-    broken table never blanks the whole answer.
+    once per collection. Failures follow ``FanOutFailures``: a model that cannot
+    load skips its collections, it does not fail every show's search.
     """
     hits_by_col: dict[str, list[Hit]] = {}
-    for model, cols in _by_model(collections).items():
-        ret = retriever_factory(model)
-        qv = ret.encode_query(query)
-        for col in cols:
+    failures = FanOutFailures("retrieve")
+    with FanOutSnapshots() as snaps:
+        for model, cols in _by_model(collections).items():
+            names = ", ".join(c.name for c in cols)
+            ret = failures.retriever(retriever_factory, model, names, snaps)
+            if ret is None:
+                continue
             try:
-                hits_by_col[col.name] = ret.retrieve(
-                    query,
-                    col.name,
-                    top_k=top_k,
-                    alpha=alpha,
-                    episode=episode,
-                    episodes=episodes,
-                    source=source,
-                    speaker=speaker,
-                    pub_date_min=pub_date_min,
-                    pub_date_max=pub_date_max,
-                    query_vector=qv,
-                )
-            except ValueError:
-                raise
-            except Exception:
-                logger.exception(f"search_service: retrieve failed for {col.name}")
+                qv = ret.encode_query(query)
+            except Exception as exc:
+                failures.record(names, exc, query=False)
+                continue
+            for col in cols:
+                try:
+                    hits_by_col[col.name] = ret.retrieve(
+                        query,
+                        col.name,
+                        top_k=top_k,
+                        alpha=alpha,
+                        episode=episode,
+                        episodes=episodes,
+                        source=source,
+                        speaker=speaker,
+                        pub_date_min=pub_date_min,
+                        pub_date_max=pub_date_max,
+                        query_vector=qv,
+                    )
+                    failures.ok = True
+                except Exception as exc:
+                    failures.record(col.name, exc)
+    failures.raise_if_all_failed()
     merged = merge_results(hits_by_col, top_k=top_k, strategy=strategy)
     if score_floor > 0.0:
         merged = [r for r in merged if (r[0].score or 0.0) > score_floor]
@@ -252,27 +322,31 @@ def exact_search(
     descending.
     """
     out: list[tuple[Hit, str]] = []
-    for col in collections:
-        ret = retriever_factory(col.model)
-        try:
-            hits = ret.exact(
-                query,
-                col.name,
-                episode=episode,
-                episodes=episodes,
-                source=source,
-                speaker=speaker,
-                pub_date_min=pub_date_min,
-                pub_date_max=pub_date_max,
-            )
-        except ValueError:
-            raise
-        except Exception:
-            logger.exception(f"search_service: exact failed for {col.name}")
-            continue
-        out.extend((hit, col.name) for hit in hits)
-        if limit is not None and order != "chronological" and len(out) >= limit:
-            break
+    failures = FanOutFailures("exact")
+    with FanOutSnapshots() as snaps:
+        for col in collections:
+            ret = failures.retriever(retriever_factory, col.model, col.name, snaps)
+            if ret is None:
+                continue
+            try:
+                hits = ret.exact(
+                    query,
+                    col.name,
+                    episode=episode,
+                    episodes=episodes,
+                    source=source,
+                    speaker=speaker,
+                    pub_date_min=pub_date_min,
+                    pub_date_max=pub_date_max,
+                )
+            except Exception as exc:
+                failures.record(col.name, exc)
+                continue
+            failures.ok = True
+            out.extend((hit, col.name) for hit in hits)
+            if limit is not None and order != "chronological" and len(out) >= limit:
+                break
+    failures.raise_if_all_failed()
     if order == "chronological":
         # `score if score is not None`, not `score or ...`: a legitimate 0.0
         # must sort as 0.0, not jump to the top as if the field were missing.
@@ -303,29 +377,36 @@ def random_quote(
     pub_date_max: str | None = None,
     retriever_factory: Callable[[str], Retriever] = get_retriever,
 ) -> tuple[Hit, str] | None:
-    """One random quote from a randomly picked collection, or None.
+    """One random quote, or None when no collection has a match.
 
-    ``ValueError`` from the retriever (bad filter) re-raises; any other
-    failure is logged and the function returns None.
+    Collections are tried in random order until one yields a chunk, so a
+    filter that matches only some shows still finds their quotes, and each
+    show stays equally likely to be picked first. Failures follow
+    ``FanOutFailures``.
     """
-    if not collections:
-        return None
-    col = random.choice(list(collections))
-    try:
-        chunk = retriever_factory(col.model).random(
-            col.name,
-            episode=episode,
-            episodes=episodes,
-            source=source,
-            speaker=speaker,
-            pub_date_min=pub_date_min,
-            pub_date_max=pub_date_max,
-        )
-    except ValueError:
-        raise
-    except Exception:
-        logger.exception(f"search_service: random failed for {col.name}")
-        return None
-    if chunk is None:
-        return None
-    return chunk, col.name
+    order = list(collections)
+    random.shuffle(order)
+    failures = FanOutFailures("random")
+    with FanOutSnapshots() as snaps:
+        for col in order:
+            ret = failures.retriever(retriever_factory, col.model, col.name, snaps)
+            if ret is None:
+                continue
+            try:
+                chunk = ret.random(
+                    col.name,
+                    episode=episode,
+                    episodes=episodes,
+                    source=source,
+                    speaker=speaker,
+                    pub_date_min=pub_date_min,
+                    pub_date_max=pub_date_max,
+                )
+            except Exception as exc:
+                failures.record(col.name, exc)
+                continue
+            failures.ok = True
+            if chunk is not None:
+                return chunk, col.name
+    failures.raise_if_all_failed()
+    return None
