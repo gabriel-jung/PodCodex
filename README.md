@@ -170,7 +170,7 @@ The bundled installer ships CPU-only. NVIDIA users activate the in-app CUDA back
 Share your archive with a small community. Drop the bot into any Discord server and listeners can run slash commands for semantic search (`/search`), exact phrase (`/exact`), random samples (`/random`), episode browsing (`/episodes`), speaker stats (`/speakers`), and library stats (`/stats`). Per-server passwords if you're running multiple shows on one bot.
 
 ```bash
-uv sync --extra bot --extra rag
+uv sync --extra bot --extra rag --extra cpu
 DISCORD_TOKEN=... uv run podcodex-bot
 ```
 

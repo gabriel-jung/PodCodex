@@ -75,11 +75,30 @@ def bootstrap_for_mcp_stdio() -> None:
 
 
 def bootstrap_for_dev() -> None:
-    """For dev uvicorn (``make dev-api``), the Discord bot, and one-off
-    scripts. Logs to stderr."""
+    """For dev uvicorn (``make dev-api``) and one-off scripts. Logs to stderr."""
     _wire_model_caches()
     _install_all_patches()
     _check_system_ffmpeg()
+    _setup_loguru_stderr_sink()
+    _install_stdlib_intercept()
+
+
+def bootstrap_for_bot() -> None:
+    """For ``podcodex-bot`` (Docker or bare metal). Logs to stderr.
+
+    Loads ``.env`` first, found from the working directory upward: the model
+    cache wiring and ``data_dir()`` read the environment once, so a
+    ``PODCODEX_DATA_DIR`` or ``PODCODEX_HF_OFFLINE`` set there is too late
+    after them. Docker sets the environment before the process starts, so
+    this only matters on a bare-metal start. No ffmpeg check: the bot never
+    transcribes. Patches are eager, as for dev, because the first search
+    embeds a query.
+    """
+    from dotenv import find_dotenv, load_dotenv
+
+    load_dotenv(find_dotenv(usecwd=True))
+    _wire_model_caches()
+    _install_all_patches()
     _setup_loguru_stderr_sink()
     _install_stdlib_intercept()
 
@@ -160,7 +179,7 @@ def _patch_missing_stdio() -> None:
 def _install_all_patches() -> None:
     """Apply every monkey-patch eagerly, ML ones included.
 
-    Used by the dev server, the bot, and multiprocessing children — all
+    Used by the dev server, the bot, and multiprocessing children: all
     contexts that either start ML work immediately or want a broken CUDA
     wheel to fail loudly at startup rather than mid-request.
 

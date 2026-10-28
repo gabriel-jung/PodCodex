@@ -54,7 +54,7 @@ class StatsCommandsMixin:
             if not collections:
                 stats_shows = resolved if show else None
                 await interaction.followup.send(
-                    self._empty_collections_message(col_info, settings, stats_shows),
+                    self._empty_collections_message(col_info, stats_shows),
                     ephemeral=True,
                 )
                 return
@@ -118,7 +118,7 @@ class StatsCommandsMixin:
             if not collections:
                 speaker_shows = resolved if show else None
                 await interaction.followup.send(
-                    self._empty_collections_message(col_info, settings, speaker_shows),
+                    self._empty_collections_message(col_info, speaker_shows),
                     ephemeral=True,
                 )
                 return
@@ -194,7 +194,7 @@ class StatsCommandsMixin:
             if resolved.is_locked:
                 col_info = await self._cached_col_info()
                 await interaction.followup.send(
-                    self._empty_collections_message(col_info, settings, resolved),
+                    self._empty_collections_message(col_info, resolved),
                     ephemeral=True,
                 )
                 return
@@ -228,7 +228,7 @@ class StatsCommandsMixin:
                     show = shows[0]
                 elif not shows:
                     await interaction.followup.send(
-                        self._empty_collections_message(col_info, settings),
+                        self._empty_collections_message(col_info),
                         ephemeral=True,
                     )
                     return

@@ -7,6 +7,8 @@ from dataclasses import replace
 import discord
 from discord import app_commands
 
+from podcodex.bot.config import ServerSettings, is_any_source
+from podcodex.bot.guards import require_guild
 from podcodex.bot.resolution import explicit_combo
 from podcodex.rag.defaults import (
     ALPHA,
@@ -18,6 +20,14 @@ _BOOL_CHOICES = [
     app_commands.Choice(name="True", value="true"),
     app_commands.Choice(name="False", value="false"),
 ]
+
+
+def _effective_source(source: str, settings: ServerSettings) -> str | None:
+    """The source an -advanced command searches: the typed one, else the
+    server default; ``any`` searches every source whatever the default."""
+    if is_any_source(source):
+        return None
+    return source or settings.default_source or None
 
 
 class RegistrationMixin:
@@ -43,14 +53,12 @@ class RegistrationMixin:
             await self._refresh_if_stale()
             settings = self._effective_settings(interaction.guild_id)
             shows = self._resolve_shows(settings, "")
-            label = f"α={ALPHA:.2f} • {self._model_label(settings.model)}"
             await self._run_search(
                 interaction,
                 query,
                 shows,
                 settings,
                 ALPHA,
-                label,
                 source=settings.default_source or None,
                 compact=settings.compact,
             )
@@ -65,7 +73,7 @@ class RegistrationMixin:
             show="Pick a show (searches all if empty)",
             episode="Pick an episode",
             speaker="Filter by speaker name",
-            source="Transcript version: corrected, transcript, or a language code",
+            source="Transcript version: corrected, transcript, a language code, or any",
             after="Oldest publication date to include, YYYY-MM-DD (inclusive)",
             before="Newest publication date to include, YYYY-MM-DD (inclusive)",
             alpha="0 = keywords only → 1 = meaning only (default 0.5)",
@@ -98,17 +106,15 @@ class RegistrationMixin:
             base = self._server_settings(interaction.guild_id)
             settings = replace(base, top_k=top_k or base.top_k)
             explicit = explicit_combo(model, chunker, base)
-            effective_source = source or settings.default_source or None
+            effective_source = _effective_source(source, settings)
             use_compact = compact == "true" if compact else settings.compact
             shows = self._resolve_shows(settings, show)
-            label = f"α={alpha:.2f} • {self._model_label(model or base.model)}"
             await self._run_search(
                 interaction,
                 query,
                 shows,
                 settings,
                 alpha,
-                label,
                 source=effective_source,
                 episode=episode or None,
                 speaker=speaker or None,
@@ -152,7 +158,7 @@ class RegistrationMixin:
             show="Pick a show (searches all if empty)",
             episode="Pick an episode",
             speaker="Filter by speaker name",
-            source="Transcript version: corrected, transcript, or a language code",
+            source="Transcript version: corrected, transcript, a language code, or any",
             after="Oldest publication date to include, YYYY-MM-DD (inclusive)",
             before="Newest publication date to include, YYYY-MM-DD (inclusive)",
         )
@@ -172,7 +178,7 @@ class RegistrationMixin:
                 return
             await self._refresh_if_stale()
             settings = self._server_settings(interaction.guild_id)
-            effective_source = source or settings.default_source or None
+            effective_source = _effective_source(source, settings)
             shows = self._resolve_shows(settings, show)
             await self._run_exact(
                 interaction,
@@ -212,7 +218,7 @@ class RegistrationMixin:
             show="Pick a show (random from all if empty)",
             episode="Pick an episode",
             speaker="Filter by speaker name",
-            source="Transcript version: corrected, transcript, or a language code",
+            source="Transcript version: corrected, transcript, a language code, or any",
             after="Oldest publication date to include, YYYY-MM-DD (inclusive)",
             before="Newest publication date to include, YYYY-MM-DD (inclusive)",
         )
@@ -231,7 +237,7 @@ class RegistrationMixin:
                 return
             await self._refresh_if_stale()
             settings = self._server_settings(interaction.guild_id)
-            effective_source = source or settings.default_source or None
+            effective_source = _effective_source(source, settings)
             shows = self._resolve_shows(settings, show)
             await self._run_random(
                 interaction,
@@ -318,7 +324,7 @@ class RegistrationMixin:
             show_add="Pin this show as a default for commands that need one",
             show_remove="Unpin this show as a default",
             show_clear="Unpin every default show",
-            default_source="Default source to search: corrected, transcript, etc.",
+            default_source="Default source to search: corrected, transcript, etc. (any = no default)",
             compact="Use compact results by default",
         )
         @app_commands.choices(
@@ -348,7 +354,7 @@ class RegistrationMixin:
                 compact=compact,
             )
 
-        setup.autocomplete("show_add")(self._any_show_autocomplete)
+        setup.autocomplete("show_add")(self._show_autocomplete)
         setup.autocomplete("show_remove")(self._pinned_show_autocomplete)
         setup.autocomplete("default_source")(self._source_autocomplete)
         setup.autocomplete("model")(self._model_autocomplete)
@@ -379,6 +385,10 @@ class RegistrationMixin:
         )
         @app_commands.default_permissions(manage_guild=True)
         async def sync(interaction: discord.Interaction) -> None:
+            # Global commands reach DMs, where default_permissions is not
+            # enforced: without this anyone could trigger a sync.
+            if await require_guild(interaction) is None:
+                return
             await interaction.response.defer(ephemeral=True)
             await self.tree.sync()
             await interaction.followup.send(
@@ -394,6 +404,8 @@ class RegistrationMixin:
         )
         @app_commands.default_permissions(manage_guild=True)
         async def admin_reload(interaction: discord.Interaction) -> None:
+            if await require_guild(interaction) is None:
+                return
             await self._handle_admin_reload(interaction)
 
         # /unlock ─────────────────────────────
@@ -457,7 +469,7 @@ class RegistrationMixin:
             # so document them there: this text used to promise `alpha` on
             # /search and filters on /random, neither of which accepts one.
             embed.add_field(
-                name="/search `question`",
+                name="/search `query`",
                 value=(
                     "Find relevant passages using a mix of keyword and semantic "
                     "search, with this server's defaults."
@@ -477,19 +489,23 @@ class RegistrationMixin:
             embed.add_field(
                 name="/search-advanced · /exact-advanced · /random-advanced",
                 value=(
-                    "The same three searches with every option: filter by "
-                    "`show`, `episode`, `speaker`, `source` and a publication "
-                    "date range (`after` / `before`), and override `model`, "
-                    "`chunker`, `top_k` and `compact`.\n"
-                    "`/search-advanced` also takes `alpha`, which blends the "
-                    "two halves of the search: 0 = keywords only, 1 = meaning "
-                    "only (default 0.5)."
+                    "The same three searches with filters: `show`, `episode`, "
+                    "`speaker`, `source` (`any` ignores the server default) and "
+                    "a publication date range (`after` / `before`).\n"
+                    "`/search-advanced` also tunes the search: `alpha` blends "
+                    "its two halves (0 = keywords only, 1 = meaning only, "
+                    "default 0.5), plus `model`, `chunker`, `top_k` and "
+                    "`compact`."
                 ),
                 inline=False,
             )
             embed.add_field(
-                name="/episodes `show`",
-                value="List all indexed episodes for a show.",
+                name="/episodes",
+                value=(
+                    "List the indexed episodes of a show. Without `show` it "
+                    "takes the server's one pinned show, or the only show "
+                    "available."
+                ),
                 inline=False,
             )
             embed.add_field(

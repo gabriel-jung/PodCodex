@@ -1,5 +1,7 @@
 """Tests for podcodex.bot — pure functions only (no Discord)."""
 
+import asyncio
+
 import pytest
 
 from podcodex.rag.hit import Hit
@@ -115,7 +117,8 @@ def test_resolve_show_collections_precedence(monkeypatch, tmp_path, isolated_ind
             "chunker": "speaker",
         },
     }
-    bot, _ = make_bot(tmp_path)  # nothing protected: every show allowed
+    # Nothing protected: every show allowed. Every model loadable.
+    bot, _ = make_bot(tmp_path, models=("aardvark", "bge-m3", "e5-small"))
 
     def resolve(settings, prefs, explicit=None):
         monkeypatch.setattr(
@@ -144,6 +147,44 @@ def test_resolve_show_collections_precedence(monkeypatch, tmp_path, isolated_ind
     assert [(c.name, c.model) for c in got] == [("s__bge-m3__semantic", "bge-m3")]
     # The rungs below the guild default are search_service's own, pinned in
     # test_search_service.py.
+
+
+def test_shows_under_models_the_bot_does_not_load_are_left_out(
+    monkeypatch, tmp_path, isolated_index
+):
+    """Falling back to whatever model a show was indexed under loaded every
+    model the replica carried, on CPU, never evicted: one large model was
+    enough to push the container past its memory cap."""
+    from tests.fixtures.bot import make_bot
+
+    monkeypatch.setattr("podcodex.bot.resolution.load_show_rag_prefs", lambda: {})
+    col_info = {
+        "a__bge-m3__semantic": {"show": "A", "model": "bge-m3", "chunker": "semantic"},
+        "b__pplx-4b__semantic": {
+            "show": "B",
+            "model": "pplx-4b",
+            "chunker": "semantic",
+        },
+    }
+    bot, _ = make_bot(tmp_path)  # loads only the default model
+    settings = bot._server_settings(1)
+    every = ResolvedShows(ShowAccess.ALL)
+    only_b = ResolvedShows(ShowAccess.SPECIFIC, ("B",))
+
+    searched = bot._resolve_show_collections(every, settings, col_info, embeds=True)
+    assert [c.name for c in searched] == ["a__bge-m3__semantic"]
+    assert bot._resolve_show_collections(only_b, settings, col_info, embeds=True) == []
+    assert "model this bot does not load" in bot._empty_collections_message(
+        col_info, only_b, embeds=True
+    )
+    # Literal search, random and stats load no model: B stays reachable.
+    assert [
+        c.name for c in bot._resolve_show_collections(only_b, settings, col_info)
+    ] == ["b__pplx-4b__semantic"]
+    missing = ResolvedShows(ShowAccess.SPECIFIC, ("Nope",))
+    assert bot._empty_collections_message(col_info, missing) == (
+        "No show called **Nope** is indexed."
+    )
 
 
 def test_display_speaker_maps_raw_diarization_labels():
@@ -627,7 +668,7 @@ def _bot_for(tmp_path, store):
     from podcodex.bot.bot import PodCodexBot
 
     bot = PodCodexBot(
-        BotConfig(index_path=str(tmp_path / "index")),
+        BotConfig(index_path=str(tmp_path / "index"), models=("bge-m3", "e5-small")),
         server_config_path=tmp_path / "server_config.json",
     )
     _ = bot.local
@@ -660,7 +701,7 @@ def test_resolve_show_collections_excludes_locked_show(tmp_path):
     from tests.fixtures.index import show_id_of
 
     store.set_show_password(show_id_of(store, "Beta"), "sha256:" + "0" * 64)
-    bot._reload_shows()
+    asyncio.run(bot._reload_access())
     settings = bot._server_settings(None)
     col_info = bot.local.get_all_collection_info()
 

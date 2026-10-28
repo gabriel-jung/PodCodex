@@ -34,6 +34,7 @@ mcp = [
     # Floors at the fixes for published advisories; <2 because mcp 2 is a
     # breaking release the server has not been ported to.
     "mcp>=1.28.1,<2",    # stdio server for Claude Desktop / Claude Code
+    "anyio>=4",          # tools run in worker threads, prompts poll the file; mcp brings it today
     # The server reads the index, so it needs the retrieval stack too:
     # `podcodex.mcp.server` imports it at module scope, and `--extra mcp`
     # alone produced a binary that died on `ModuleNotFoundError: numpy`

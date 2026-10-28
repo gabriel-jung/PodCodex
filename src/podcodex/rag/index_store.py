@@ -2892,7 +2892,21 @@ def _row_to_chunk(row: dict, show_label: str = "") -> Hit:
 # ── Process-wide singleton ───────────────────────────────────────────────
 
 
+# `functools.cache` does not serialize a first call: two threads arriving
+# together (API routes in worker threads, MCP tools) would each open the index,
+# and opening is not passive (ownership stamp, meta heal, show-id migration).
+_default_store_lock = threading.RLock()
+
+
 @cache
+def _default_store() -> IndexStore:
+    store = IndexStore()
+    # Off the boot path by construction: get_index_store is lazy, and this is
+    # the first moment the app has both an open index and its show folders.
+    store.migrate_to_show_ids_if_owner()
+    return store
+
+
 def get_index_store() -> IndexStore:
     """Process-wide cached IndexStore using the default path resolution.
 
@@ -2901,8 +2915,10 @@ def get_index_store() -> IndexStore:
     that need a different path should instantiate ``IndexStore(custom_path)``
     directly.
     """
-    store = IndexStore()
-    # Off the boot path by construction: get_index_store is lazy, and this is
-    # the first moment the app has both an open index and its show folders.
-    store.migrate_to_show_ids_if_owner()
-    return store
+    if _default_store.cache_info().currsize:
+        return _default_store()  # opened already: no lock
+    with _default_store_lock:
+        return _default_store()
+
+
+get_index_store.cache_clear = _default_store.cache_clear  # type: ignore[attr-defined]

@@ -11,14 +11,15 @@ Two install paths, pick whichever fits your setup:
 
 ## Tools
 
-Both paths expose the same seven tools:
+Both paths expose the same eight tools:
 
-- `list_shows()`: catalog of shows indexed with the default model + chunker.
-- `list_episodes(show, date_from?, date_to?, title_contains?)`: per-episode metadata with date/title filters.
-- `get_episode(show, episode)`: metadata card for a single episode.
-- `search(query, show?, top_k?, episode?, speaker?)`: hybrid semantic + FTS.
-- `exact(query, show?, episode?, speaker?)`: literal phrase, every match (no cap).
-- `get_context(show, episode, chunk_index, window?)`: expand a hit with neighbouring chunks.
+- `list_shows()`: catalog of indexed shows, one entry per show (its own model + chunker setting, else the default).
+- `list_episodes(show?, pub_date_min?, pub_date_max?, title_contains?, broadcast_number?, fields?)`: per-episode metadata with date/title filters.
+- `get_episode(show, episode, include_chunk_map?, text_preview?, include_transcript?)`: metadata card for a single episode, optionally its chunk map or full transcript.
+- `search(query, show?, top_k?, episode?, episodes?, speaker?, pub_date_min?, pub_date_max?)`: hybrid semantic + FTS.
+- `exact(query, show?, episode?, episodes?, speaker?, pub_date_min?, pub_date_max?)`: literal phrase, every match (no cap).
+- `exact_count(queries, show?, ..., group_by?, first_hit?)`: occurrence counts per episode or show, no text.
+- `get_context(show, episode, chunk_index? | at_time?, window?)`: expand a hit with neighbouring chunks, by chunk or by timestamp.
 - `speaker_stats(show?)`: chunk count and airtime per speaker.
 
 Plus user-managed **prompts** that appear in Claude Desktop's `/` slash menu; see [Prompts](#prompts) below.
@@ -27,7 +28,7 @@ Plus user-managed **prompts** that appear in Claude Desktop's `/` slash menu; se
 
 ## Path A: desktop app (recommended)
 
-PodCodex's desktop app writes the Claude Desktop config for you and points it at the bundled `podcodex-mcp` stdio binary.
+PodCodex's desktop app writes the Claude Desktop config for you and points it at the right stdio command: the installed app's own `podcodex-server --mcp` for a DMG/MSI install, `.venv/bin/podcodex-mcp` for a dev checkout.
 
 ### Enable
 
@@ -35,11 +36,11 @@ PodCodex's desktop app writes the Claude Desktop config for you and points it at
 2. Go to **Settings → Claude Desktop**.
 3. Flip the toggle **Enable Claude Desktop integration**.
 4. Fully quit Claude Desktop (Cmd+Q on macOS, Alt+F4 elsewhere) and reopen it. Claude Desktop reads its MCP config only at startup.
-5. Inside a Claude conversation, click the 🔌 plug icon: `podcodex` should appear with all seven tools.
+5. Inside a Claude conversation, click the 🔌 plug icon: `podcodex` should appear with all eight tools.
 
 ### Lifecycle
 
-The toggle writes a stdio `mcpServers.podcodex` entry into `claude_desktop_config.json` that points at the absolute path of `.venv/bin/podcodex-mcp`. Claude Desktop spawns that binary on each startup and keeps it alive for the session.
+The toggle writes a stdio `mcpServers.podcodex` entry into `claude_desktop_config.json` with the absolute path of that command (`podcodex-server` plus `"args": ["--mcp"]` inside the installed app, or `.venv/bin/podcodex-mcp`). Claude Desktop spawns it on each startup and keeps it alive for the session.
 
 PodCodex's desktop app does not need to be running for Claude Desktop to use the MCP; the entry persists and the subprocess reads the shared LanceDB index at `<data_dir>/index/` directly (resolved per platform; see [Path B requirements](#requirements) below). Toggling off removes the entry.
 
@@ -127,7 +128,7 @@ Add (or merge into) the `mcpServers` block:
 
 Replace `/absolute/path/to/PodCodex` with your actual checkout. `PODCODEX_INDEX` can be omitted; it defaults to `<data_dir>/index` (see [Requirements](#requirements) for the platform-specific path). Same env var as the desktop app and Discord bot.
 
-Restart Claude Desktop. You should see the 🔌 plug icon next to the composer and the seven tools in its menu.
+Restart Claude Desktop. You should see the 🔌 plug icon next to the composer and the eight tools in its menu.
 
 ### Register with Claude Code
 
@@ -151,7 +152,7 @@ PodCodex ships five built-ins, all of which can be toggled off:
 - `/compare {topic}`: per-show comparison on a topic.
 - `/timeline {topic}`: chronological mentions across episodes.
 
-Custom prompts are added from **Settings → Claude Desktop → Add prompt** in the desktop app. After any prompt change, restart Claude Desktop so it re-handshakes the catalog; PodCodex itself applies changes live without a process restart.
+Custom prompts are added from **Settings → Claude Desktop → Add prompt** in the desktop app. The server Claude Desktop spawns watches the prompts file and tells Claude Desktop when it changes, so edits usually show up without a restart; if one does not, restart Claude Desktop so it re-handshakes the catalog.
 
 ---
 

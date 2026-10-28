@@ -67,13 +67,17 @@ class AnnounceStore:
             """
         )
 
-    def observe(self, collection: str, current: set[str]) -> list[str]:
-        """Record the current episode set and return the newly-appeared stems.
+    def observe(
+        self, collection: str, current: set[str], *, record: bool = True
+    ) -> list[str]:
+        """Return the newly-appeared stems, recording them unless ``record``
+        is false (the caller then calls :meth:`mark_seen` once they are
+        announced, so a failure in between retries instead of losing them).
 
         First observation of a collection is a **silent baseline**: the whole
         back-catalogue is recorded and ``[]`` is returned, so a fresh index (or
         a freshly-added show) never dumps every existing episode. Afterwards,
-        only stems not seen before are returned (and then recorded).
+        only stems not seen before are returned.
         """
         with self._lock:
             baselined = (
@@ -100,12 +104,27 @@ class AnnounceStore:
                 )
             }
             new = sorted(current - seen)
-            if new:
-                self._conn.executemany(
-                    "INSERT OR IGNORE INTO seen_episodes(collection, stem) VALUES (?, ?)",
-                    [(collection, s) for s in new],
-                )
-            return new
+        if new and record:
+            self.mark_seen(collection, new)
+        return new
+
+    def forget(self, collection: str) -> None:
+        """Drop a collection's state; its next observation baselines again."""
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM seen_episodes WHERE collection = ?", (collection,)
+            )
+            self._conn.execute(
+                "DELETE FROM baselined WHERE collection = ?", (collection,)
+            )
+
+    def mark_seen(self, collection: str, stems: list[str]) -> None:
+        """Record stems as announced."""
+        with self._lock:
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO seen_episodes(collection, stem) VALUES (?, ?)",
+                [(collection, s) for s in stems],
+            )
 
     def get_meta(self, key: str) -> str | None:
         with self._lock:

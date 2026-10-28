@@ -65,7 +65,7 @@ Start with `make dev` on the host platform (or `make dev-no-tauri` for WSL / bro
 
 ### 7. Integrations
 
-- [ ] Settings → Integrations → Claude Desktop toggle: writes `claude_desktop_config.json`, with the correct absolute `podcodex-mcp` path for the current venv.
+- [ ] Settings → Integrations → Claude Desktop toggle: writes `claude_desktop_config.json` with the right command: the installed app's `podcodex-server` plus `--mcp` for a DMG/MSI install, the venv's absolute `podcodex-mcp` path for a dev checkout. Restart Claude Desktop and check that the eight `podcodex` tools appear.
 - [ ] On WSL hosts, the `wsl.exe` wrapper form is emitted.
 
 ### 8. Reindex CLI

@@ -57,6 +57,23 @@ def _chunk_to_ref(chunk: Hit, collection: str) -> ResultRef:
     )
 
 
+def _mention_counts(results: list[tuple[Hit, str]], query: str) -> tuple[int, int]:
+    """``(whole-word mentions, partial mentions)`` across /exact hits.
+
+    Partial is everything else: inside a longer word, accent variants, and
+    fuzzy excerpts (which contain no literal occurrence).
+    """
+    total_mentions = 0
+    word_mentions = 0
+    fuzzy_excerpts = 0
+    for c, _ in results:
+        total_mentions += count_occurrences(c.text, query)
+        word_mentions += count_word_occurrences(c.text, query)
+        if c.fuzzy_match:
+            fuzzy_excerpts += 1
+    return word_mentions, (total_mentions - word_mentions) + fuzzy_excerpts
+
+
 class SearchCommandsMixin:
     """Search-command methods mixed into PodCodexBot (bot.py).
 
@@ -117,7 +134,6 @@ class SearchCommandsMixin:
         shows: ResolvedShows,
         settings: ServerSettings,
         alpha: float,
-        label: str,
         *,
         source: str | None = None,
         episode: str | None = None,
@@ -134,15 +150,33 @@ class SearchCommandsMixin:
         # first, so a locked show or a wrong-model scope gets the precise
         # reason instead of the generic "no results, try simpler wording".
         col_info = await self._cached_col_info()
-        cols = self._resolve_show_collections(
+        reachable = self._resolve_show_collections(
             shows, settings, col_info, explicit=explicit
+        )
+        loadable = self._loadable_models()
+        cols = (
+            reachable
+            if all(c.model in loadable for c in reachable)
+            else self._resolve_show_collections(
+                shows, settings, col_info, explicit=explicit, embeds=True
+            )
         )
         if not cols:
             await interaction.followup.send(
-                self._empty_collections_message(col_info, settings, shows),
+                self._empty_collections_message(col_info, shows, embeds=True),
                 ephemeral=True,
             )
             return
+        # Shows this guild could see but /search cannot encode for: said, so
+        # missing hits never read as "that show never mentions it".
+        skipped = sorted({c.show for c in reachable} - {c.show for c in cols})
+        skipped_note = (
+            "Not searched, indexed with a model this bot does not load: "
+            + ", ".join(f"**{s}**" for s in skipped)
+            + ". `/exact` still covers them."
+            if skipped
+            else ""
+        )
 
         try:
             results = await loop.run_in_executor(
@@ -176,14 +210,21 @@ class SearchCommandsMixin:
             )
             await interaction.followup.send(
                 f'No results for **"{query}"**{suffix}.\n'
-                "Try simpler wording, drop filters, or use `/exact` for literal matches.",
+                "Try simpler wording, drop filters, or use `/exact` for literal matches."
+                + (f"\n{skipped_note}" if skipped_note else ""),
                 ephemeral=True,
             )
             return
 
+        # From the collections searched, not the server default: resolution
+        # can fall back to another model, and the card must name what ran.
+        models = sorted({c.model for c in cols if c.model})
+        label = f"α={alpha:.2f} • " + ", ".join(self._model_label(m) for m in models)
         await self._send_results(
             "search", label, query, results, interaction, prefer_list=compact
         )
+        if skipped_note:
+            await interaction.followup.send(skipped_note, ephemeral=True)
 
     async def _send_results(
         self,
@@ -275,7 +316,7 @@ class SearchCommandsMixin:
             cols = self._resolve_show_collections(shows, settings, col_info)
             if not cols:
                 await interaction.followup.send(
-                    self._empty_collections_message(col_info, settings, shows),
+                    self._empty_collections_message(col_info, shows),
                     ephemeral=True,
                 )
                 return
@@ -307,18 +348,11 @@ class SearchCommandsMixin:
             )
             return
 
-        # Split the mention count: whole-word occurrences are "matches",
-        # everything else (inside a longer word, accent variants, and fuzzy
-        # excerpts, which contain no literal occurrence) is "partial".
-        total_mentions = 0
-        word_mentions = 0
-        fuzzy_excerpts = 0
-        for c, _ in all_results:
-            total_mentions += count_occurrences(c.text, query)
-            word_mentions += count_word_occurrences(c.text, query)
-            if c.fuzzy_match:
-                fuzzy_excerpts += 1
-        partial = (total_mentions - word_mentions) + fuzzy_excerpts
+        # Off the loop: folding and scanning every hit of a common word takes
+        # seconds, and the gateway (every other interaction) waits meanwhile.
+        word_mentions, partial = await loop.run_in_executor(
+            None, _mention_counts, all_results, query
+        )
         if word_mentions and partial:
             label = f"{word_mentions} exact · {partial} partial"
         elif word_mentions:
@@ -356,7 +390,7 @@ class SearchCommandsMixin:
             cols = self._resolve_show_collections(shows, settings, col_info)
             if not cols:
                 await interaction.followup.send(
-                    self._empty_collections_message(col_info, settings, shows),
+                    self._empty_collections_message(col_info, shows),
                     ephemeral=True,
                 )
                 return

@@ -512,3 +512,123 @@ def test_list_episodes_broadcast_filter(tmp_path):
     out = mcp_server.list_episodes(broadcast_number=208)
     assert out and all(e.get("broadcast_number") == 208 for e in out)
     assert {e["episode"] for e in out} == {"ep_208"}
+
+
+# ── Placeholder speakers never reach the client ──────────────────────────
+
+
+def test_placeholder_speakers_are_left_out_of_every_episode_surface():
+    """``NoDiarization`` names nobody: a client would cite it as a person."""
+    add_show(
+        rag_index_store.get_index_store(),
+        "Mono",
+        {
+            "solo": [
+                chunk("intro", show="Mono", episode="solo", speaker="NoDiarization"),
+                chunk("guest", show="Mono", episode="solo", speaker="Alice", start=5.0),
+            ]
+        },
+    )
+    [listed] = mcp_server.list_episodes(show="Mono")
+    assert listed["speakers"] == ["Alice"]
+
+    card = mcp_server.get_episode(
+        show="Mono", episode="solo", include_chunk_map=True, include_transcript="text"
+    )
+    assert card["speakers"] == ["Alice"]
+    assert "NoDiarization" not in str(card["chunk_map"])
+    assert card["transcript"].splitlines()[0] == "[0m00] intro"
+
+    window = mcp_server.get_context(show="Mono", episode="solo", chunk_index=0)
+    assert [c["speaker"] for c in window] == ["", "Alice"]
+
+
+# ── Wiring: how each entry point runs the server ─────────────────────────
+
+
+def test_tools_run_off_the_event_loop(monkeypatch):
+    """Under the API's /mcp mount the loop is the API's: a tool run inline
+    would stall every request while it searches."""
+    import asyncio
+    import threading
+
+    seen: list[int] = []
+    real = mcp_server._resolve_collections
+
+    def spy(show=None):
+        seen.append(threading.get_ident())
+        return real(show)
+
+    monkeypatch.setattr(mcp_server, "_resolve_collections", spy)
+    asyncio.run(mcp_server.mcp.call_tool("list_shows", {}))
+    assert seen and seen[0] != threading.get_ident()
+
+
+def test_bundled_mcp_flag_reaches_the_stdio_server(monkeypatch):
+    """``podcodex-server --mcp`` (what the desktop toggle writes for DMG/MSI
+    installs) must start the server, not die on an unknown argument."""
+    import sys
+
+    from podcodex.api import server as api_server
+
+    ran: list[bool] = []
+    monkeypatch.setattr(sys, "argv", ["podcodex-server", "--mcp"])
+    monkeypatch.setattr(api_server, "_wire_native_binaries", lambda: None)
+    monkeypatch.setattr("podcodex.bootstrap.bootstrap_for_mcp_stdio", lambda: None)
+    monkeypatch.setattr("podcodex.core._ffmpeg.log_ffmpeg_status", lambda: None)
+    monkeypatch.setattr(mcp_server, "install_live_reload", lambda _m: None)
+    monkeypatch.setattr(mcp_server.mcp, "run", lambda: ran.append(True))
+    with pytest.raises(SystemExit) as exc:
+        api_server._handle_mcp_flag()
+    assert exc.value.code == 0
+    assert ran == [True]
+
+
+def test_stdio_main_runs_the_live_reload_lifespan(monkeypatch):
+    """FastMCP binds its lifespan at construction, so assigning
+    ``mcp.settings.lifespan`` later never ran the prompt watcher."""
+    import anyio
+
+    from podcodex.mcp import prompts
+
+    low = mcp_server.mcp._mcp_server
+    monkeypatch.setattr(low, "lifespan", low.lifespan)
+    monkeypatch.setattr(low, "_handle_request", low._handle_request)
+    monkeypatch.setattr(
+        low, "create_initialization_options", low.create_initialization_options
+    )
+    monkeypatch.setattr("podcodex.bootstrap.bootstrap_for_mcp_stdio", lambda: None)
+    monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
+    started: list[bool] = []
+
+    async def fake_watch(_mcp, interval=2.0):
+        started.append(True)
+
+    monkeypatch.setattr(prompts, "_watch_prompts_file", fake_watch)
+    mcp_server.main([])
+
+    async def enter():
+        async with low.lifespan(low):
+            await anyio.sleep(0)
+
+    anyio.run(enter)
+    assert started == [True]
+    assert getattr(low, "_podcodex_session_capture_installed", False)
+    # Declared, or a client honouring capabilities drops the notification.
+    caps = low.create_initialization_options().capabilities
+    assert caps.prompts is not None and caps.prompts.listChanged is True
+    monkeypatch.delattr(low, "_podcodex_session_capture_installed")
+
+
+def test_a_legacy_narrator_label_is_kept_like_speaker_stats_keeps_it():
+    """A documentary's "Narrator" can be a person; blanking it on some
+    surfaces and not others left the client unable to cite them."""
+    add_show(
+        rag_index_store.get_index_store(),
+        "Doc",
+        {"d1": [chunk("narration", show="Doc", episode="d1", speaker="Narrator")]},
+    )
+    [listed] = mcp_server.list_episodes(show="Doc")
+    assert listed["speakers"] == ["Narrator"]
+    [hit] = mcp_server.get_context(show="Doc", episode="d1", chunk_index=0)
+    assert hit["speaker"] == "Narrator"

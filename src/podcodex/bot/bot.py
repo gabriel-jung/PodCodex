@@ -1,10 +1,13 @@
 """
 podcodex.bot.bot — Discord bot for podcast transcript search.
 
-Entrypoint:
-    podcodex-bot [--model bge-m3] [--chunking semantic] [--top-k 5]
-                 [--index PATH] [--server-config FILE] [--dev-guild ID]
+Entrypoint (``podcodex-bot --help`` for every flag):
+    podcodex-bot [--model bge-m3] [--models bge-m3,e5-small] [--chunking semantic]
+                 [--top-k 5] [--index PATH] [--server-config FILE] [--dev-guild ID]
     podcodex-bot --manage-passwords [--index PATH]
+    podcodex-bot --claim-index [--index PATH]
+
+Environment: DISCORD_TOKEN (required), PODCODEX_INDEX, PODCODEX_ALLOWED_GUILDS.
 
 
 Slash commands. The registered tree is in ``registration.py``; that file is
@@ -20,9 +23,10 @@ point sees the real surface.
     /search-advanced query [show] [episode] [speaker] [source] [after]
               [before] [alpha] [model] [chunker] [top_k] [compact]
     /exact-advanced  query [show] [episode] [speaker] [source] [after]
-              [before] [model] [chunker] [top_k] [compact]
+              [before]
     /random-advanced [show] [episode] [speaker] [source] [after] [before]
-              The -advanced forms carry every filter and tuning option.
+              The -advanced forms carry the filters; /search-advanced also
+              the retrieval tuning.
     /stats    [show] [model]
     /episodes [show] [model]
     /speakers [show] [model]
@@ -98,6 +102,20 @@ _MTIME_CHECK_INTERVAL = 2.0
 # ── Bot ───────────────────────────────────────
 
 
+class _GuildGatedTree(app_commands.CommandTree):
+    """Command tree that refuses commands outside the allowed guilds."""
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if self.client.guild_allowed(interaction.guild_id):
+            return True
+        if interaction.type is discord.InteractionType.autocomplete:
+            return False  # cannot carry a message; no suggestions is the answer
+        await interaction.response.send_message(
+            "This bot is not available here.", ephemeral=True
+        )
+        return False
+
+
 class PodCodexBot(
     AccessMixin,
     SettingsMixin,
@@ -115,12 +133,13 @@ class PodCodexBot(
         super().__init__(intents=discord.Intents.default())
         self.config = config
         self.server_config_path = server_config_path
-        self.tree = app_commands.CommandTree(self)
+        self.tree = _GuildGatedTree(self)
         self.tree.on_error = self._on_app_command_error
         self._cooldown = CooldownManager(seconds=config.cooldown_seconds)
 
-        # Shows loaded from IndexStore — {lower(name): ShowEntry}
-        # Populated in setup_hook once the index is open; refreshable via /admin.
+        # Password-protected shows from IndexStore: {lower(show id): ShowEntry}.
+        # Populated in setup_hook once the index is open; /admin-reload and
+        # every external index change reload it.
         self._shows: dict[str, ShowEntry] = {}
 
         self._local: IndexStore | None = None
@@ -141,11 +160,17 @@ class PodCodexBot(
         # ``_index_mtime_seen`` — otherwise a user command's refresh would
         # advance the shared value and the loop would never see the change.
         self._announce_mtime_seen: float = 0.0
+        # Collections retried after a transient failure: {name: tries}.
+        self._announce_retry: dict[str, int] = {}
+        # Episodes waiting for stats rows: {name: (stems, index changes seen)}.
+        self._announce_pending: dict[str, tuple[frozenset[str], int]] = {}
+        # Announcement channels already reported unreachable.
+        self._announce_unreachable: set[int] = set()
 
         self._register_commands()
 
-    async def _refresh_if_stale(self) -> None:
-        """Detect external index changes and reload bot state.
+    async def _refresh_if_stale(self) -> bool:
+        """Detect external index changes and reload bot state. True if it did.
 
         Called at the top of every privileged handler so out-of-process
         writes (rsync, desktop-app indexing, API password change) can't
@@ -154,7 +179,7 @@ class PodCodexBot(
         """
         now = time.monotonic()
         if now - self._last_mtime_check < _MTIME_CHECK_INTERVAL:
-            return
+            return False
         self._last_mtime_check = now
         loop = asyncio.get_running_loop()
         current = await loop.run_in_executor(None, self.local.index_mtime)
@@ -163,16 +188,17 @@ class PodCodexBot(
         # dev-machine copy over a table last written on the bot host (a
         # password change, say) lowers it. Any movement means a change.
         if current == self._index_mtime_seen:
-            return
+            return False
         await loop.run_in_executor(None, self.local.reconnect)
         self._ac_cache.reset()
         clear_chunk_cache()
-        await loop.run_in_executor(None, self._reload_shows)
+        await self._reload_access()
         # Advanced only once the reload succeeded. A sweep landing mid-rsync
         # can open a manifest whose data files haven't arrived; advancing
         # first would mark that torn state as seen and never retry it.
         self._index_mtime_seen = current
         logger.info("Index refresh: external change detected, bot state reloaded.")
+        return True
 
     # ── Lazy singletons ──────────────────────
 
@@ -227,10 +253,18 @@ class PodCodexBot(
         for item in DYNAMIC_ITEMS:
             self.add_dynamic_items(item)
         await loop.run_in_executor(None, lambda: self.local)
-        await loop.run_in_executor(None, self._reload_shows)
+        await self._reload_access()
         self._index_mtime_seen = await loop.run_in_executor(
             None, self.local.index_mtime
         )
+        loaded = self._loadable_models()
+        stray = sorted({s.model for s in self._server_cfg.values()} - loaded)
+        if stray:
+            logger.warning(
+                f"Server default model(s) {stray} are not loaded (loading "
+                f"{sorted(loaded)}); /search on those servers uses the loaded "
+                "ones. Pass --models to keep one."
+            )
         if self.config.dev_guild_id:
             guild = discord.Object(id=self.config.dev_guild_id)
             self.tree.copy_global_to(guild=guild)
@@ -246,11 +280,38 @@ class PodCodexBot(
         )
         self._announce_loop.start()
 
+    def guild_allowed(self, guild_id: int | None) -> bool:
+        """Whether this bot serves a guild (``None``: a DM).
+
+        Unrestricted unless PODCODEX_ALLOWED_GUILDS is set. Then only the
+        listed guilds: a bot left public in the developer portal can be
+        invited by anyone who has its id, and would serve every unprotected
+        show to their server.
+        """
+        allowed = self.config.allowed_guild_ids
+        return allowed is None or guild_id in allowed
+
+    async def _leave_if_not_allowed(self, guild: discord.Guild) -> None:
+        if self.guild_allowed(guild.id):
+            return
+        logger.warning(
+            f"Leaving guild {guild.id} ({guild.name}): not in PODCODEX_ALLOWED_GUILDS"
+        )
+        try:
+            await guild.leave()
+        except discord.HTTPException:
+            logger.exception(f"Could not leave guild {guild.id}")
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        await self._leave_if_not_allowed(guild)
+
     async def on_ready(self) -> None:
         cmds = [c.name for c in self.tree.get_commands()]
         logger.success(
             f"Logged in as {self.user} (id={self.user.id}) — commands: {cmds}"
         )
+        for guild in list(self.guilds):
+            await self._leave_if_not_allowed(guild)
         await self._announce_version_if_changed()
 
     # ── Admin reload ──────────────────────────
@@ -268,7 +329,7 @@ class PodCodexBot(
         await loop.run_in_executor(None, self.local.reconnect)
         self._ac_cache.reset()
         clear_chunk_cache()
-        await loop.run_in_executor(None, self._reload_shows)
+        await self._reload_access()
         self._index_mtime_seen = await loop.run_in_executor(
             None, self.local.index_mtime
         )
@@ -436,17 +497,44 @@ def _resolve_state_path(override: str | None) -> Path:
     return target
 
 
+def _allowed_guilds_from_env() -> frozenset[int] | None:
+    """PODCODEX_ALLOWED_GUILDS: comma-separated guild ids, or None if unset."""
+    raw = os.environ.get("PODCODEX_ALLOWED_GUILDS", "").strip()
+    if not raw:
+        return None
+    try:
+        ids = frozenset(int(part) for part in raw.split(",") if part.strip())
+    except ValueError:
+        ids = frozenset()
+    if not ids:
+        # Empty would make the bot leave every server it is in.
+        raise SystemExit(
+            "PODCODEX_ALLOWED_GUILDS must be comma-separated guild ids "
+            "(numbers), e.g. 123456789012345678,234567890123456789."
+        )
+    return ids
+
+
 def main() -> None:
-    from podcodex.bootstrap import bootstrap_for_dev
+    from podcodex.bootstrap import bootstrap_for_bot
 
-    bootstrap_for_dev()
-
-    from dotenv import find_dotenv, load_dotenv
-
-    load_dotenv(find_dotenv(usecwd=True))
+    bootstrap_for_bot()
 
     parser = argparse.ArgumentParser(prog="podcodex-bot")
-    parser.add_argument("--model", default=DEFAULT_MODEL, choices=list(MODELS.keys()))
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        choices=list(MODELS.keys()),
+        help="Default embedding model for queries",
+    )
+    parser.add_argument(
+        "--models",
+        default="",
+        help=(
+            "Comma-separated embedding models the bot may load (default: just "
+            "--model). Shows indexed only under other models are not searchable."
+        ),
+    )
     parser.add_argument(
         "--chunking", default=DEFAULT_CHUNKING, choices=list(CHUNKING_STRATEGIES.keys())
     )
@@ -503,14 +591,31 @@ def main() -> None:
         _manage_passwords_cli(args.index)
         return
 
+    models = tuple(m.strip() for m in args.models.split(",") if m.strip())
+    unknown = [m for m in models if m not in MODELS]
+    if unknown:
+        raise SystemExit(
+            f"Unknown model(s) in --models: {', '.join(unknown)}. "
+            f"Known: {', '.join(MODELS)}."
+        )
+    if models and args.model not in models:
+        models = (args.model, *models)
+
     token = os.environ.get("DISCORD_TOKEN", "").strip()
     if not token:
         # The most common first-run misconfiguration, so answer it with a
         # sentence rather than a traceback, the way the other entry points do.
         raise SystemExit(
-            "DISCORD_TOKEN not set. Put it in deploy/.env (or export it) and "
-            "start podcodex-bot again."
+            "DISCORD_TOKEN not set. Export it, or put it in a .env file in the "
+            "directory you start podcodex-bot from (Docker reads deploy/.env), "
+            "and start podcodex-bot again."
         )
+
+    allowed = _allowed_guilds_from_env()
+    if allowed is not None and args.dev_guild and args.dev_guild not in allowed:
+        # Commands are synced there; leaving it at on_ready would be absurd.
+        logger.warning(f"--dev-guild {args.dev_guild} added to PODCODEX_ALLOWED_GUILDS")
+        allowed = allowed | {args.dev_guild}
 
     config = BotConfig(
         model=args.model,
@@ -521,6 +626,8 @@ def main() -> None:
         cooldown_seconds=args.cooldown,
         dev_guild_id=args.dev_guild,
         announce_interval_minutes=args.announce_interval,
+        models=models,
+        allowed_guild_ids=allowed,
     )
 
     bot = PodCodexBot(

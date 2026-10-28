@@ -23,6 +23,9 @@ from podcodex.mcp.prompts import (  # noqa: E402
 )
 from tests.fixtures.api_client import client_for  # noqa: E402
 
+# The autouse fixture replaces it; one test checks the real resolution.
+_REAL_PROMPTS_PATH = prompts_mod._prompts_path
+
 
 @pytest.fixture(autouse=True)
 def _isolated_store(tmp_path: Path, monkeypatch):
@@ -309,3 +312,61 @@ def test_reserved_prompt_ids_cover_every_registered_tool():
     assert registered, "no MCP tools registered — the derivation would be vacuous"
     assert prompts_mod._reserved_ids() == registered
     assert prompts_mod._RESERVED_IDS_FALLBACK == registered
+
+
+def test_prompts_file_lives_in_the_config_dir():
+    """Resolved through config_dir() like every other config file, so it
+    follows XDG_CONFIG_HOME and the test guard's scratch config covers it."""
+    from podcodex.core.app_paths import config_dir
+
+    assert _REAL_PROMPTS_PATH() == config_dir() / "mcp_prompts.json"
+    assert not _REAL_PROMPTS_PATH().is_relative_to(Path.home() / ".config")
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["{not json", '{"id": "x"}', '[{"id": "mine", "template": "hi"}, {"oops": 1}]'],
+)
+def test_unreadable_prompts_file_is_kept_before_a_save_overwrites_it(
+    monkeypatch, tmp_path, content
+):
+    """The next save writes only what loaded; the user's file must survive."""
+    from podcodex.mcp import prompts as p
+
+    store = tmp_path / "mcp_prompts.json"
+    store.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(p, "_prompts_path", lambda: store)
+    p.save_prompts(p.load_prompts())
+    [backup] = tmp_path.glob("mcp_prompts.json.bak-*")
+    assert backup.read_text(encoding="utf-8") == content
+    # The same bad content again: no second copy.
+    store.write_text(content, encoding="utf-8")
+    p.load_prompts()
+    assert len(list(tmp_path.glob("mcp_prompts.json.bak-*"))) == 1
+
+
+def test_prompts_at_the_old_hardcoded_path_are_read_never_moved(monkeypatch, tmp_path):
+    """Under a custom XDG_CONFIG_HOME the old ~/.config file is elsewhere. It
+    is read until the first save, and never moved: it can be another
+    process's live file (and the test guard's XDG would otherwise move a
+    developer's real one into a scratch dir)."""
+    xdg = tmp_path / "xdg" / "podcodex"
+    xdg.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr("podcodex.core.app_paths.config_dir", lambda: xdg)
+    monkeypatch.setattr(prompts_mod, "_prompts_path", _REAL_PROMPTS_PATH)
+    legacy = tmp_path / "home" / ".config" / "podcodex" / "mcp_prompts.json"
+    # The test guard points this at scratch; the real one hangs off HOME.
+    monkeypatch.setattr(prompts_mod, "_legacy_prompts_path", lambda: legacy)
+    legacy.parent.mkdir(parents=True)
+    content = '[{"id": "mine", "template": "hi"}]'
+    legacy.write_text(content, encoding="utf-8")
+
+    prompts = load_prompts()
+    assert "mine" in {p.id for p in prompts}
+    assert legacy.read_text(encoding="utf-8") == content
+    assert not (xdg / "mcp_prompts.json").exists()
+
+    save_prompts(prompts)
+    assert (xdg / "mcp_prompts.json").exists()
+    assert legacy.read_text(encoding="utf-8") == content

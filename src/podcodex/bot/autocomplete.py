@@ -9,13 +9,20 @@ from dataclasses import dataclass, field
 import discord
 from discord import app_commands
 
-from podcodex.bot.config import ServerSettings
+from podcodex.bot.config import ANY_SOURCE, ServerSettings
 from podcodex.bot.resolution import explicit_combo
 from podcodex.core._utils import resolve_episode_title
 from podcodex.rag.defaults import (
     CHUNKING_STRATEGIES,
     MODELS,
 )
+
+# What a Discord user reads in the chunker picker. CHUNKING_STRATEGIES' own
+# text is written for the desktop app (library names, install notes).
+_CHUNKER_NAMES = {
+    "semantic": "Semantic: passages grouped by topic",
+    "speaker": "Speaker turns: one passage per turn",
+}
 
 # ── Autocomplete cache ───────────────────────
 
@@ -49,6 +56,22 @@ class _AutocompleteCache:
         self.timestamp = time.monotonic()
 
 
+def _filter_choices(
+    choices: list[app_commands.Choice[str]], current: str
+) -> list[app_commands.Choice[str]]:
+    """Choices whose label or value contains what was typed, up to Discord's 25."""
+    typed = current.lower()
+    return [c for c in choices if typed in c.name.lower() or typed in c.value.lower()][
+        :25
+    ]
+
+
+def _embeds_query(interaction: discord.Interaction) -> bool:
+    """Whether the command being typed encodes a query (so the bot's model
+    list applies). Only /search-advanced among the commands with pickers."""
+    return getattr(interaction.command, "name", "") == "search-advanced"
+
+
 class AutocompleteMixin:
     """Autocomplete methods mixed into PodCodexBot (bot.py).
 
@@ -61,41 +84,22 @@ class AutocompleteMixin:
         interaction: discord.Interaction,
         current: str,
     ) -> list[app_commands.Choice[str]]:
-        await self._refresh_if_stale()
-        self._cache_clear_if_stale()
-        settings = self._server_settings(interaction.guild_id)
-        model = getattr(interaction.namespace, "model", "") or settings.model
-        chunker = settings.chunker
+        """Every show the command being typed can reach.
 
-        shows = await self._known_show_labels(settings, model, chunker)
-        return [
-            app_commands.Choice(name=s, value=s)
-            for s in shows
-            if current.lower() in s.lower()
-        ][:25]
-
-    async def _any_show_autocomplete(
-        self,
-        interaction: discord.Interaction,
-        current: str,
-    ) -> list[app_commands.Choice[str]]:
-        """Every show this server may see, whatever it is indexed under.
-
-        ``/setup show_add`` pins a show rather than searching it, so filtering
-        by the guild's current model would hide a show indexed under another
-        one and make the pin look like an unknown name to the user, while
-        ``_handle_setup`` (which validates against the same unfiltered set)
-        would have accepted it.
+        Resolution falls back across models, so this is not filtered on the
+        typed or default model; only /search-advanced, which encodes the
+        query, is limited to the models the bot loads. ``/setup show_add``
+        gets every show, since a pin searches nothing.
         """
         await self._refresh_if_stale()
         self._cache_clear_if_stale()
         settings = self._server_settings(interaction.guild_id)
-        shows = await self._known_show_labels(settings)
-        return [
-            app_commands.Choice(name=s, value=s)
-            for s in shows
-            if current.lower() in s.lower()
-        ][:25]
+        shows = await self._known_show_labels(
+            settings, loadable_only=_embeds_query(interaction)
+        )
+        return _filter_choices(
+            [app_commands.Choice(name=s, value=s) for s in shows], current
+        )
 
     def _cache_clear_if_stale(self) -> None:
         if self._ac_cache.is_stale():
@@ -112,17 +116,13 @@ class AutocompleteMixin:
         return cache.col_info or {}
 
     async def _visible_collections(
-        self, settings: ServerSettings, model: str, chunker: str
+        self, settings: ServerSettings, *, loadable_only: bool = False
     ) -> tuple[list[str], dict[str, dict]]:
-        """Return collections matching (model, chunker) that the server is allowed to see."""
+        """Collections this server may see (under a model the bot loads, with
+        ``loadable_only``)."""
         col_info = await self._cached_col_info()
-        cols = [
-            name
-            for name, info in col_info.items()
-            if (not model or info["model"] == model)
-            and (not chunker or info["chunker"] == chunker)
-        ]
-        return self._filter_collections(cols, settings, col_info), col_info
+        pool = self._loadable(col_info) if loadable_only else col_info
+        return self._filter_collections(list(pool), settings, col_info), col_info
 
     async def _command_collections(
         self, interaction: discord.Interaction, settings: ServerSettings
@@ -147,7 +147,11 @@ class AutocompleteMixin:
             return [
                 c.name
                 for c in self._resolve_show_collections(
-                    resolved, settings, col_info, explicit=explicit
+                    resolved,
+                    settings,
+                    col_info,
+                    explicit=explicit,
+                    embeds=_embeds_query(interaction),
                 )
             ]
 
@@ -156,17 +160,16 @@ class AutocompleteMixin:
         return await asyncio.get_running_loop().run_in_executor(None, _pick)
 
     async def _known_show_labels(
-        self, settings: ServerSettings, model: str = "", chunker: str = ""
+        self, settings: ServerSettings, *, loadable_only: bool = False
     ) -> list[str]:
         """Sorted display names of the shows this server may see.
 
         The one definition of "which shows exist for this guild": the show
         autocompletes offer these, and ``/setup show_add`` validates against
-        them, so a name the picker shows is never rejected as unknown. Empty
-        ``model``/``chunker`` mean "any combination".
+        them, so a name the picker shows is never rejected as unknown.
         """
         collections, col_info = await self._visible_collections(
-            settings, model, chunker
+            settings, loadable_only=loadable_only
         )
         return sorted(
             {
@@ -228,13 +231,10 @@ class AutocompleteMixin:
             for stem in stems:
                 all_episodes[stem] = resolve_episode_title(titles.get(stem) or "", stem)
 
-        return [
-            app_commands.Choice(name=display, value=stem)
-            for stem, display in sorted(
-                all_episodes.items(), key=lambda x: x[1].lower()
-            )
-            if current.lower() in display.lower() or current.lower() in stem.lower()
-        ][:25]
+        ordered = sorted(all_episodes.items(), key=lambda x: x[1].lower())
+        return _filter_choices(
+            [app_commands.Choice(name=d, value=stem) for stem, d in ordered], current
+        )
 
     async def _source_autocomplete(
         self,
@@ -252,28 +252,37 @@ class AutocompleteMixin:
         for col in cols:
             all_sources.update(await self._cached_sources(col))
 
-        return [
-            app_commands.Choice(name=s, value=s)
-            for s in sorted(all_sources)
-            if current.lower() in s.lower()
-        ][:25]
+        # First, so a server default_source can be overridden (on -advanced)
+        # or cleared (on /setup).
+        choices = [app_commands.Choice(name="Any source", value=ANY_SOURCE)]
+        choices += [app_commands.Choice(name=s, value=s) for s in sorted(all_sources)]
+        return _filter_choices(choices, current)
 
     async def _model_autocomplete(
         self,
         interaction: discord.Interaction,
         current: str,
     ) -> list[app_commands.Choice[str]]:
-        """Only offer embedding models that are actually present in the index."""
+        """Models present in the index, by name: only those the bot loads
+        where they encode a query (/search-advanced) or become one (/setup)."""
         self._cache_clear_if_stale()
         col_info = await self._cached_col_info()
+        name = getattr(interaction.command, "name", "")
+        if name in ("search-advanced", "setup"):
+            col_info = self._loadable(col_info)
         present = sorted(
             {info["model"] for info in col_info.values() if info["model"] in MODELS}
         )
-        return [
-            app_commands.Choice(name=MODELS[m].description, value=m)
+        default = self._server_settings(interaction.guild_id).model
+        choices = [
+            app_commands.Choice(
+                name=MODELS[m].label
+                + (" (this server's default)" if m == default else ""),
+                value=m,
+            )
             for m in present
-            if current.lower() in m.lower()
-        ][:25]
+        ]
+        return _filter_choices(choices, current)
 
     async def _chunker_autocomplete(
         self,
@@ -290,11 +299,10 @@ class AutocompleteMixin:
                 if info["chunker"] in CHUNKING_STRATEGIES
             }
         )
-        return [
-            app_commands.Choice(name=CHUNKING_STRATEGIES[c], value=c)
-            for c in present
-            if current.lower() in c.lower()
-        ][:25]
+        choices = [
+            app_commands.Choice(name=_CHUNKER_NAMES.get(c, c), value=c) for c in present
+        ]
+        return _filter_choices(choices, current)
 
     async def _cached_speakers(self, collection: str) -> list[str]:
         """Return speaker names, using the TTL cache."""
@@ -323,11 +331,10 @@ class AutocompleteMixin:
         for col in cols:
             all_speakers.update(await self._cached_speakers(col))
 
-        return [
-            app_commands.Choice(name=s, value=s)
-            for s in sorted(all_speakers)
-            if current.lower() in s.lower()
-        ][:25]
+        return _filter_choices(
+            [app_commands.Choice(name=s, value=s) for s in sorted(all_speakers)],
+            current,
+        )
 
     async def _pinned_show_autocomplete(
         self,
@@ -338,11 +345,9 @@ class AutocompleteMixin:
         settings = self._server_settings(interaction.guild_id)
         # Stored as ids; both the label and the value users see are names.
         labels = [self._label_for_show_id(s) for s in self._pinned_ids(settings)]
-        return [
-            app_commands.Choice(name=s, value=s)
-            for s in labels
-            if current.lower() in s.lower()
-        ][:25]
+        return _filter_choices(
+            [app_commands.Choice(name=s, value=s) for s in labels], current
+        )
 
     async def _unlocked_show_autocomplete(
         self,
@@ -357,8 +362,6 @@ class AutocompleteMixin:
         """
         settings = self._server_settings(interaction.guild_id)
         labels = [self._label_for_show_id(s) for s in self._unlocked_ids(settings)]
-        return [
-            app_commands.Choice(name=s, value=s)
-            for s in labels
-            if current.lower() in s.lower()
-        ][:25]
+        return _filter_choices(
+            [app_commands.Choice(name=s, value=s) for s in labels], current
+        )

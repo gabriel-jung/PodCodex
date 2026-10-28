@@ -129,6 +129,7 @@ def test_wire_model_caches_keeps_preset_values(
         "bootstrap_for_bundled_sidecar",
         "bootstrap_for_mcp_stdio",
         "bootstrap_for_dev",
+        "bootstrap_for_bot",
         "bootstrap_for_subprocess_child",
     ],
 )

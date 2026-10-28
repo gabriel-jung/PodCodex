@@ -9,6 +9,7 @@ discarded container layer that every ``docker compose up -d --build`` wipes.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -54,3 +55,31 @@ def test_legacy_working_directory_state_is_migrated_once(
     (cwd / "server_config.json").write_text(json.dumps({"2": {"top_k": 1}}))
     assert _resolve_state_path(None) == path
     assert json.loads(path.read_text()) == {"1": {"top_k": 7}}
+
+
+def test_bot_bootstrap_loads_dotenv_before_anything_reads_the_environment(
+    tmp_path, monkeypatch
+):
+    """The data dir and model caches are fixed when bootstrap wires them; a
+    PODCODEX_DATA_DIR from .env loaded afterwards was silently ignored."""
+    from podcodex import bootstrap
+
+    seen: list[str | None] = []
+    monkeypatch.delenv("PODCODEX_DATA_DIR", raising=False)
+    (tmp_path / ".env").write_text(f"PODCODEX_DATA_DIR={tmp_path / 'data'}\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        bootstrap,
+        "_wire_model_caches",
+        lambda: seen.append(os.environ.get("PODCODEX_DATA_DIR")),
+    )
+    for name in (
+        "_install_all_patches",
+        "_setup_loguru_stderr_sink",
+        "_install_stdlib_intercept",
+    ):
+        monkeypatch.setattr(bootstrap, name, lambda: None)
+
+    bootstrap.bootstrap_for_bot()
+
+    assert seen == [str(tmp_path / "data")]

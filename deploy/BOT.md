@@ -7,6 +7,7 @@ Two install paths. Pick whichever fits your setup:
 
 After either path, see:
 
+- [Which servers can use the bot](#which-servers-can-use-the-bot): turn off Public Bot, optionally list your servers
 - [Access control](#access-control-passwords): optional; only if you host multiple shows and want each Discord server to see a different one
 - [Transferring the index](#transferring-the-index): only if the bot runs on a different machine than the desktop app
 
@@ -36,7 +37,7 @@ Requirements:
 - **1-10 GB RAM**, depending on the embedder. BGE-M3 (the default) uses ~2.5 GB; smaller models cut this to ~1 GB, larger ones (Perplexity 4B) need ~10 GB. See [Resource requirements](#resource-requirements).
 - Outbound internet for the bot's connection to Discord's gateway. No inbound ports needed.
 
-The bot is a read-only frontend over an existing index, so it does **not** need:
+The bot searches an existing index (the only thing it ever writes there is a show password, and only on an index it owns), so it does **not** need:
 
 - `ffmpeg`: only needed during transcription (desktop app)
 - A GPU or `CUDA`: only needed for local transcription/indexing (desktop app)
@@ -44,7 +45,7 @@ The bot is a read-only frontend over an existing index, so it does **not** need:
 
 ### 3. An index to serve
 
-The bot is read-only and doesn't build indexes itself. You need an existing LanceDB index, produced by the desktop app's **Index** step on any show.
+The bot doesn't build indexes itself. You need an existing LanceDB index, produced by the desktop app's **Index** step on any show.
 
 The desktop app writes to its platform `<data_dir>/index/`: `~/.local/share/podcodex/index/` on Linux, `~/Library/Application Support/podcodex/index/` on macOS, `%APPDATA%\podcodex\index\` on Windows. The bot resolves the same path and looks there first, so in most setups there is nothing to configure. If it doesn't find an index there, it also checks `./deploy/index/` and `./index/` relative to its working directory. Set `PODCODEX_INDEX=/abs/path` to override explicitly.
 
@@ -100,6 +101,10 @@ DISCORD_TOKEN=your-bot-token
 # at <data_dir>/index (e.g. ~/.local/share/podcodex/index on
 # Linux) nor at ./deploy/index / ./index.
 # PODCODEX_INDEX=/absolute/path/to/index
+
+# Optional: the only Discord servers (guild ids, comma-separated) the bot
+# serves. See "Which servers can use the bot".
+# PODCODEX_ALLOWED_GUILDS=123456789012345678
 EOF
 ```
 
@@ -120,13 +125,13 @@ Check the startup log line (`IndexStore opened: <path> (<reason>)`) to confirm w
 uv run podcodex-bot
 ```
 
-Initial start downloads the BGE-M3 model (~2.5 GB). Subsequent starts are instant.
+The first search downloads the BGE-M3 model (~2.5 GB), so it takes a while; later searches, and later starts, are fast.
 
 Verify in Discord:
 
 ```text
 /stats
-/search question:hello world
+/search query:hello world
 ```
 
 ### 5. Auto-restart (systemd)
@@ -168,7 +173,7 @@ Assumes Docker Engine with the compose plugin is installed.
 ```bash
 git clone https://github.com/gabriel-jung/PodCodex.git
 cd PodCodex/deploy
-cp .env.example .env           # edit: DISCORD_TOKEN, optional provider key
+cp .env.example .env           # edit: DISCORD_TOKEN, optionally PODCODEX_ALLOWED_GUILDS
 docker compose up -d --build bot
 docker compose logs -f bot
 ```
@@ -188,6 +193,23 @@ Notes:
 - The BGE-M3 embedding model is cached under `<data_dir>/models/huggingface/`, which is `/root/.local/share/podcodex/models/huggingface/` in the container and therefore on the `podcodex_data` volume, so it survives rebuilds. The image pre-downloads it into that same path and Docker seeds a newly created volume from the image, so the first search never waits on the ~2.5 GB fetch.
 - `restart: unless-stopped` handles crashes and host reboots.
 - Logs rotate at 50 MB × 3 files via the json-file driver.
+
+---
+
+## Which servers can use the bot
+
+A new Discord application is a **Public Bot** by default: anyone who has its id can invite it to their own server and search every show that has no password. For a bot meant for your own servers:
+
+1. In the [Discord developer portal](https://discord.com/developers/applications), open the application, go to **Bot**, and turn off **Public Bot**. Only you can then add it to a server.
+2. Optionally, set `PODCODEX_ALLOWED_GUILDS` in `.env` (or `deploy/.env`) to a comma-separated list of server (guild) ids. The bot then leaves any other server it is added to, answers commands only in the listed ones, and refuses DMs. Unset, it serves every server it is in.
+
+To copy a server's id, turn on **Developer Mode** in Discord's settings, then right-click the server icon and pick **Copy Server ID**.
+
+---
+
+## Which models the bot loads
+
+`/search` encodes queries with the default embedding model (`--model`, BGE-M3 unless you change it) and with any model a server picks through `/setup model:`. A show indexed only under another model is not searched by `/search` on the bot (the reply names it); `/exact`, `/random` and the stats commands still reach it, since they load no model. **Upgrading:** a model a server picked with `/setup` before this release is not loaded automatically (the bot cannot tell it from one an older `--model` saved); the bot logs those servers at startup, and `--models` keeps the model loaded. To make it searchable, index it with the default model in the desktop app, or list the models the bot may load with `--models bge-m3,e5-small` (each one adds its RAM, see [Resource requirements](#resource-requirements)). `/setup model:` accepts only models the bot loads.
 
 ---
 
@@ -229,12 +251,7 @@ Interactive prompt lists all indexed shows and lets you set, generate (`g`), or 
 
 If the command reports that the index is a replica, set the password on the owning machine instead, or claim the index here first.
 
-Restart the bot so it picks up the new password map:
-
-```bash
-sudo systemctl restart podcodex-bot   # uv
-docker compose restart bot            # docker
-```
+No restart needed: the running bot notices the change in the index on its next command (or run `/admin-reload`). A changed password also revokes every server that unlocked the show with the old one, so rotating a leaked password cuts off whoever used it; those servers run `/unlock` again with the new password.
 
 ### Unlock in Discord
 
@@ -250,7 +267,7 @@ All three responses are ephemeral; other users see nothing.
 
 `server_config.json` keeps two separate show lists per guild, and the commands do not overlap: `unlocked_shows` holds the password-protected shows `/unlock` has revealed here (and `/lock` revokes), while `pinned_shows` holds the defaults `/setup show_add` pins for commands that need a show when the user names none. A pin grants no access, so a protected show still has to be unlocked, and `/lock` on a public show does nothing. Configs written before the split carry a single `allowed_shows` list. The bot does not rewrite it: nothing in it records which command created an entry, so it is read as an unlock while that show has a password and as a pin while it does not, which is exactly what the single list meant before. Expect the key to stay in `server_config.json`; an entry leaves only when an admin runs `/lock` or `/setup show_remove` on that show.
 
-`/changepassword` writes to the index, so it works only when the bot host owns it. On a bot reading a synced copy it declines and points you at the app, since the rotation would be undone by the next sync.
+`/changepassword` rotates the show's password for every server, not just this one: the server that ran it stays unlocked, every other server that had unlocked the show has to `/unlock` again with the new password. It writes to the index, so it works only when the bot host owns it. On a bot reading a synced copy it declines and points you at the app, since the rotation would be undone by the next sync.
 
 ---
 
@@ -353,15 +370,15 @@ Bundle format records each collection's embedding model + chunker in a manifest 
 
 | Command                              | Who      | Description                                      |
 | ------------------------------------ | -------- | ------------------------------------------------ |
-| `/search question`                   | Everyone | Hybrid keyword + semantic search (server defaults) |
-| `/search-advanced question […]`      | Everyone | Search with full control over retrieval tuning   |
+| `/search query`                      | Everyone | Hybrid keyword + semantic search (server defaults) |
+| `/search-advanced query […]`         | Everyone | Search with filters and retrieval tuning         |
 | `/exact query`                       | Everyone | Literal substring match (case-insensitive, like Ctrl+F) |
 | `/exact-advanced query […]`          | Everyone | Literal match with source and date filters       |
 | `/random`                            | Everyone | Random quote                                     |
 | `/random-advanced […]`               | Everyone | Random quote with source and date filters        |
-| `/stats [show]`                      | Everyone | Index overview: shows, episodes, segments, duration |
-| `/episodes show`                     | Everyone | List episodes for a show with segment count + duration |
-| `/speakers [show]`                   | Everyone | Chunk count and airtime per speaker              |
+| `/stats [show] [model]`              | Everyone | Index overview: shows, episodes, segments, duration |
+| `/episodes [show] [model]`           | Everyone | List episodes for a show with segment count + duration |
+| `/speakers [show] [model]`           | Everyone | Chunk count and airtime per speaker              |
 | `/help`                              | Everyone | Show available commands                          |
 | `/setup [model] [top_k] [show_add] …`| Admin    | Server defaults, including the pinned shows      |
 | `/announcements [channel] [off]`     | Admin    | Channel for new-episode and bot-version updates  |

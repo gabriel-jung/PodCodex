@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 pytest.importorskip("discord")
@@ -263,7 +265,6 @@ def _bot(tmp_path):
 
 
 def test_tick_baselines_silently_then_announces_new(tmp_path):
-    import asyncio
     from podcodex.bot.bot import ServerSettings
 
     _seed(tmp_path, {"Alpha": ["ep1"]})
@@ -286,7 +287,6 @@ def test_tick_baselines_silently_then_announces_new(tmp_path):
 
 
 def test_tick_respects_locked_show_access(tmp_path):
-    import asyncio
     from podcodex.bot.bot import ServerSettings
 
     store = _seed(tmp_path, {"Pub": ["p1"], "Secret": ["s1"]})
@@ -294,7 +294,7 @@ def test_tick_respects_locked_show_access(tmp_path):
     from tests.fixtures.index import show_id_of
 
     store.set_show_password(show_id_of(store, "Secret"), "sha256:" + "0" * 64)
-    bot._reload_shows()
+    asyncio.run(bot._reload_access())
     fake = _FakeChannel()
     bot.get_channel = lambda cid: fake  # type: ignore[assignment]
     # Guild has NOT unlocked "Secret".
@@ -317,7 +317,6 @@ def test_tick_keeps_watermark_when_reload_fails(tmp_path):
     before the reload would mark a half-written rsync as seen and drop those
     episodes permanently.
     """
-    import asyncio
     from podcodex.bot.bot import ServerSettings
 
     _seed(tmp_path, {"Alpha": ["ep1"]})
@@ -356,7 +355,6 @@ def test_tick_detects_mtime_moving_backwards(tmp_path):
     host lowers the value. A ``<=`` gate would treat that as "nothing new"
     forever after.
     """
-    import asyncio
     from podcodex.bot.bot import ServerSettings
 
     _seed(tmp_path, {"Alpha": ["ep1"]})
@@ -374,3 +372,341 @@ def test_tick_detects_mtime_moving_backwards(tmp_path):
 
     assert len(fake.embeds) == 1
     assert "EP2" in fake.embeds[0].description
+
+
+def test_tick_that_fails_after_diffing_announces_on_the_retry(tmp_path):
+    """The new stems used to be marked seen before their details were read,
+    so a failure there (a read mid-rsync) lost the announcement for good."""
+    from podcodex.bot.bot import ServerSettings
+
+    _seed(tmp_path, {"Alpha": ["ep1"]})
+    bot = _bot(tmp_path)
+    fake = _FakeChannel()
+    bot.get_channel = lambda cid: fake  # type: ignore[assignment]
+    bot._server_cfg[42] = ServerSettings(announce_channel_id=999)
+    asyncio.run(bot._run_announce_tick())  # baseline
+
+    _seed(tmp_path, {"Alpha": ["ep2"]})
+    real_stats = bot.local.get_episode_stats
+
+    def _boom(_col):
+        raise OSError("data file not there yet")
+
+    bot.local.get_episode_stats = _boom  # type: ignore[method-assign]
+    asyncio.run(bot._run_announce_tick())
+    assert fake.embeds == []
+
+    bot.local.get_episode_stats = real_stats  # type: ignore[method-assign]
+    asyncio.run(bot._run_announce_tick())
+    assert len(fake.embeds) == 1
+    assert "EP2" in fake.embeds[0].description
+
+
+def test_fan_out_survives_a_guild_configured_mid_tick(tmp_path):
+    """Iterating the live settings dict across awaits raised "dictionary
+    changed size" when a guild ran /setup during the fan-out."""
+    from podcodex.bot.bot import ServerSettings
+
+    _seed(tmp_path, {"Alpha": ["ep1"]})
+    bot = _bot(tmp_path)
+    channels = {999: _FakeChannel(), 998: _FakeChannel()}
+    bot.get_channel = lambda cid: None  # type: ignore[assignment]
+
+    async def fetch(cid):
+        bot._server_cfg[len(bot._server_cfg) + 100] = ServerSettings()
+        return channels[cid]
+
+    bot.fetch_channel = fetch  # type: ignore[assignment]
+    bot._server_cfg[41] = ServerSettings(announce_channel_id=999)
+    bot._server_cfg[42] = ServerSettings(announce_channel_id=998)
+    asyncio.run(bot._run_announce_tick())  # baseline
+    _seed(tmp_path, {"Alpha": ["ep2"]})
+    bot._announce_mtime_seen = 0.0
+
+    asyncio.run(bot._run_announce_tick())
+
+    assert [len(c.embeds) for c in channels.values()] == [1, 1]
+
+
+def test_one_failing_collection_does_not_hold_back_the_others(tmp_path):
+    """Each collection is announced and recorded on its own: a table that
+    keeps failing is retried, the rest are posted once."""
+    from podcodex.bot.bot import ServerSettings
+
+    _seed(tmp_path, {"Alpha": ["a1"], "Beta": ["b1"]})
+    bot = _bot(tmp_path)
+    fake = _FakeChannel()
+    bot.get_channel = lambda cid: fake  # type: ignore[assignment]
+    bot._server_cfg[42] = ServerSettings(announce_channel_id=999)
+    asyncio.run(bot._run_announce_tick())  # baseline
+
+    _seed(tmp_path, {"Alpha": ["a2"], "Beta": ["b2"]})
+    real_stats = bot.local.get_episode_stats
+
+    def stats(col):
+        if col.startswith("beta"):
+            raise OSError("damaged table")
+        return real_stats(col)
+
+    bot.local.get_episode_stats = stats  # type: ignore[method-assign]
+    asyncio.run(bot._run_announce_tick())
+    asyncio.run(bot._run_announce_tick())  # Beta retried, Alpha not re-posted
+
+    assert [e.title for e in fake.embeds].count(fake.embeds[0].title) == 1
+    assert "Alpha" in fake.embeds[0].title and len(fake.embeds) == 1
+
+    bot.local.get_episode_stats = real_stats  # type: ignore[method-assign]
+    asyncio.run(bot._run_announce_tick())
+    assert len(fake.embeds) == 2 and "Beta" in fake.embeds[1].title
+
+
+def test_a_guild_whose_send_fails_does_not_stop_the_others(tmp_path):
+    from podcodex.bot.bot import ServerSettings
+
+    _seed(tmp_path, {"Alpha": ["ep1"]})
+    bot = _bot(tmp_path)
+    good = _FakeChannel()
+
+    class _Broken:
+        async def send(self, *, embed):
+            raise ConnectionResetError("gateway dropped")
+
+    bot.get_channel = lambda cid: _Broken() if cid == 998 else good  # type: ignore[assignment]
+    bot._server_cfg[41] = ServerSettings(announce_channel_id=998)
+    bot._server_cfg[42] = ServerSettings(announce_channel_id=999)
+    asyncio.run(bot._run_announce_tick())  # baseline
+    _seed(tmp_path, {"Alpha": ["ep2"]})
+    bot._announce_mtime_seen = 0.0
+
+    asyncio.run(bot._run_announce_tick())
+    asyncio.run(bot._run_announce_tick())
+
+    assert len(good.embeds) == 1
+
+
+def test_an_episode_with_no_stats_row_yet_is_announced_later(tmp_path):
+    """Mid-rsync the episode list can be ahead of the stats; marking those
+    stems seen anyway lost them."""
+    from podcodex.bot.bot import ServerSettings
+
+    _seed(tmp_path, {"Alpha": ["ep1"]})
+    bot = _bot(tmp_path)
+    fake = _FakeChannel()
+    bot.get_channel = lambda cid: fake  # type: ignore[assignment]
+    bot._server_cfg[42] = ServerSettings(announce_channel_id=999)
+    asyncio.run(bot._run_announce_tick())  # baseline
+
+    _seed(tmp_path, {"Alpha": ["ep2"]})
+    real_stats = bot.local.get_episode_stats
+    bot.local.get_episode_stats = lambda col: [  # type: ignore[method-assign]
+        s for s in real_stats(col) if s.get("episode") != "ep2"
+    ]
+    asyncio.run(bot._run_announce_tick())
+    assert fake.embeds == []
+
+    asyncio.run(bot._run_announce_tick())  # quiet tick: only a sync can fix it
+    assert fake.embeds == [] and bot._announce_retry == {}
+
+    bot.local.get_episode_stats = real_stats  # type: ignore[method-assign]
+    bot._announce_mtime_seen = 0.0  # the rest of the sync lands
+    asyncio.run(bot._run_announce_tick())
+    assert len(fake.embeds) == 1 and "EP2" in fake.embeds[0].description
+
+
+def test_a_collection_that_keeps_failing_is_given_up_without_reloading(tmp_path):
+    """Retries touch only that collection (no reconnect, no cache clear), and
+    stop after a bound."""
+    from podcodex.bot import announce_tasks
+    from podcodex.bot.bot import ServerSettings
+
+    _seed(tmp_path, {"Alpha": ["ep1"]})
+    bot = _bot(tmp_path)
+    bot.get_channel = lambda cid: _FakeChannel()  # type: ignore[assignment]
+    bot._server_cfg[42] = ServerSettings(announce_channel_id=999)
+    asyncio.run(bot._run_announce_tick())  # baseline
+    _seed(tmp_path, {"Alpha": ["ep2"]})
+
+    def _boom(_col):
+        raise OSError("damaged table")
+
+    bot.local.get_episode_stats = _boom  # type: ignore[method-assign]
+    asyncio.run(bot._run_announce_tick())
+    reconnects: list[bool] = []
+    real_reconnect = bot.local.reconnect
+    bot.local.reconnect = lambda: reconnects.append(True) or real_reconnect()  # type: ignore[method-assign]
+    for _ in range(announce_tasks._ANNOUNCE_RETRIES + 2):
+        asyncio.run(bot._run_announce_tick())
+
+    assert reconnects == []
+    assert bot._announce_retry == {}
+
+
+def test_announcements_skip_guilds_outside_the_allowlist(tmp_path):
+    from podcodex.bot.bot import ServerSettings
+
+    _seed(tmp_path, {"Alpha": ["ep1"]})
+    bot = _bot(tmp_path)
+    bot.config.allowed_guild_ids = frozenset({42})
+    chans = {998: _FakeChannel(), 999: _FakeChannel()}
+    bot.get_channel = lambda cid: chans[cid]  # type: ignore[assignment]
+    bot._server_cfg[41] = ServerSettings(announce_channel_id=998)
+    bot._server_cfg[42] = ServerSettings(announce_channel_id=999)
+    asyncio.run(bot._run_announce_tick())  # baseline
+    _seed(tmp_path, {"Alpha": ["ep2"]})
+    bot._announce_mtime_seen = 0.0
+
+    asyncio.run(bot._run_announce_tick())
+
+    assert (len(chans[998].embeds), len(chans[999].embeds)) == (0, 1)
+
+
+def test_a_retry_for_a_collection_that_left_the_index_is_dropped(tmp_path):
+
+    _seed(tmp_path, {"Alpha": ["ep1"]})
+    bot = _bot(tmp_path)
+    asyncio.run(bot._run_announce_tick())
+    bot._announce_retry["gone__bge-m3__semantic"] = 1
+    read: list[str] = []
+    real = bot.local.list_episodes
+    bot.local.list_episodes = lambda c: read.append(c) or real(c)  # type: ignore[method-assign]
+
+    asyncio.run(bot._run_announce_tick())
+
+    assert read == [] and bot._announce_retry == {}
+
+
+def test_episodes_wait_while_no_announce_channel_is_reachable(tmp_path):
+    """A cold channel cache plus a failing fetch left nobody to tell, and the
+    episodes were marked announced anyway."""
+    from podcodex.bot.bot import ServerSettings
+
+    _seed(tmp_path, {"Alpha": ["ep1"]})
+    bot = _bot(tmp_path)
+    fake = _FakeChannel()
+    reachable = {"yes": False}
+    bot.get_channel = lambda cid: fake if reachable["yes"] else None  # type: ignore[assignment]
+
+    async def fetch(cid):
+        raise ConnectionError("discord 503")
+
+    bot.fetch_channel = fetch  # type: ignore[assignment]
+    bot._server_cfg[42] = ServerSettings(announce_channel_id=999)
+    asyncio.run(bot._run_announce_tick())  # baseline
+    _seed(tmp_path, {"Alpha": ["ep2"]})
+    asyncio.run(bot._run_announce_tick())
+    assert fake.embeds == []
+
+    reachable["yes"] = True
+    asyncio.run(bot._run_announce_tick())
+    assert len(fake.embeds) == 1
+
+
+def test_giving_up_marks_the_episodes_seen(tmp_path):
+    """Otherwise they come back on every later index change, or are
+    announced as new once their stats finally land."""
+    from podcodex.bot import announce_tasks
+    from podcodex.bot.bot import ServerSettings
+
+    _seed(tmp_path, {"Alpha": ["ep1"]})
+    bot = _bot(tmp_path)
+    fake = _FakeChannel()
+    bot.get_channel = lambda cid: fake  # type: ignore[assignment]
+    bot._server_cfg[42] = ServerSettings(announce_channel_id=999)
+    asyncio.run(bot._run_announce_tick())  # baseline
+    _seed(tmp_path, {"Alpha": ["ep2"]})
+    real_stats = bot.local.get_episode_stats
+    bot.local.get_episode_stats = lambda col: [  # type: ignore[method-assign]
+        s for s in real_stats(col) if s.get("episode") != "ep2"
+    ]
+    for _ in range(announce_tasks._ANNOUNCE_RETRIES + 1):
+        bot._announce_mtime_seen = 0.0  # an index change each time, still no stats
+        asyncio.run(bot._run_announce_tick())
+
+    bot.local.get_episode_stats = real_stats  # type: ignore[method-assign]
+    bot._announce_mtime_seen = 0.0
+    asyncio.run(bot._run_announce_tick())
+    assert fake.embeds == []
+
+
+def test_a_dead_channel_elsewhere_does_not_hold_back_a_show_nobody_sees(tmp_path):
+    from podcodex.bot.bot import ServerSettings
+
+    store = _seed(tmp_path, {"Secret": ["s1"]})
+    bot = _bot(tmp_path)
+    from tests.fixtures.index import show_id_of
+
+    store.set_show_password(show_id_of(store, "Secret"), "sha256:" + "0" * 64)
+    asyncio.run(bot._reload_access())
+    bot.get_channel = lambda cid: None  # type: ignore[assignment]
+
+    async def fetch(cid):
+        raise ConnectionError("channel deleted")
+
+    bot.fetch_channel = fetch  # type: ignore[assignment]
+    bot._server_cfg[42] = ServerSettings(announce_channel_id=999)  # not unlocked
+    asyncio.run(bot._run_announce_tick())  # baseline
+    _seed(tmp_path, {"Secret": ["s2"]})
+    asyncio.run(bot._run_announce_tick())
+
+    assert bot._announce_retry == {}
+
+
+def test_giving_up_on_an_unreadable_collection_rebaselines_it(tmp_path):
+    """Its episodes could not be marked; once it reads again, what it holds
+    is taken silently instead of posted as a burst of "new" episodes."""
+    from podcodex.bot import announce_tasks
+    from podcodex.bot.bot import ServerSettings
+
+    _seed(tmp_path, {"Alpha": ["ep1"]})
+    bot = _bot(tmp_path)
+    fake = _FakeChannel()
+    bot.get_channel = lambda cid: fake  # type: ignore[assignment]
+    bot._server_cfg[42] = ServerSettings(announce_channel_id=999)
+    asyncio.run(bot._run_announce_tick())  # baseline
+    _seed(tmp_path, {"Alpha": ["ep2"]})
+    real = bot.local.list_episodes
+
+    def _boom(_col):
+        raise OSError("damaged table")
+
+    bot.local.list_episodes = _boom  # type: ignore[method-assign]
+    for _ in range(announce_tasks._ANNOUNCE_RETRIES + 1):
+        asyncio.run(bot._run_announce_tick())
+
+    bot.local.list_episodes = real  # type: ignore[method-assign]
+    _seed(tmp_path, {"Alpha": ["ep3"]})
+    asyncio.run(bot._run_announce_tick())
+    assert fake.embeds == []
+
+
+def test_a_new_waiting_episode_gets_its_own_count(tmp_path):
+    from podcodex.bot import announce_tasks
+
+    bot = _bot(tmp_path)
+    for _ in range(announce_tasks._ANNOUNCE_RETRIES):
+        bot._wait_for_stats("c", ["a"], changed=True)
+    bot._wait_for_stats("c", ["b"], changed=True)  # a announced, b just arrived
+    bot._wait_for_stats("c", ["b"], changed=False)  # a quiet tick counts nothing
+
+    assert bot._announce_pending["c"] == (frozenset({"b"}), 1)
+
+
+def test_a_failed_record_after_posting_does_not_post_again(tmp_path):
+    from podcodex.bot.bot import ServerSettings
+
+    _seed(tmp_path, {"Alpha": ["ep1"]})
+    bot = _bot(tmp_path)
+    fake = _FakeChannel()
+    bot.get_channel = lambda cid: fake  # type: ignore[assignment]
+    bot._server_cfg[42] = ServerSettings(announce_channel_id=999)
+    asyncio.run(bot._run_announce_tick())  # baseline
+    _seed(tmp_path, {"Alpha": ["ep2"]})
+
+    def disk_full(*_a, **_k):
+        raise OSError("disk full")
+
+    bot.announce.mark_seen = disk_full  # type: ignore[method-assign]
+    asyncio.run(bot._run_announce_tick())
+    asyncio.run(bot._run_announce_tick())
+
+    assert len(fake.embeds) == 1

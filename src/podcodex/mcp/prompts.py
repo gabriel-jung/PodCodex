@@ -4,7 +4,7 @@ Prompts are named templates with slots (``{topic}``, ``{show}``...) that
 MCP clients surface in their slash menu. Unlike tools, the user invokes
 them explicitly — they don't add context until picked.
 
-Storage: ``~/.config/podcodex/mcp_prompts.json`` (global, not per-show).
+Storage: ``<config_dir>/mcp_prompts.json`` (global, not per-show).
 Five built-ins are seeded on first load and cannot be deleted, only
 toggled off. User-defined prompts are fully editable.
 
@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import time
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -41,7 +43,6 @@ if TYPE_CHECKING:
 
 SlotType = Literal["string", "enum", "int", "bool"]
 
-PROMPTS_PATH = Path.home() / ".config" / "podcodex" / "mcp_prompts.json"
 
 _SLUG_RE = re.compile(r"^[a-z][a-z0-9_-]{1,39}$")
 _TEMPLATE_SLOT_RE = re.compile(r"\{(\w+)\}")
@@ -158,8 +159,42 @@ def validate_prompt(p: PromptDef) -> None:
 
 
 def _prompts_path() -> Path:
-    """Indirection for tests — overridden via monkeypatch."""
-    return PROMPTS_PATH
+    """Where prompts are saved; tests monkeypatch it."""
+    from podcodex.core.app_paths import config_dir
+
+    return config_dir() / "mcp_prompts.json"
+
+
+def _legacy_prompts_path() -> Path:
+    """The hardcoded location used before ``config_dir()``. Read while the
+    current file does not exist yet, never written or moved: it can be
+    another process's live file (one started without XDG_CONFIG_HOME)."""
+    return Path.home() / ".config" / "podcodex" / "mcp_prompts.json"
+
+
+_real_prompts_path = _prompts_path
+
+
+def _keep_unreadable_copy(path: Path) -> None:
+    """Copy an unreadable prompts file aside before anything overwrites it.
+
+    The next save writes only what loaded, so without this a parse error or
+    one malformed entry silently costs the user those prompts for good.
+    """
+    # Timestamped, and only when this content has no copy yet: a later bad
+    # load must not overwrite the copy holding what an earlier one dropped.
+    try:
+        content = path.read_bytes()
+        if any(
+            b.read_bytes() == content for b in path.parent.glob(path.name + ".bak*")
+        ):
+            return
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup = path.with_name(f"{path.name}.bak-{stamp}-{time.time_ns() % 10**9}")
+        shutil.copy2(path, backup)
+        logger.warning(f"prompts: kept a copy of {path} at {backup}")
+    except OSError:
+        logger.exception(f"prompts: could not back up {path}")
 
 
 def load_prompts() -> list[PromptDef]:
@@ -170,19 +205,37 @@ def load_prompts() -> list[PromptDef]:
     ``enabled`` override on a built-in is respected if present.
     """
     path = _prompts_path()
+    # Only for the real location: a test that redirected the store must not
+    # read the developer's home.
+    from_legacy = False
+    if not path.exists() and _prompts_path is _real_prompts_path:
+        legacy = _legacy_prompts_path()
+        if legacy != path and legacy.is_file():
+            path, from_legacy = legacy, True  # read only; saves go to _prompts_path()
     stored: list[PromptDef] = []
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raw = []
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         logger.exception(f"prompts: failed to parse {path}; ignoring file")
+        if not from_legacy:
+            _keep_unreadable_copy(path)
         raw = []
+    if not isinstance(raw, list):
+        logger.error(f"prompts: {path} is not a list; ignoring file")
+        if not from_legacy:
+            _keep_unreadable_copy(path)
+        raw = []
+    backed_up = False
     for item in raw:
         try:
             stored.append(_from_dict(item))
         except Exception:
             logger.exception(f"prompts: skipping malformed entry {item!r}")
+            if not backed_up and not from_legacy:
+                _keep_unreadable_copy(path)
+                backed_up = True
 
     # Merge built-ins: add any missing, preserve user 'enabled' flag if set.
     existing_ids = {p.id for p in stored}
@@ -227,11 +280,12 @@ def _from_dict(d: dict) -> PromptDef:
 # ── Built-in templates ─────────────────────────────────────────────────
 
 
+# Same shape the tool descriptions in server.py ask for.
 _CITATION_FORMAT = (
     "Always cite using the chunk's `episode_title` field (the human "
-    "readable title), not the raw `episode` stem, and the `start` "
-    "timestamp formatted MM:SS. Citation shape: "
-    "`[Show • Episode title @ MM:SS]`."
+    "readable title), not the raw `episode` stem, and its `start_hms` "
+    "timestamp (or the turn's, when the chunk has `speakers`). Citation "
+    "shape: `[Show • Episode title @ start_hms]`."
 )
 
 _SOURCE_LABELS = (
@@ -541,8 +595,7 @@ async def _watch_prompts_file(mcp: FastMCP, interval: float = 2.0) -> None:
 async def live_reload_lifespan(mcp: FastMCP):
     """FastMCP lifespan that installs session capture + a prompt watcher.
 
-    Assign via ``mcp.settings.lifespan = live_reload_lifespan`` before
-    ``mcp.run()`` (the stdio entrypoint sets this in ``main()``).
+    Installed by :func:`install_live_reload`.
     """
     import anyio
 
@@ -555,3 +608,34 @@ async def live_reload_lifespan(mcp: FastMCP):
         finally:
             tg.cancel_scope.cancel()
             _active_session = None
+
+
+def install_live_reload(mcp: FastMCP) -> None:
+    """Run :func:`live_reload_lifespan` for the stdio server's session.
+
+    Stdio only: under the HTTP mount the low-level server runs one lifespan
+    per session, which would start a watcher per client, and the desktop
+    API re-registers prompts itself after every edit. FastMCP binds its
+    lifespan in ``__init__`` (assigning ``mcp.settings.lifespan`` afterwards
+    does nothing), so this sets the low-level server's directly.
+    """
+    try:
+        from mcp.server.fastmcp.server import lifespan_wrapper
+        from mcp.server.lowlevel.server import NotificationOptions
+
+        low = mcp._mcp_server
+        low.lifespan = lifespan_wrapper(mcp, live_reload_lifespan)
+        # Declare prompts.listChanged: FastMCP's stdio run builds its
+        # capabilities with no notification options, and a client that
+        # honours them would drop the notification the watcher sends.
+        build = low.create_initialization_options
+        low.create_initialization_options = lambda notification_options=None, **kw: (
+            build(
+                notification_options or NotificationOptions(prompts_changed=True), **kw
+            )
+        )
+    except (ImportError, AttributeError):  # pragma: no cover - SDK reshape
+        logger.warning(
+            "mcp SDK no longer exposes _mcp_server.lifespan; live prompt "
+            "reload disabled (restart Claude Desktop to apply prompt edits)."
+        )

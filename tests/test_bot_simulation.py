@@ -75,6 +75,9 @@ class _FakeBot:
         # No password-protected shows: ui._refs_allowed short-circuits.
         self._locked_show_ids: set[str] = set()
 
+    def guild_allowed(self, _guild_id):
+        return True  # no PODCODEX_ALLOWED_GUILDS
+
 
 # ── Fake Discord Interaction ───────────────────
 
@@ -301,6 +304,9 @@ class _LockingBot(AccessMixin):
     def _server_settings(self, guild_id):
         return ServerSettings(unlocked_shows=["alpha_1234"] if guild_id == 7 else [])
 
+    def guild_allowed(self, _guild_id):
+        return True
+
 
 def _locking_bot():
     store = _store()
@@ -344,5 +350,42 @@ def test_locked_show_transcript_click_reports_expired():
         cid = _cid(view, prefix="pcx:rx:")
         assert (await _click(bot, cid, guild_id=7)).embed is not None
         assert (await _click(bot, cid, guild_id=99)).content == ui.EXPIRED_MSG
+
+    _run(go())
+
+
+def test_list_pages_and_details_recheck_show_access():
+    """The /episodes pager and the Search info card are persistent too."""
+    bot, sid = _locking_bot()
+    list_sid = bot.results.save(
+        CachedSearch(
+            "list",
+            "l",
+            "",
+            embeds=[discord.Embed(title="Alpha Show").to_dict()],
+            collections=["col_a"],
+        )
+    )
+
+    async def go():
+        assert await ui.build_list_view(bot, list_sid, 0, 7) is not None
+        for guild_id in (99, None):
+            assert await ui.build_list_view(bot, list_sid, 0, guild_id) is None
+
+        details = f"pcx:rd:{sid}:0"
+        assert (await _click(bot, details, guild_id=7)).embed is not None
+        assert (await _click(bot, details, guild_id=99)).content == ui.EXPIRED_MSG
+
+    _run(go())
+
+
+def test_persistent_buttons_honour_the_guild_allowlist():
+    """Component interactions skip the command tree's check."""
+    bot, sid = _locking_bot()
+    bot.guild_allowed = lambda gid: gid == 8  # guild 7 unlocked, not allowed
+
+    async def go():
+        assert await ui.build_results_view(bot, sid, 0, 7) is None
+        assert await ui.build_compact_view(bot, sid, 7) is None
 
     _run(go())

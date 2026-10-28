@@ -118,6 +118,9 @@ class _FakeBot:
         # No password-protected shows: ui._refs_allowed short-circuits.
         self._locked_show_ids: set[str] = set()
 
+    def guild_allowed(self, _guild_id):
+        return True  # no PODCODEX_ALLOWED_GUILDS
+
 
 def _run(coro):
     return asyncio.run(coro)

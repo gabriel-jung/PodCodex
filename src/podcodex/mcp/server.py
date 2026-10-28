@@ -24,12 +24,19 @@ Environment:
 
 from __future__ import annotations
 
+import functools
 import os
 
+import anyio
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
 
-from podcodex.core._utils import episode_display, format_hms, is_unattributed
+from podcodex.core._utils import (
+    LEGACY_NARRATOR_SPEAKER,
+    episode_display,
+    format_hms,
+    is_unattributed,
+)
 from podcodex.rag.hit import merge_display_turns
 from podcodex.rag.defaults import ALPHA, CONTEXT_WINDOW, TOP_K
 from podcodex.rag.hit import Hit
@@ -51,6 +58,25 @@ mcp = FastMCP("podcodex")
 mcp.settings.streamable_http_path = "/"
 
 
+# A legacy "Narrator" may be a real person (a documentary's): kept, as
+# merge_display_turns and speaker_stats keep it, so every surface agrees.
+_KEEP = (LEGACY_NARRATOR_SPEAKER,)
+
+
+def _named(speaker: str | None) -> str:
+    """The speaker as clients should see it: empty when it names nobody.
+
+    An LLM citing a placeholder (``NoDiarization``, ``""``) would attribute
+    quotes to it as if it were a person.
+    """
+    return "" if is_unattributed(speaker, _KEEP) else (speaker or "")
+
+
+def _named_list(speakers) -> list[str]:
+    """Drop placeholders from a list of speaker labels."""
+    return [s for s in speakers or [] if not is_unattributed(s, _KEEP)]
+
+
 def _episode_transcript_text(chunks: list[Hit]) -> str:
     """Flatten preloaded episode chunks to ``[MmSS] Speaker: text`` lines.
 
@@ -63,20 +89,16 @@ def _episode_transcript_text(chunks: list[Hit]) -> str:
         if turns:
             for t in turns:
                 ts = format_hms(float(t.get("start") or c.start))
-                sp = t.get("speaker", "")
+                sp = _named(t.get("speaker"))
                 lines.append(
                     f"[{ts}] {sp}: {t.get('text', '')}"
-                    if not is_unattributed(sp)
+                    if sp
                     else f"[{ts}] {t.get('text', '')}"
                 )
         else:
             ts = format_hms(c.start)
-            sp = c.dominant_speaker
-            lines.append(
-                f"[{ts}] {sp}: {c.text}"
-                if not is_unattributed(sp)
-                else f"[{ts}] {c.text}"
-            )
+            sp = _named(c.dominant_speaker)
+            lines.append(f"[{ts}] {sp}: {c.text}" if sp else f"[{ts}] {c.text}")
     return "\n".join(lines)
 
 
@@ -155,19 +177,13 @@ def _trim(chunk: Hit) -> dict:
         "start": chunk.start,
         "start_hms": format_hms(chunk.start),
         "end": chunk.end,
-        # Empty rather than the placeholder: an LLM citing this payload would
-        # otherwise attribute quotes to "Narrator" on a non-diarized show.
-        "speaker": ""
-        if is_unattributed(chunk.dominant_speaker)
-        else chunk.dominant_speaker,
+        "speaker": _named(chunk.dominant_speaker),
     }
     turns = merge_display_turns(chunk.speakers or [])
     if turns:
         out["speakers"] = [
             {
-                "speaker": ""
-                if is_unattributed(t.get("speaker"))
-                else t.get("speaker", ""),
+                "speaker": _named(t.get("speaker")),
                 "start": float(t["start"]) if t.get("start") is not None else 0.0,
                 "start_hms": format_hms(
                     float(t["start"]) if t.get("start") is not None else 0.0
@@ -198,7 +214,24 @@ def _trim(chunk: Hit) -> dict:
 # ── Tools ─────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+def _tool(fn):
+    """Register ``fn`` as an MCP tool that runs in a worker thread.
+
+    FastMCP calls a sync tool inline on the event loop. Under the desktop
+    API's ``/mcp`` mount that loop is the API's own, so a search (or a cold
+    embedder load) would stall every request, ``/api/health`` included. The
+    module-level name stays the plain function, for direct callers.
+    """
+
+    @functools.wraps(fn)
+    async def run(*args, **kwargs):
+        return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+
+    mcp.tool()(run)
+    return fn
+
+
+@_tool
 def list_shows() -> list[dict]:
     """List the podcast shows available in the user's PodCodex index.
 
@@ -238,7 +271,7 @@ def list_shows() -> list[dict]:
     return out
 
 
-@mcp.tool()
+@_tool
 def list_episodes(
     show: str | None = None,
     pub_date_min: str | None = None,
@@ -310,7 +343,7 @@ def list_episodes(
                     "broadcast_number": item.get("broadcast_number"),
                     "chunk_count": int(item.get("chunk_count", 0)),
                     "duration": float(item.get("duration", 0.0)),
-                    "speakers": list(item.get("speakers") or []),
+                    "speakers": _named_list(item.get("speakers")),
                     "description": item.get("description", ""),
                 }
             )
@@ -321,7 +354,7 @@ def list_episodes(
     return out
 
 
-@mcp.tool()
+@_tool
 def get_episode(
     show: str,
     episode: str,
@@ -377,20 +410,25 @@ def get_episode(
         "source": rec.get("source", ""),
         "chunk_count": int(rec.get("chunk_count", 0)),
         "duration": float(rec.get("duration", 0.0)),
-        "speakers": rec.get("speakers", []),
+        "speakers": _named_list(rec.get("speakers")),
     }
     want_transcript = include_transcript == "text"
     if include_chunk_map or want_transcript:
         # One episode load feeds both the chunk-map and the transcript.
         chunks = store.load_chunks_no_embeddings(collections[0].name, episode)
         if include_chunk_map:
-            card["chunk_map"] = chunk_map_from_chunks(chunks, text_preview)
+            card["chunk_map"] = [
+                {**row, "speakers": _named_list(row.get("speakers"))}
+                if "speakers" in row
+                else row
+                for row in chunk_map_from_chunks(chunks, text_preview)
+            ]
         if want_transcript:
             card["transcript"] = _episode_transcript_text(chunks)
     return card
 
 
-@mcp.tool()
+@_tool
 def search(
     query: str,
     show: str | None = None,
@@ -412,9 +450,10 @@ def search(
     ``exact`` instead when the user wants to verify a specific wording.
 
     **Cite every fact drawn from the results.** Attribute each claim
-    inline as ``[Show • Episode @ <start_hms>]`` using the ``show``,
-    ``episode``, and ``start_hms`` fields of the chunk it came from (the
-    citation-ready ``9m38`` / ``1h09m46`` form). When a chunk carries a
+    inline as ``[Show • Episode title @ <start_hms>]`` using the ``show``,
+    ``episode_title``, and ``start_hms`` fields of the chunk it came from
+    (the citation-ready ``9m38`` / ``1h09m46`` form). ``episode`` is the
+    identifier for follow-up calls, not a label to show the user. When a chunk carries a
     ``speakers`` array, cite the *turn's* speaker and ``start_hms`` — not
     the chunk-level ``speaker`` (that field is only the
     chunk's dominant voice and may not own the quote). Never blend in
@@ -472,7 +511,7 @@ def search(
     return [_trim(chunk) for chunk, _col in merged]
 
 
-@mcp.tool()
+@_tool
 def exact(
     query: str,
     show: str | None = None,
@@ -494,8 +533,8 @@ def exact(
     user's transcripts. Choose ``search`` for meaning-based questions.
 
     **Cite every quoted or referenced passage** inline as
-    ``[Show • Episode @ <start_hms>]`` using the chunk's ``show``,
-    ``episode``, and ``start_hms`` fields. Never supplement with outside
+    ``[Show • Episode title @ <start_hms>]`` using the chunk's ``show``,
+    ``episode_title``, and ``start_hms`` fields. Never supplement with outside
     information unless labeled ``(outside the transcripts)``. Mark
     inferences as ``(inference)``.
 
@@ -542,7 +581,7 @@ def exact(
     ]
 
 
-@mcp.tool()
+@_tool
 def exact_count(
     queries: list[str],
     show: str | None = None,
@@ -622,7 +661,7 @@ def exact_count(
     return merged
 
 
-@mcp.tool()
+@_tool
 def get_context(
     show: str,
     episode: str,
@@ -638,7 +677,8 @@ def get_context(
     pronoun. The returned window is contiguous and chronological.
 
     **Cite the expanded passage** just like ``search`` / ``exact``
-    results: attribute facts inline as ``[Show • Episode @ <start_hms>]``.
+    results: attribute facts inline as
+    ``[Show • Episode title @ <start_hms>]``.
     Outside information must be labeled ``(outside the transcripts)``;
     inferences must be labeled ``(inference)``.
 
@@ -688,7 +728,7 @@ def get_context(
     return [_trim(c) for c in chunks]
 
 
-@mcp.tool()
+@_tool
 def speaker_stats(show: str | None = None) -> list[dict]:
     """Aggregate per-speaker airtime across the user's PodCodex index.
 
@@ -716,15 +756,14 @@ def speaker_stats(show: str | None = None) -> list[dict]:
     return get_index_store().speaker_stats_multi([c.name for c in collections])
 
 
-def main() -> None:
+def main(argv: list[str] | None = None, *, bootstrap: bool = True) -> None:
     """Run the MCP server over stdio.
 
     Used both by the dev ``podcodex-mcp`` console-script and by the
     bundled binary's ``--mcp`` flag. The bundled path goes through
-    ``podcodex.api.server._handle_mcp_flag`` which has already wired
-    caches and called ``bootstrap_for_mcp_stdio``; the dev path has
-    not, so bootstrap here is idempotent for the bundled case (loguru
-    sinks are reset before re-adding) and necessary for the dev case.
+    ``podcodex.api.server._handle_mcp_flag``, which has already called
+    ``bootstrap_for_mcp_stdio`` and passes ``bootstrap=False``; the dev
+    path bootstraps here.
     """
     import argparse
 
@@ -744,13 +783,15 @@ def main() -> None:
         default=None,
         help="Index directory (overrides PODCODEX_INDEX for this process).",
     )
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     if args.index:
         os.environ["PODCODEX_INDEX"] = args.index
 
-    from podcodex.bootstrap import bootstrap_for_mcp_stdio
+    if bootstrap:
+        from podcodex.bootstrap import bootstrap_for_mcp_stdio
 
-    bootstrap_for_mcp_stdio()
+        bootstrap_for_mcp_stdio()
+    install_live_reload(mcp)
     logger.info("podcodex-mcp starting (stdio)")
     # Embedder loads lazily on first tool call — Claude Desktop's
     # initialize handshake has a 60s timeout that we'd otherwise blow on
@@ -760,15 +801,9 @@ def main() -> None:
 
 # Register user-defined prompts at module import so both stdio and HTTP
 # transports expose the same slash-menu entries to Claude Desktop.
-from podcodex.mcp.prompts import live_reload_lifespan, reregister_all  # noqa: E402
+from podcodex.mcp.prompts import install_live_reload, reregister_all  # noqa: E402
 
 reregister_all(mcp)
-
-# Live-reload: the stdio subprocess Claude Desktop spawns watches the
-# prompts JSON file and pushes `prompts/list_changed` when the desktop
-# app's Settings UI edits it. Users see prompt changes without quitting
-# Claude Desktop. Code changes still need a full restart.
-mcp.settings.lifespan = live_reload_lifespan
 
 
 if __name__ == "__main__":

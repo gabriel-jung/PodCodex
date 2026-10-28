@@ -208,7 +208,8 @@ def _handle_mcp_flag() -> None:
 
     from podcodex.mcp.server import main as mcp_main
 
-    mcp_main()
+    # `--mcp` selected this branch; the MCP parser does not know it.
+    mcp_main([a for a in sys.argv[1:] if a != "--mcp"], bootstrap=False)
     sys.exit(0)
 
 

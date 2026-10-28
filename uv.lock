@@ -2901,6 +2901,7 @@ gpu-pascal = [
     { name = "torchaudio", version = "2.8.0+cu126", source = { registry = "https://download.pytorch.org/whl/cu126" } },
 ]
 mcp = [
+    { name = "anyio" },
     { name = "chonkie" },
     { name = "flagembedding" },
     { name = "lancedb" },
@@ -2965,6 +2966,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "accelerate", marker = "extra == 'pipeline'", specifier = ">=1.12.0" },
+    { name = "anyio", marker = "extra == 'mcp'", specifier = ">=4" },
     { name = "certifi", specifier = ">=2024.7.4" },
     { name = "chonkie", marker = "extra == 'rag'", specifier = ">=1.2.0" },
     { name = "discord-py", marker = "extra == 'bot'", specifier = ">=2.5.0" },

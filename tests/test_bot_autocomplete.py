@@ -41,8 +41,9 @@ def store(isolated_index):
 
 
 def _bot(store):
-    """The real bot over the seeded store (they share the isolated index)."""
-    return make_bot(store.path.parent)[0]
+    """The real bot over the seeded store (they share the isolated index),
+    loading both models the tests index under."""
+    return make_bot(store.path.parent, models=("bge-m3", "e5-small"))[0]
 
 
 class _Namespace:
@@ -57,6 +58,7 @@ class _Interaction:
     def __init__(self, guild_id=1, **ns):
         self.guild_id = guild_id
         self.namespace = _Namespace(**ns)
+        self.command = None
 
 
 def _settings(**kw):
@@ -67,9 +69,7 @@ def _settings(**kw):
 
 def test_a_locked_show_is_hidden_from_a_guild_that_has_not_unlocked_it(store):
     bot = _bot(store)
-    cols, _info = asyncio.run(
-        bot._visible_collections(_settings(), "bge-m3", "semantic")
-    )
+    cols, _info = asyncio.run(bot._visible_collections(_settings()))
     assert cols == ["public__bge-m3__semantic"]
 
 
@@ -77,33 +77,50 @@ def test_unlocking_reveals_the_show_for_that_guild_only(store):
     bot = _bot(store)
     unlocked = _settings(unlocked_shows=["locked_2222bbbb"])
 
-    cols, _info = asyncio.run(bot._visible_collections(unlocked, "bge-m3", "semantic"))
+    cols, _info = asyncio.run(bot._visible_collections(unlocked))
     assert sorted(cols) == ["locked__bge-m3__semantic", "public__bge-m3__semantic"]
 
     # A different guild still sees only the public one.
     bot._ac_cache.reset()
-    other, _info = asyncio.run(
-        bot._visible_collections(_settings(), "bge-m3", "semantic")
-    )
+    other, _info = asyncio.run(bot._visible_collections(_settings()))
     assert other == ["public__bge-m3__semantic"]
 
 
 def test_a_public_show_stays_visible_when_nothing_is_protected(store):
     bot = _bot(store)
     store.delete_show_password("locked_2222bbbb")
-    bot._reload_shows()
+    asyncio.run(bot._reload_access())
     bot._ac_cache.reset()
 
-    cols, _info = asyncio.run(
-        bot._visible_collections(_settings(), "bge-m3", "semantic")
-    )
+    cols, _info = asyncio.run(bot._visible_collections(_settings()))
     assert sorted(cols) == ["locked__bge-m3__semantic", "public__bge-m3__semantic"]
 
 
-def test_visible_collections_filters_by_model_and_chunker(store):
-    bot = _bot(store)
-    cols, _info = asyncio.run(bot._visible_collections(_settings(), "e5-large", ""))
-    assert cols == []
+def test_search_advanced_pickers_stay_within_the_models_the_bot_loads(store):
+    """/search-advanced encodes the query, so its show picker must not offer
+    a show the command will refuse; other commands read without a model."""
+    add_show(store, "Other", show_id="other_3333cccc", model="e5-small")
+    bot = make_bot(store.path.parent)[0]  # loads only bge-m3
+
+    class _Cmd:
+        def __init__(self, name):
+            self.name = name
+
+    search = _Interaction()
+    search.command = _Cmd("search-advanced")
+    stats = _Interaction()
+    stats.command = _Cmd("stats")
+
+    assert "Other" not in [
+        c.value for c in asyncio.run(bot._show_autocomplete(search, ""))
+    ]
+    assert "Other" in [c.value for c in asyncio.run(bot._show_autocomplete(stats, ""))]
+    assert [c.value for c in asyncio.run(bot._model_autocomplete(search, ""))] == [
+        "bge-m3"
+    ]
+    assert "e5-small" in [
+        c.value for c in asyncio.run(bot._model_autocomplete(stats, ""))
+    ]
 
 
 def test_known_show_labels_ignores_the_model_when_unfiltered(store):

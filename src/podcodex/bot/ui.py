@@ -732,6 +732,9 @@ async def _collections_allowed(
     show it describes, so it is refused once anything is locked rather
     than trusted; re-running the command rebuilds it with the names.
     """
+    # The allowlist: buttons never pass the command tree's check.
+    if not client.guild_allowed(guild_id):
+        return False
     if not client._locked_show_ids:
         return True
     if not collections:
@@ -750,6 +753,9 @@ async def _refs_allowed(
     already on screen. ``guild_id=None`` falls back to the default settings,
     which unlock nothing, so an unknown guild is refused rather than allowed.
     """
+    # The allowlist: buttons never pass the command tree's check.
+    if not client.guild_allowed(guild_id):
+        return False
     if not client._locked_show_ids:
         return True
     return await _names_allowed(client, guild_id, [r.collection for r in refs])

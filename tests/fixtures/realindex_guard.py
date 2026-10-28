@@ -40,6 +40,12 @@ os.environ["PODCODEX_DATA_DIR"] = str(_SCRATCH / "data")
 # guard below cannot see because it only knows the scratch <data_dir>/index.
 os.environ.pop("PODCODEX_INDEX", None)
 
+# The prompts store reads its pre-config_dir location (under the real home)
+# while the scratch config has no file: point that at scratch too.
+import podcodex.mcp.prompts as _prompts  # noqa: E402
+
+_prompts._legacy_prompts_path = lambda: _SCRATCH / "legacy" / "mcp_prompts.json"
+
 import podcodex.rag.index_store as _index_store  # noqa: E402
 
 _orig_resolve = _index_store._resolve_default_index_path

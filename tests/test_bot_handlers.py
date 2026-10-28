@@ -94,7 +94,6 @@ def test_search_replies_with_the_hit(bot, monkeypatch):
             ResolvedShows(ShowAccess.ALL),
             ServerSettings(),
             0.5,
-            "α=0.50",
         )
     )
 
@@ -113,9 +112,7 @@ def test_search_explains_why_nothing_matched(bot, monkeypatch):
     interaction = _FakeInteraction()
     shows = ResolvedShows(ShowAccess.SPECIFIC, ("Nonexistent Show",))
 
-    asyncio.run(
-        bot._run_search(interaction, "hello", shows, ServerSettings(), 0.5, "α=0.50")
-    )
+    asyncio.run(bot._run_search(interaction, "hello", shows, ServerSettings(), 0.5))
 
     assert ran == []
     msg = interaction.followup.messages[0]["content"]
@@ -141,3 +138,61 @@ def test_stats_speakers_and_episodes_describe_the_show(bot):
         text = _reply_text(interaction)
         assert "Alpha Show" in text, handler.__name__
         assert "Beta Show" not in text, handler.__name__
+
+
+def test_placeholder_speakers_never_show_as_people(
+    tmp_path, isolated_index, monkeypatch
+):
+    """`NoDiarization` names nobody; every surface that lists speakers must
+    leave it out (or blank it), not just `display_speaker`'s unit tests."""
+    from tests.fixtures.index import chunk
+
+    monkeypatch.setattr(resolution_module, "load_show_rag_prefs", lambda: {})
+    add_show(
+        rag_index_store.get_index_store(),
+        "Mono",
+        {
+            "solo": [
+                chunk(
+                    "a long enough monologue line for the index",
+                    show="Mono",
+                    episode="solo",
+                    speaker="NoDiarization",
+                )
+            ]
+        },
+    )
+    bot = make_bot(tmp_path)[0]
+    texts = []
+    for handler in (bot._handle_speakers, bot._handle_episodes):
+        interaction = _FakeInteraction()
+        asyncio.run(handler(interaction, "Mono", None))
+        texts.append(_reply_text(interaction))
+    interaction = _FakeInteraction()
+    asyncio.run(
+        bot._run_random(interaction, ResolvedShows(ShowAccess.SPECIFIC, ("Mono",)))
+    )
+    texts.append(_reply_text(interaction))
+
+    assert texts[2]  # /random answered
+    for text in texts:
+        assert "NoDiarization" not in text
+
+
+def test_search_says_which_shows_it_could_not_search(bot, monkeypatch):
+    """A show indexed only under a model the bot does not load is skipped by
+    /search; silence would read as "that show never mentions it"."""
+    store = rag_index_store.get_index_store()
+    add_show(store, "Gamma Show", model="e5-small")
+    (hit, *_rest) = store.load_chunks_no_embeddings(ALPHA, "ep1")
+    monkeypatch.setattr(search_module, "hybrid_search", lambda *a, **k: [(hit, ALPHA)])
+    interaction = _FakeInteraction()
+
+    asyncio.run(
+        bot._run_search(
+            interaction, "william", ResolvedShows(ShowAccess.ALL), ServerSettings(), 0.5
+        )
+    )
+
+    notes = [m["content"] or "" for m in interaction.followup.messages]
+    assert any("Gamma Show" in n and "does not load" in n for n in notes)

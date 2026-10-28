@@ -1541,3 +1541,33 @@ def test_deleting_a_password_clears_the_shows_own_legacy_row(tmp_path):
     s.delete_show_password("foo_1", show_label="Foo")
 
     assert s.get_show_passwords() == {}
+
+
+def test_concurrent_first_calls_open_the_default_store_once(
+    isolated_index, monkeypatch
+):
+    """Opening is not passive (ownership stamp, meta heal, show-id migration):
+    two threads racing the first call must not both do it."""
+    import threading
+    import time
+
+    from podcodex.rag import index_store as mod
+
+    opened: list[int] = []
+    real = mod.IndexStore
+
+    def slow_open(*a, **k):
+        opened.append(1)
+        time.sleep(0.05)
+        return real(*a, **k)
+
+    mod.get_index_store.cache_clear()
+    monkeypatch.setattr(mod, "IndexStore", slow_open)
+    threads = [threading.Thread(target=mod.get_index_store) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    mod.get_index_store.cache_clear()
+
+    assert opened == [1]

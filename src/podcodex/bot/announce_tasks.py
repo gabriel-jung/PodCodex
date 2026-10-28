@@ -19,6 +19,11 @@ from podcodex.bot.announce import (
 )
 from podcodex.bot.ui import clear_chunk_cache
 
+# Ticks a collection is retried for (one per announce interval) when its new
+# episodes could not be announced, before the bot stops trying until the next
+# index change.
+_ANNOUNCE_RETRIES = 6
+
 
 class AnnounceMixin:
     """Announce-loop methods mixed into PodCodexBot (bot.py).
@@ -51,65 +56,178 @@ class AnnounceMixin:
         current_mtime = await loop.run_in_executor(None, self.local.index_mtime)
         # Inequality, not ">": rsync can lower the value by stamping an older
         # source mtime onto a table. See _refresh_if_stale for the long form.
-        if current_mtime == self._announce_mtime_seen:
+        changed = current_mtime != self._announce_mtime_seen
+        if not changed and not self._announce_retry:
             return
-        await loop.run_in_executor(None, self.local.reconnect)
-        clear_chunk_cache()
-        await loop.run_in_executor(None, self._reload_shows)
+        if changed:
+            await loop.run_in_executor(None, self.local.reconnect)
+            clear_chunk_cache()
+            await self._reload_access()
         col_info = await loop.run_in_executor(None, self.local.get_all_collection_info)
-        # Advanced only once the reload succeeded, so a tick that dies mid-rsync
-        # is retried instead of being swallowed by _announce_loop's handler.
-        # Posting below is best-effort; observe() has already durably recorded
-        # the stems, so a re-run after a posting failure announces nothing twice.
-        self._announce_mtime_seen = current_mtime
+        # Advanced only once the reload succeeded, so a tick that dies there
+        # (mid-rsync) is retried whole.
+        if changed:
+            self._announce_mtime_seen = current_mtime
+        # A collection that left the index has nothing left to announce.
+        for state in (self._announce_retry, self._announce_pending):
+            for gone in [c for c in state if c not in col_info]:
+                del state[gone]
 
-        # Diff each collection; observe() advances the seen-state.
-        new_cols: dict[str, list[str]] = {}
-        for col in col_info:
-            stems = await loop.run_in_executor(
-                None, lambda c=col: self.local.list_episodes(c)
-            )
-            new = self.announce.observe(col, set(stems))
-            if new:
-                new_cols[col] = new
-        if not new_cols:
-            return
-
-        # Fetch display rows for the new stems, newest first.
-        per_col_rows: dict[str, list[dict]] = {}
-        for col, new_stems in new_cols.items():
-            stats = await loop.run_in_executor(
-                None, lambda c=col: self.local.get_episode_stats(c)
-            )
-            newset = set(new_stems)
-            rows = [s for s in stats if s.get("episode") in newset]
-            rows.sort(
-                key=lambda e: (e.get("pub_date") or "", e.get("episode", "")),
-                reverse=True,
-            )
-            if rows:
-                per_col_rows[col] = rows
-        if not per_col_rows:
-            return
-
-        async for guild_id, settings, channel in self._iter_announce_channels():
-            accessible = {
-                c.name
-                for c in self._resolve_show_collections(
-                    ResolvedShows(ShowAccess.ALL), settings, col_info
+        # An episode is marked seen once it has been announced (each guild
+        # best-effort), never before. A collection whose read or delivery
+        # failed is retried on the next ticks on its own (no reload, nothing
+        # held back); one whose new episodes have no stats row yet waits for
+        # the next index change (`_wait_for_stats`).
+        cols = col_info if changed else list(self._announce_retry)
+        targets: list | None = None  # resolved once per tick, on first need
+        for col in cols:
+            new: list[str] = []
+            try:
+                stems = await loop.run_in_executor(
+                    None, lambda c=col: self.local.list_episodes(c)
                 )
-            }
-            for col, rows in per_col_rows.items():
-                if col not in accessible:
-                    continue
-                show = (col_info.get(col, {}) or {}).get("show", "") or col
-                try:
-                    await channel.send(embed=build_new_episodes_embed(show, rows))
-                except discord.HTTPException:
-                    logger.warning(
-                        f"Announce send failed (guild {guild_id}, "
-                        f"channel {settings.announce_channel_id})"
+                new = self.announce.observe(col, set(stems), record=False)
+                if new and targets is None:
+                    targets = await self._announce_targets(col_info)
+                announced, reached = (
+                    await self._post_new_episodes(col, new, col_info, targets or [])
+                    if new
+                    else (set(), True)
+                )
+            except Exception:
+                logger.exception(f"Announce: {col} failed this tick")
+                self._retry_announce(col, "read")
+                continue
+            try:
+                self.announce.mark_seen(col, sorted(announced))
+            except Exception:
+                # Posted already: retrying would post it again.
+                logger.exception(f"Announce: {col} posted but not recorded")
+            if not reached:
+                self._retry_announce(col, "delivery", sorted(new))
+            else:
+                self._announce_retry.pop(col, None)
+                self._wait_for_stats(col, sorted(set(new) - announced), changed)
+
+    def _retry_announce(
+        self, col: str, why: str, stems: list[str] | None = None
+    ) -> None:
+        """A transient failure (``why``: "read" or "delivery"): retried every
+        tick, index change or not, up to ``_ANNOUNCE_RETRIES``. Then a delivery
+        failure marks its stems seen (dropped, not posted late), and a read
+        failure re-baselines the collection, so whatever it holds once it
+        reads again is taken silently rather than posted as a burst."""
+        attempts = self._announce_retry.get(col, 0) + 1
+        if attempts <= _ANNOUNCE_RETRIES:
+            self._announce_retry[col] = attempts
+            return
+        self._announce_retry.pop(col, None)
+        if why == "delivery" and stems:
+            self.announce.mark_seen(col, stems)
+        elif why == "read":
+            self.announce.forget(col)
+        logger.error(
+            f"Announce: gave up on {col} after {_ANNOUNCE_RETRIES} retries ({why})"
+        )
+
+    def _wait_for_stats(self, col: str, missing: list[str], changed: bool) -> None:
+        """New episodes listed without a stats row yet (a half-synced index).
+
+        Only an index change can fix that, so they are not retried on quiet
+        ticks; they come back through ``observe`` on the next change. Counted
+        per set of waiting episodes and per index change: after
+        ``_ANNOUNCE_RETRIES`` changes still without stats, they are marked seen
+        so they neither come back forever nor post weeks late.
+        """
+        if not missing:
+            self._announce_pending.pop(col, None)
+            return
+        if not changed:
+            return
+        key = frozenset(missing)
+        prev_key, prev_count = self._announce_pending.get(col, (frozenset(), 0))
+        count = prev_count + 1 if prev_key == key else 1
+        if count > _ANNOUNCE_RETRIES:
+            self._announce_pending.pop(col, None)
+            self.announce.mark_seen(col, missing)
+            logger.error(
+                f"Announce: {len(missing)} episode(s) of {col} never got stats; "
+                "marked seen without posting"
+            )
+        else:
+            self._announce_pending[col] = (key, count)
+
+    async def _announce_targets(
+        self, col_info: dict[str, dict]
+    ) -> list[tuple[int, int, object | None, set[str]]]:
+        """``(guild_id, channel_id, channel or None, collections it may see)``
+        per allowed guild with an announcement channel configured. None marks
+        a channel that could not be reached this tick."""
+        targets = []
+        async for guild_id, settings, channel in self._iter_announce_channels(
+            include_unreachable=True
+        ):
+            try:
+                accessible = {
+                    c.name
+                    for c in self._resolve_show_collections(
+                        ResolvedShows(ShowAccess.ALL), settings, col_info
                     )
+                }
+            except Exception:
+                logger.exception(f"Announce: access for guild {guild_id} failed")
+                continue
+            targets.append(
+                (guild_id, settings.announce_channel_id, channel, accessible)
+            )
+        return targets
+
+    async def _post_new_episodes(
+        self,
+        col: str,
+        new_stems: list[str],
+        col_info: dict[str, dict],
+        targets: list[tuple[int, int, object | None, set[str]]],
+    ) -> tuple[set[str], bool]:
+        """Post one collection's new episodes to every guild that may see it.
+
+        Returns ``(stems announced, reached)``: the stems with a stats row,
+        once a guild got them or when no guild that may see the show has a
+        channel; ``reached`` is False (and nothing announced) while every such
+        guild failed or was unreachable.
+        """
+        loop = asyncio.get_running_loop()
+        stats = await loop.run_in_executor(
+            None, lambda: self.local.get_episode_stats(col)
+        )
+        newset = set(new_stems)
+        rows = [s for s in stats if s.get("episode") in newset]
+        if not rows:
+            return set(), True
+        # Newest first.
+        rows.sort(
+            key=lambda e: (e.get("pub_date") or "", e.get("episode", "")),
+            reverse=True,
+        )
+        show = (col_info.get(col, {}) or {}).get("show", "") or col
+        embed = build_new_episodes_embed(show, rows)
+        audience = [t for t in targets if col in t[3]]
+        delivered = False
+        for guild_id, channel_id, channel, _accessible in audience:
+            if channel is None:
+                continue
+            try:
+                await channel.send(embed=embed)
+                delivered = True
+            except Exception as exc:
+                # One guild's failure (a send, a connection drop) must not
+                # abort the others or re-post to those already served.
+                logger.warning(
+                    f"Announce send failed (guild {guild_id}, channel {channel_id}): {exc!r}"
+                )
+        if audience and not delivered:
+            return set(), False
+        return {r["episode"] for r in rows}, True
 
     async def _announce_channel(self, channel_id: int):
         """Resolve a configured channel id to a sendable channel, or None."""
@@ -117,18 +235,30 @@ class AnnounceMixin:
         if channel is None:
             try:
                 channel = await self.fetch_channel(channel_id)
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            except Exception as exc:
+                # Once per channel, not every tick: a deleted channel or a
+                # removed permission stays that way until an admin acts.
+                if channel_id not in self._announce_unreachable:
+                    self._announce_unreachable.add(channel_id)
+                    logger.warning(
+                        f"Announce channel {channel_id} unavailable: {exc!r}"
+                    )
                 return None
+        self._announce_unreachable.discard(channel_id)
         return channel if hasattr(channel, "send") else None
 
-    async def _iter_announce_channels(self):
-        """Yield ``(guild_id, settings, channel)`` for every server with a
-        configured, resolvable announcement channel."""
-        for guild_id, settings in self._server_cfg.items():
-            if not settings.announce_channel_id:
+    async def _iter_announce_channels(self, *, include_unreachable: bool = False):
+        """Yield ``(guild_id, settings, channel)`` for every allowed server with
+        an announcement channel configured: the one walk both announcement
+        kinds use. An unreachable channel is skipped, or yielded as None with
+        ``include_unreachable``."""
+        # A snapshot: a guild configured during the awaits below would
+        # otherwise change the dict mid-iteration and abort the fan-out.
+        for guild_id, settings in list(self._server_cfg.items()):
+            if not settings.announce_channel_id or not self.guild_allowed(guild_id):
                 continue
             channel = await self._announce_channel(settings.announce_channel_id)
-            if channel is not None:
+            if channel is not None or include_unreachable:
                 yield guild_id, settings, channel
 
     async def _announce_version_if_changed(self) -> None:

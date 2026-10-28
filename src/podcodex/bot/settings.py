@@ -3,18 +3,27 @@
 from __future__ import annotations
 
 import json
+import shutil
+import threading
+import time
 from dataclasses import asdict, fields, replace
 from difflib import get_close_matches
 
 import discord
 from loguru import logger
 
-from podcodex.bot.config import ServerSettings
+from podcodex.bot.config import ServerSettings, is_any_source
 from podcodex.bot.guards import require_guild
 from podcodex.bot.resolution import explicit_combo
+from podcodex.core._utils import write_json_atomic
 from podcodex.rag.defaults import (
+    CHUNKING_STRATEGIES,
     MODELS,
 )
+
+# Saves happen on the event loop; the lock keeps that true if a caller in an
+# executor thread ever saves too.
+_SAVE_LOCK = threading.Lock()
 
 
 class SettingsMixin:
@@ -26,9 +35,39 @@ class SettingsMixin:
     """
 
     def _load_server_config(self) -> dict[int, ServerSettings]:
-        if not self.server_config_path.exists():
+        """Read every guild's settings.
+
+        An unreadable file must not stop the bot: under ``restart:
+        unless-stopped`` a raise here is a crash loop. It is copied aside and
+        the bot starts with no guild settings. Keys this version does not
+        know are kept for the next save, so running an older release for a
+        while does not erase fields a newer one wrote.
+        """
+        # Per guild: keys of a newer ServerSettings, written back untouched.
+        self._server_cfg_extra: dict[int, dict] = {}
+        path = self.server_config_path
+        if not path.exists():
             return {}
-        raw = json.loads(self.server_config_path.read_text(encoding="utf-8"))
+        # An OSError (permissions, an unmounted volume) is not caught: starting
+        # empty would let the next save replace every guild's settings with
+        # one, so a file the bot cannot read stops it, loudly.
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("not a JSON object")
+        except ValueError as exc:
+            # Unparseable content: kept aside (a failed copy raises, so the
+            # bot never starts empty without one), then start without it.
+            # Timestamped: a second corruption must not overwrite the first
+            # copy, which may hold the only record of every guild's settings.
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            backup = path.with_name(f"{path.name}.corrupt-{stamp}")
+            shutil.copy2(path, backup)
+            logger.error(
+                f"Could not parse {path} ({exc}); starting with no server "
+                f"settings. The unreadable file is kept at {backup}."
+            )
+            return {}
         valid_keys = {f.name for f in fields(ServerSettings)}
         result: dict[int, ServerSettings] = {}
         for sid, d in raw.items():
@@ -40,20 +79,27 @@ class SettingsMixin:
             except (TypeError, ValueError):
                 logger.warning(f"Ignoring non-guild key {sid!r} in server config")
                 continue
+            if not isinstance(d, dict):
+                logger.warning(f"Ignoring malformed settings for guild {sid!r}")
+                continue
             # Backward compat: rename old "default_shows" → "allowed_shows"
             if "default_shows" in d and "allowed_shows" not in d:
                 d["allowed_shows"] = d.pop("default_shows")
             filtered = {k: v for k, v in d.items() if k in valid_keys}
+            unknown = {k: v for k, v in d.items() if k not in valid_keys}
+            if unknown:
+                self._server_cfg_extra[guild_id] = unknown
             result[guild_id] = ServerSettings(**filtered)
         return result
 
     def _save_server_config(self) -> None:
-        payload = json.dumps(
-            {str(k): asdict(v) for k, v in self._server_cfg.items()}, indent=2
-        )
-        tmp = self.server_config_path.with_suffix(".tmp")
-        tmp.write_text(payload, encoding="utf-8")
-        tmp.replace(self.server_config_path)
+        extra = getattr(self, "_server_cfg_extra", {})
+        with _SAVE_LOCK:
+            payload = {
+                str(k): {**extra.get(k, {}), **asdict(v)}
+                for k, v in list(self._server_cfg.items())
+            }
+            write_json_atomic(self.server_config_path, payload, tag="server_config_")
 
     def _server_settings(self, guild_id: int | None) -> ServerSettings:
         if guild_id and guild_id in self._server_cfg:
@@ -129,6 +175,11 @@ class SettingsMixin:
         await self._refresh_if_stale()
         self._cache_clear_if_stale()
         current = self._server_settings(guild_id)
+
+        problem = self._setup_value_problem(model, chunker)
+        if problem:
+            await interaction.followup.send(problem, ephemeral=True)
+            return
 
         has_change = any(
             [
@@ -218,11 +269,16 @@ class SettingsMixin:
         updated = replace(
             current,
             model=model or current.model,
+            model_set=current.model_set or bool(model),
             chunker=chunker or current.chunker,
             top_k=top_k or current.top_k,
             pinned_shows=new_shows,
             allowed_shows=new_legacy,
-            default_source=default_source if default_source else current.default_source,
+            default_source=(
+                ""
+                if is_any_source(default_source)
+                else default_source or current.default_source
+            ),
             compact=compact == "true" if compact else current.compact,
         )
         self._server_cfg[guild_id] = updated
@@ -239,6 +295,21 @@ class SettingsMixin:
             f"Compact: `{updated.compact}`",
             ephemeral=True,
         )
+
+    def _setup_value_problem(self, model: str | None, chunker: str | None) -> str:
+        """Why a typed /setup model or chunker cannot be saved, or ``""``.
+
+        Saved unchecked, a typo was confirmed back as applied while every
+        show picker then came up empty.
+        """
+        loadable = self._loadable_models()
+        if model and model not in loadable:
+            names = ", ".join(f"`{m}`" for m in sorted(loadable))
+            return f"This bot does not load the model `{model}`. Available: {names}."
+        if chunker and chunker not in CHUNKING_STRATEGIES:
+            names = ", ".join(f"`{c}`" for c in CHUNKING_STRATEGIES)
+            return f"Unknown chunker `{chunker}`. Available: {names}."
+        return ""
 
     def _show_labels_str(self, show_ids: list[str]) -> str:
         """Ids rendered as the display names users read, or ``""``."""

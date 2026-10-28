@@ -213,7 +213,7 @@ def test_a_protected_legacy_entry_reads_as_an_unlock(tmp_path):
     settings = ServerSettings(allowed_shows=["Alpha"])
     bot = _bare_bot(tmp_path, {1: settings})
 
-    bot._reload_shows()
+    asyncio.run(bot._reload_access())
 
     assert settings.allowed_shows == ["alpha_1234abcd"]  # names → ids, nothing more
     assert bot._show_allowed(bot._show_id_for_label("Alpha"), settings) is True
@@ -237,8 +237,8 @@ def test_a_reload_never_reclassifies_or_drops_a_legacy_entry(tmp_path):
     settings = ServerSettings(allowed_shows=["alpha_1234abcd"])
     bot, saves = make_bot(tmp_path, {1: settings})
 
-    bot._reload_shows()  # no password table at all: the dangerous shape
-    bot._reload_shows()
+    asyncio.run(bot._reload_access())  # no password table at all: the dangerous shape
+    asyncio.run(bot._reload_access())
 
     assert settings.allowed_shows == ["alpha_1234abcd"]
     assert settings.unlocked_shows == [] and settings.pinned_shows == []
@@ -277,7 +277,7 @@ def test_unlocked_show_survives_a_rename(tmp_path):
 
     settings = ServerSettings(allowed_shows=["Alpha"])
     bot = _bare_bot(tmp_path, {1: settings})
-    bot._reload_shows()
+    asyncio.run(bot._reload_access())
     assert bot._show_allowed(bot._show_id_for_label("Alpha"), settings) is True
 
     # Rename: label changes in the index, identity does not.
@@ -285,7 +285,7 @@ def test_unlocked_show_survives_a_rename(tmp_path):
     store.set_show_password(
         "alpha_1234abcd", hash_show_password("x" * 16), show_label="Renamed"
     )
-    bot._reload_shows()
+    asyncio.run(bot._reload_access())
 
     assert bot._show_allowed(bot._show_id_for_label("Renamed"), settings) is True
     assert settings.allowed_shows == ["alpha_1234abcd"]
@@ -305,11 +305,11 @@ def test_protected_show_stays_locked_for_other_guilds(tmp_path):
 
     other = ServerSettings(unlocked_shows=[])
     bot = _bare_bot(tmp_path, {2: other})
-    bot._reload_shows()
+    asyncio.run(bot._reload_access())
 
     assert bot._show_allowed(bot._show_id_for_label("Alpha"), other) is False
     relabel(store, "alpha_1234abcd", "Renamed")
-    bot._reload_shows()
+    asyncio.run(bot._reload_access())
     assert bot._show_allowed(bot._show_id_for_label("Renamed"), other) is False
 
 
@@ -378,7 +378,6 @@ def test_unlock_in_a_dm_writes_no_settings(tmp_path):
         return None
 
     bot._refresh_if_stale = _noop_refresh
-    bot._reload_shows = lambda: None
     interaction = _DMInteraction()
 
     asyncio.run(bot._handle_unlock(interaction, "x" * 16))
@@ -436,8 +435,9 @@ def _load_config(tmp_path, guild_entry):
 
 
 def test_an_old_server_config_still_loads(tmp_path):
-    """Keys the bot no longer knows are dropped and fields added since take
-    their defaults, so an upgrade never fails the bot start."""
+    """Keys the bot does not know are ignored (and kept for the next save),
+    and fields added since take their defaults, so an upgrade never fails the
+    bot start."""
     settings = _load_config(tmp_path, {"model": "bge-m3", "top_k": 3, "retired": 42})
 
     assert settings.model == "bge-m3" and settings.top_k == 3
@@ -476,10 +476,12 @@ class _Reply:
 
 
 class _GuildInteraction:
-    def __init__(self, guild_id=1):
+    def __init__(self, guild_id=1, user_id=7):
         self.guild_id = guild_id
         self.response = _Reply()
         self.followup = self.response
+        self.user = _User(user_id)
+        self.type = None
 
 
 def _guild_bot(tmp_path, server_cfg, *, locked_ids=()):
@@ -585,7 +587,7 @@ def test_an_unprotected_legacy_entry_reads_as_a_pin(tmp_path):
     settings = ServerSettings(allowed_shows=["Alpha"])
     bot = _bare_bot(tmp_path, {1: settings})
 
-    bot._reload_shows()
+    asyncio.run(bot._reload_access())
 
     assert bot._pinned_ids(settings) == ["alpha_1234abcd"]
     assert bot._unlocked_ids(settings) == []
@@ -847,3 +849,556 @@ def test_a_password_still_keyed_by_name_locks_an_id_carrying_collection(tmp_path
         ResolvedShows(ShowAccess.ALL), settings, store.get_all_collection_info()
     )
     assert "foo__bge-m3__semantic" not in [c.name for c in picked]
+
+
+# ── Unlocks follow the password they were granted under ─────────────────
+
+
+class _User:
+    def __init__(self, user_id=7):
+        self.id = user_id
+        self.dms: list[str] = []
+
+    async def send(self, content):
+        self.dms.append(content)
+
+
+def _unlock(bot, guild_id, password="x" * 16):
+    interaction = _GuildInteraction(guild_id)
+    asyncio.run(bot._handle_unlock(interaction, password))
+    return interaction
+
+
+def test_rotating_a_password_revokes_the_guilds_that_used_the_old_one(tmp_path):
+    """A leaked password is rotated to cut off whoever used it; the guild
+    that rotated it keeps its access."""
+    bot, _saves = _guild_bot(tmp_path, {}, locked_ids={"alpha"})
+    _unlock(bot, 1)
+    _unlock(bot, 2)
+    assert bot._show_allowed("alpha", bot._server_settings(2))
+
+    interaction = _GuildInteraction(1)
+    asyncio.run(bot._handle_changepassword(interaction, "Alpha"))
+
+    assert interaction.user.dms  # the new password went to the caller
+    assert bot._show_allowed("alpha", bot._server_settings(1))
+    assert not bot._show_allowed("alpha", bot._server_settings(2))
+
+
+def test_a_password_changed_in_the_app_revokes_on_the_next_reload(tmp_path):
+    from podcodex.core.show_passwords import hash_show_password
+
+    bot, _saves = _guild_bot(tmp_path, {}, locked_ids={"alpha"})
+    _unlock(bot, 1)
+
+    rag_index_store.get_index_store().set_show_password(
+        "alpha", hash_show_password("y" * 16), show_label="Alpha"
+    )
+    asyncio.run(bot._reload_access())
+
+    assert not bot._show_allowed("alpha", bot._server_settings(1))
+
+
+def test_an_unlock_from_before_fingerprints_survives_the_upgrade(tmp_path):
+    from podcodex.bot.config import ServerSettings
+
+    settings = ServerSettings(unlocked_shows=["alpha"])
+    bot, _saves = _guild_bot(tmp_path, {1: settings}, locked_ids={"alpha"})
+
+    assert bot._show_allowed("alpha", settings)
+    assert set(settings.unlock_fingerprints) == {"alpha"}
+
+
+def test_guild_settings_survive_a_restart(tmp_path):
+    """What /unlock and /announcements wrote is what the next start reads,
+    including keys a newer release added."""
+    import json
+
+    from podcodex.bot.bot import BotConfig, PodCodexBot
+
+    path = tmp_path / "server_config.json"
+    path.write_text(
+        json.dumps({"1": {"from_a_newer_release": [1, 2]}}), encoding="utf-8"
+    )
+    bot, _saves = _guild_bot(tmp_path, {}, locked_ids={"alpha"})
+    _unlock(bot, 1)
+    bot._server_settings(1).announce_channel_id = 99
+    bot._save_server_config()
+
+    again = PodCodexBot(BotConfig(), server_config_path=path)
+    asyncio.run(again._reload_access())
+    settings = again._server_settings(1)
+    assert settings.announce_channel_id == 99
+    assert again._show_allowed("alpha", settings)
+    assert json.loads(path.read_text())["1"]["from_a_newer_release"] == [1, 2]
+
+
+def test_an_unreadable_server_config_is_kept_and_the_bot_starts(tmp_path):
+    """Raising here crash-loops the container under restart: unless-stopped."""
+    from podcodex.bot.bot import BotConfig, PodCodexBot
+
+    path = tmp_path / "server_config.json"
+    path.write_text('{"1": {"top_k": 3', encoding="utf-8")
+
+    bot = PodCodexBot(BotConfig(), server_config_path=path)
+
+    assert bot._server_cfg == {}
+    [backup] = tmp_path.glob("server_config.json.corrupt-*")
+    assert backup.read_text() == '{"1": {"top_k": 3'
+
+
+def test_changepassword_needs_the_show_unlocked_on_this_server(tmp_path, monkeypatch):
+    """Any guild admin could otherwise rotate an index-wide password."""
+    bot, _saves = _guild_bot(tmp_path, {}, locked_ids={"alpha"})
+    rotated: list[str] = []
+    monkeypatch.setattr(
+        bot.local, "set_show_password", lambda sid, *_a, **_k: rotated.append(sid)
+    )
+    interaction = _GuildInteraction(1)
+
+    asyncio.run(bot._handle_changepassword(interaction, "Alpha"))
+
+    assert rotated == []
+    assert "not unlocked on this server" in interaction.response.messages[0]
+
+
+def test_changepassword_on_a_replica_points_at_the_app(tmp_path, monkeypatch):
+    from podcodex.rag.index_origin import IndexOwnershipError
+
+    bot, _saves = _guild_bot(tmp_path, {}, locked_ids={"alpha"})
+    _unlock(bot, 1)
+
+    def refuse(*_a, **_k):
+        raise IndexOwnershipError("replica")
+
+    monkeypatch.setattr(bot.local, "set_show_password", refuse)
+    interaction = _GuildInteraction(1)
+
+    asyncio.run(bot._handle_changepassword(interaction, "Alpha"))
+
+    assert interaction.user.dms == []
+    assert "Rotate it from the PodCodex app" in interaction.response.messages[0]
+
+
+def test_a_password_set_in_the_app_reaches_the_running_bot(tmp_path, monkeypatch):
+    """`_refresh_if_stale` is the only path from a desktop-side password to a
+    bot that is already running; an rsync can also move the mtime backwards."""
+    from podcodex.core.show_passwords import hash_show_password
+
+    bot, _saves = _guild_bot(tmp_path, {})
+    asyncio.run(bot._refresh_if_stale())
+    assert bot._locked_show_ids == set()
+
+    rag_index_store.get_index_store().set_show_password(
+        "alpha", hash_show_password("x" * 16), show_label="Alpha"
+    )
+    seen = bot._index_mtime_seen
+    monkeypatch.setattr(bot.local, "index_mtime", lambda: seen - 100.0)
+    bot._last_mtime_check = 0.0
+    asyncio.run(bot._refresh_if_stale())
+
+    assert bot._locked_show_ids == {"alpha"}
+
+
+# ── /setup values ───────────────────────────────────────────────────────
+
+
+def test_setup_refuses_a_model_the_bot_does_not_load(tmp_path):
+    bot, saves = _guild_bot(tmp_path, {})
+    interaction = _GuildInteraction(1)
+
+    asyncio.run(bot._handle_setup(interaction, "e5-small", None, None))
+
+    assert saves == []
+    assert "does not load the model `e5-small`" in interaction.response.messages[0]
+
+
+def test_setup_default_source_any_clears_it(tmp_path):
+    from podcodex.bot.config import ServerSettings
+
+    settings = ServerSettings(default_source="corrected")
+    bot, _saves = _guild_bot(tmp_path, {1: settings})
+
+    asyncio.run(
+        bot._handle_setup(_GuildInteraction(1), None, None, None, default_source="any")
+    )
+
+    assert bot._server_settings(1).default_source == ""
+
+
+# ── Guards on the registered commands ───────────────────────────────────
+
+
+def _command(bot, name):
+    return bot.tree.get_command(name).callback
+
+
+@pytest.mark.parametrize("name", ["sync", "admin-reload"])
+def test_admin_commands_refuse_a_dm(tmp_path, monkeypatch, name):
+    """default_permissions is not enforced in a DM with the bot."""
+    bot, _saves = _guild_bot(tmp_path, {})
+    synced: list[bool] = []
+
+    async def fake_sync(*_a, **_k):
+        synced.append(True)
+
+    monkeypatch.setattr(bot.tree, "sync", fake_sync)
+    interaction = _DMInteraction()
+
+    asyncio.run(_command(bot, name)(interaction))
+
+    assert synced == []
+    assert "server" in interaction.response.messages[0]
+
+
+def test_search_advanced_passes_its_filters_through(tmp_path, monkeypatch):
+    """after/before land on the right bound; source `any` overrides the
+    server default."""
+    from podcodex.bot.config import ServerSettings
+
+    bot, _saves = _guild_bot(tmp_path, {1: ServerSettings(default_source="corrected")})
+    calls: list[dict] = []
+
+    async def fake_run(_interaction, _query, _shows, _settings, _alpha, **kw):
+        calls.append(kw)
+
+    monkeypatch.setattr(bot, "_run_search", fake_run)
+    run = _command(bot, "search-advanced")
+    asyncio.run(run(_GuildInteraction(1), "q", after="2024-01-01", before="2024-12-31"))
+    asyncio.run(run(_GuildInteraction(1, user_id=8), "q", source="any"))
+
+    assert calls[0]["pub_date_min"] == "2024-01-01"
+    assert calls[0]["pub_date_max"] == "2024-12-31"
+    assert calls[0]["source"] == "corrected"
+    assert calls[1]["source"] is None
+
+
+# ── Which guilds the bot serves ─────────────────────────────────────────
+
+
+def test_an_allowlist_refuses_other_guilds_and_dms(tmp_path):
+    bot, _saves = make_bot(tmp_path, allowed_guild_ids=frozenset({1}))
+    refused = _GuildInteraction(2)
+
+    assert asyncio.run(bot.tree.interaction_check(_GuildInteraction(1))) is True
+    assert asyncio.run(bot.tree.interaction_check(refused)) is False
+    assert "not available here" in refused.response.messages[0]
+    assert bot.guild_allowed(None) is False
+    assert make_bot(tmp_path / "open")[0].guild_allowed(2) is True
+
+
+def test_the_bot_leaves_a_guild_outside_the_allowlist(tmp_path):
+    bot, _saves = make_bot(tmp_path, allowed_guild_ids=frozenset({1}))
+    left: list[int] = []
+
+    class _Guild:
+        def __init__(self, gid):
+            self.id, self.name = gid, f"g{gid}"
+
+        async def leave(self):
+            left.append(self.id)
+
+    asyncio.run(bot.on_guild_join(_Guild(1)))
+    asyncio.run(bot.on_guild_join(_Guild(2)))
+
+    assert left == [2]
+
+
+def test_allowed_guilds_env_parsing(monkeypatch):
+    from podcodex.bot.bot import _allowed_guilds_from_env
+
+    monkeypatch.delenv("PODCODEX_ALLOWED_GUILDS", raising=False)
+    assert _allowed_guilds_from_env() is None
+    monkeypatch.setenv("PODCODEX_ALLOWED_GUILDS", " 12, 34 ")
+    assert _allowed_guilds_from_env() == frozenset({12, 34})
+    # Unparseable, or blank between the commas: an empty list would make the
+    # bot leave every server.
+    for bad in ("my-server", ",", " , "):
+        monkeypatch.setenv("PODCODEX_ALLOWED_GUILDS", bad)
+        with pytest.raises(SystemExit):
+            _allowed_guilds_from_env()
+
+
+def test_an_allowlist_gives_autocomplete_no_suggestions_and_no_reply(tmp_path):
+    """An autocomplete interaction cannot carry a message; replying raised on
+    every keystroke."""
+    import discord
+
+    bot, _saves = make_bot(tmp_path, allowed_guild_ids=frozenset({1}))
+    interaction = _GuildInteraction(2)
+    interaction.type = discord.InteractionType.autocomplete
+
+    assert asyncio.run(bot.tree.interaction_check(interaction)) is False
+    assert interaction.response.messages == []
+
+
+def test_a_lost_unlock_key_revokes_nobody(tmp_path):
+    """The fingerprints are keyed by a file beside the settings; settings
+    restored without it must not read as every password having changed."""
+    bot, _saves = _guild_bot(tmp_path, {}, locked_ids={"alpha"})
+    _unlock(bot, 1)
+    (tmp_path / "unlock_key").unlink()
+
+    again, _ = make_bot(tmp_path, {1: bot._server_settings(1)})
+
+    assert again._show_allowed("alpha", again._server_settings(1))
+
+
+def test_the_fingerprint_is_not_an_unkeyed_digest_of_the_hash(tmp_path):
+    from podcodex.core.show_passwords import hash_show_password
+
+    bot, _saves = _guild_bot(tmp_path, {})
+    h = hash_show_password("x" * 16)
+    assert bot._password_fingerprint(h) not in hashlib.sha256(h.encode()).hexdigest()
+
+
+def test_a_server_config_the_bot_cannot_read_stops_it(tmp_path, monkeypatch):
+    """Starting empty would let the next save replace every guild's settings
+    with one; a permission or I/O error must stop the bot instead."""
+    import pathlib
+
+    from podcodex.bot.bot import BotConfig, PodCodexBot
+
+    path = tmp_path / "server_config.json"
+    path.write_text('{"1": {"top_k": 3}}', encoding="utf-8")
+
+    def refuse(self, *a, **k):
+        raise PermissionError("volume remounted read-protected")
+
+    monkeypatch.setattr(pathlib.Path, "read_text", refuse)
+    with pytest.raises(PermissionError):
+        PodCodexBot(BotConfig(), server_config_path=path)
+
+
+def test_a_truncated_unlock_key_is_replaced(tmp_path):
+    """An empty key (a crash mid-write) would make the fingerprint an unkeyed
+    digest again."""
+    (tmp_path / "unlock_key").write_bytes(b"")
+    bot, _saves = _guild_bot(tmp_path, {})
+
+    bot._password_fingerprint("sha256:" + "0" * 64)
+
+    assert len((tmp_path / "unlock_key").read_bytes()) == 32
+
+
+def test_changepassword_answers_discord_before_rotating(tmp_path, monkeypatch):
+    """A late first reply loses the new password if the DM fails too."""
+    bot, _saves = _guild_bot(tmp_path, {}, locked_ids={"alpha"})
+    _unlock(bot, 1)
+    interaction = _GuildInteraction(1)
+    order: list[str] = []
+    real_set = bot.local.set_show_password
+
+    def spy(*a, **k):
+        order.append("deferred" if interaction.response.deferred else "not deferred")
+        return real_set(*a, **k)
+
+    monkeypatch.setattr(bot.local, "set_show_password", spy)
+    asyncio.run(bot._handle_changepassword(interaction, "Alpha"))
+
+    assert order == ["deferred"]
+
+
+def test_a_model_a_guild_chose_stays_loadable(tmp_path):
+    """A later smaller --model must not take a /setup choice away; a model
+    only saved by default, an old file's model, or a refused guild's choice
+    does not count."""
+    import json
+
+    from podcodex.bot.bot import BotConfig, PodCodexBot
+    from podcodex.bot.config import ServerSettings
+
+    chose = ServerSettings(model="e5-small", model_set=True)
+    bot, _ = make_bot(tmp_path, {1: chose})
+    assert bot._loadable_models() == {"bge-m3", "e5-small"}
+    assert bot._setup_value_problem("e5-small", None) == ""
+
+    refused, _ = make_bot(tmp_path / "r", {2: chose}, allowed_guild_ids=frozenset({1}))
+    assert refused._loadable_models() == {"bge-m3"}
+
+    path = tmp_path / "old.json"
+    path.write_text(json.dumps({"1": {"model": "e5-large"}}), encoding="utf-8")
+    old = PodCodexBot(BotConfig(model="e5-small"), server_config_path=path)
+    assert old._loadable_models() == {"e5-small"}
+    assert make_bot(tmp_path / "x", models=("bge-m3",))[0]._loadable_models() == {
+        "bge-m3"
+    }
+
+
+def test_normalizing_a_label_moves_its_fingerprint_with_it(tmp_path):
+    from podcodex.bot.config import ServerSettings
+
+    bot, _saves = _guild_bot(tmp_path, {})
+    settings = ServerSettings(
+        unlocked_shows=["Alpha"], unlock_fingerprints={"Alpha": "f"}
+    )
+    bot._server_cfg[1] = settings
+    asyncio.run(bot._reload_access())
+    bot._normalize_show_ids()
+
+    assert settings.unlocked_shows == ["alpha"]
+    assert settings.unlock_fingerprints == {"alpha": "f"}
+
+
+def test_changepassword_reloads_before_judging_access(tmp_path):
+    """A rotation from the app must revoke this guild before it can rotate
+    again and keep the show."""
+    from podcodex.core.show_passwords import hash_show_password
+
+    bot, _saves = _guild_bot(tmp_path, {}, locked_ids={"alpha"})
+    _unlock(bot, 1)
+    rag_index_store.get_index_store().set_show_password(
+        "alpha", hash_show_password("y" * 16), show_label="Alpha"
+    )
+    interaction = _GuildInteraction(1)
+
+    asyncio.run(bot._handle_changepassword(interaction, "Alpha"))
+
+    assert interaction.user.dms == []
+    assert "not unlocked on this server" in interaction.response.messages[-1]
+
+
+def test_the_new_password_is_delivered_even_if_the_reload_fails(tmp_path, monkeypatch):
+    bot, _saves = _guild_bot(tmp_path, {}, locked_ids={"alpha"})
+    _unlock(bot, 1)
+    calls = {"n": 0}
+    real = bot._reload_access
+
+    async def flaky():
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise OSError("table mid-rsync")
+        await real()
+
+    monkeypatch.setattr(bot, "_reload_access", flaky)
+    interaction = _GuildInteraction(1)
+
+    asyncio.run(bot._handle_changepassword(interaction, "Alpha"))
+
+    assert interaction.user.dms and "New password" in interaction.user.dms[0]
+
+
+def test_a_saved_default_model_does_not_keep_the_old_model_loaded(tmp_path):
+    """Every saved guild carries the default model; restarting with a smaller
+    --model must stop loading the big one."""
+    from podcodex.bot.config import ServerSettings
+
+    bot, _saves = make_bot(
+        tmp_path, {1: ServerSettings(model="bge-m3")}, model="e5-small"
+    )
+    assert bot._loadable_models() == {"e5-small"}
+    # Stamped by an older non-default --model (marker written): not a choice.
+    stamped = ServerSettings(model="pplx-4B", model_set=False)
+    bot2, _ = make_bot(tmp_path / "s", {1: stamped}, model="e5-small")
+    assert bot2._loadable_models() == {"e5-small"}
+
+
+def test_a_duplicated_unlock_is_still_revoked(tmp_path):
+    from podcodex.bot.config import ServerSettings
+    from podcodex.core.show_passwords import hash_show_password
+
+    bot, _saves = _guild_bot(tmp_path, {}, locked_ids={"alpha"})
+    _unlock(bot, 1)
+    settings = bot._server_settings(1)
+    settings.allowed_shows.append("alpha")  # also in the legacy list
+    assert isinstance(settings, ServerSettings)
+
+    rag_index_store.get_index_store().set_show_password(
+        "alpha", hash_show_password("y" * 16), show_label="Alpha"
+    )
+    asyncio.run(bot._reload_access())
+
+    assert not bot._show_allowed("alpha", settings)
+    assert settings.unlock_fingerprints == {}
+
+
+def test_a_reload_waits_for_a_rotation_in_progress(tmp_path):
+    """A reload reading the table between a rotation's write and its new
+    fingerprint would revoke the rotating guild; the access lock orders them."""
+    bot, _saves = _guild_bot(tmp_path, {}, locked_ids={"alpha"})
+    order: list[str] = []
+
+    async def go():
+        lock = bot._access_lock()
+        await lock.acquire()  # a rotation holds it
+        reload = asyncio.create_task(bot._reload_access())
+        await asyncio.sleep(0.05)
+        order.append("reload done" if reload.done() else "reload waiting")
+        lock.release()
+        await reload
+
+    asyncio.run(go())
+    assert order == ["reload waiting"]
+
+
+def test_an_older_password_read_back_mid_sync_revokes_nobody(tmp_path):
+    """A sync caught mid-way can show the previous table for one reload."""
+    from podcodex.core.show_passwords import hash_show_password
+
+    bot, _saves = _guild_bot(tmp_path, {}, locked_ids={"alpha"})
+    store = rag_index_store.get_index_store()
+    store.set_show_password("alpha", hash_show_password("y" * 16), show_label="Alpha")
+    asyncio.run(bot._reload_access())
+    _unlock(bot, 1, "y" * 16)
+    store.set_show_password("alpha", hash_show_password("x" * 16), show_label="Alpha")
+    asyncio.run(bot._reload_access())  # the old password read back
+
+    assert bot._show_allowed("alpha", bot._server_settings(1))
+
+
+def test_a_failed_delivery_still_saves_and_revokes(tmp_path, monkeypatch):
+    bot, _saves = _guild_bot(tmp_path, {}, locked_ids={"alpha"})
+    _unlock(bot, 1)
+    _unlock(bot, 2)
+
+    async def undeliverable(*_a, **_k):
+        raise ConnectionError("interaction expired")
+
+    monkeypatch.setattr(bot, "_deliver_new_password", undeliverable)
+    asyncio.run(bot._handle_changepassword(_GuildInteraction(1), "Alpha"))
+
+    assert not bot._show_allowed("alpha", bot._server_settings(2))
+
+
+def test_typed_any_in_any_casing_means_every_source(tmp_path):
+    from podcodex.bot.config import ServerSettings
+
+    settings = ServerSettings(default_source="corrected")
+    bot, _saves = _guild_bot(tmp_path, {1: settings})
+
+    asyncio.run(
+        bot._handle_setup(_GuildInteraction(1), None, None, None, default_source="Any ")
+    )
+
+    assert bot._server_settings(1).default_source == ""
+
+
+def test_moving_every_hash_to_a_new_scheme_revokes_nobody(tmp_path):
+    """Same passwords, new hash format: not a password change."""
+    bot, _saves = _guild_bot(tmp_path, {}, locked_ids={"alpha"})
+    _unlock(bot, 1)
+    entry = next(iter(bot._shows.values()))
+    entry.password_hash = "scrypt:" + "ab" * 32
+
+    bot._revoke_stale_unlocks()
+
+    assert bot._show_allowed("alpha", bot._server_settings(1))
+
+
+def test_an_unwritable_state_dir_does_not_stop_the_bot(tmp_path, monkeypatch):
+    from podcodex.bot import access
+
+    def refuse(*_a, **_k):
+        raise PermissionError("read-only mount")
+
+    monkeypatch.setattr(access, "_write_secret", refuse)
+    bot, _saves = _guild_bot(tmp_path, {}, locked_ids={"alpha"})
+
+    assert bot._password_fingerprint("sha256:" + "0" * 64).startswith("sha256:")
+
+
+def test_the_unlock_key_is_owner_only(tmp_path):
+    bot, _saves = _guild_bot(tmp_path, {})
+    bot._password_fingerprint("sha256:" + "0" * 64)
+
+    assert (tmp_path / "unlock_key").stat().st_mode & 0o777 == 0o600
