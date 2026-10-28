@@ -31,6 +31,7 @@ import anyio
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
 
+from podcodex import __version__
 from podcodex.core._utils import (
     LEGACY_NARRATOR_SPEAKER,
     episode_display,
@@ -53,6 +54,14 @@ from podcodex.rag.search_service import (
 )
 
 mcp = FastMCP("podcodex")
+# FastMCP takes no version, so serverInfo.version would report the mcp SDK's.
+# Private attribute: an SDK reshape must cost the version, not the server.
+try:
+    mcp._mcp_server.version = __version__
+except AttributeError:  # pragma: no cover - SDK reshape
+    logger.warning(
+        "mcp SDK no longer exposes _mcp_server; serverInfo.version is the SDK's"
+    )
 # Internal HTTP route is "/" so when the sub-app is mounted at /mcp by
 # podcodex.api.app, the full path stays /mcp (rather than /mcp/mcp).
 mcp.settings.streamable_http_path = "/"
@@ -766,8 +775,6 @@ def main(argv: list[str] | None = None, *, bootstrap: bool = True) -> None:
     path bootstraps here.
     """
     import argparse
-
-    from podcodex import __version__
 
     ap = argparse.ArgumentParser(
         prog="podcodex-mcp",

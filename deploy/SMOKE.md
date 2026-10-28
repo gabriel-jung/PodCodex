@@ -86,3 +86,6 @@ Start with `make dev` on the host platform (or `make dev-no-tauri` for WSL / bro
 - [ ] Installed bundle launches without a dev checkout present.
 - [ ] Config and secrets still resolve to `~/.config/podcodex/`.
 - [ ] Claude Desktop integration picks the installed binary, not the dev venv.
+- [ ] Offline: with models already downloaded, transcribe (with diarization), synthesize and search run without waiting on Hugging Face. To simulate, launch with `HF_ENDPOINT=http://127.0.0.1:9`; the server log must show no `Retrying in` lines. Don't simulate with a dead `HTTPS_PROXY`: huggingface_hub treats a proxy error as fatal instead of falling back to the cache, so it reports failures a real offline user never sees.
+- [ ] Upgrade over the previous release keeps every show file unchanged. Test on a copy: clone the data dir and show folders into a scratch `HOME` (`cp -c` on APFS), repoint the copied `config.json` and `pipeline.db` paths, then launch with `open -n --env HOME=<scratch> PodCodex.app`.
+- [ ] GPU backend installs from the GPU panel (NVIDIA machine), in one click, prereleases included. See [BUILD.md § Prerelease caveats](BUILD.md#prerelease-caveats).

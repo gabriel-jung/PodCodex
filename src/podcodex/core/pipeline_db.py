@@ -64,9 +64,10 @@ def is_edited(meta: dict | None) -> bool:
     """Return True when a version should be labelled "edited" in the UI.
 
     Covers both user hand-edits (``manual_edit``) and processed-but-not-raw
-    outputs such as clean exports or applied manual-LLM passes
-    (``type == "validated"``). Mirrors the frontend ``isEdited`` helper so
-    the check cannot drift between surfaces.
+    outputs such as clean transcripts (``type == "validated"``). An applied
+    manual-LLM pass is neither: it stays ``raw`` so it still reads as an
+    unreviewed LLM output. Mirrors the frontend ``isEdited`` helper so the
+    check cannot drift between surfaces.
     """
     if not meta:
         return False

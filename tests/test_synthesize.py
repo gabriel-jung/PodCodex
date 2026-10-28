@@ -184,3 +184,25 @@ def test_extract_selected_samples_keeps_hostile_speaker_inside_dir(
     samples_dir = show / "ep" / "voice_samples"
     assert written and all(p.parent == samples_dir for p in written)
     assert victim.exists()
+
+
+def test_a_cached_tts_model_loads_from_its_folder_not_the_hub(monkeypatch):
+    """Given the repo id, qwen_tts syncs the speech tokenizer from the Hub on
+    every load, which fails offline even with the model cached."""
+    import sys
+    import types
+
+    import podcodex.core.cache as cache
+    from podcodex.core import synthesize
+
+    loaded = []
+    qwen_tts = types.ModuleType("qwen_tts")
+    qwen_tts.Qwen3TTSModel = types.SimpleNamespace(
+        from_pretrained=lambda source, **_kw: loaded.append(source) or "model"
+    )
+    monkeypatch.setitem(sys.modules, "qwen_tts", qwen_tts)
+    monkeypatch.setattr(synthesize, "_patch_sdpa_mask_for_mimi_vmap_bug", lambda: None)
+    monkeypatch.setattr(cache, "cached_snapshot", lambda repo, **_kw: f"/snap/{repo}")
+
+    assert synthesize.load_tts_model("0.6B") == "model"
+    assert loaded == ["/snap/Qwen/Qwen3-TTS-12Hz-0.6B-Base"]

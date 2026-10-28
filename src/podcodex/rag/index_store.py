@@ -1325,7 +1325,7 @@ class IndexStore:
         return self.get_all_collection_info().get(name)
 
     def get_all_collection_info(self) -> dict[str, dict]:
-        """Return ``{collection_name: {show, model, chunker, dim}}``.
+        """Return ``{collection_name: {show_id, show, model, chunker, dim, ...}}``.
 
         Cached against ``index_mtime`` so the table scan runs once per
         on-disk change rather than once per caller (hot path: MCP tools,
@@ -1353,6 +1353,9 @@ class IndexStore:
                 "chunker": r["chunker"],
                 "dim": int(r["dim"]),
                 "artwork_url": (r.get("artwork_url") or "").strip(),
+                # Identity of this incarnation: a collection dropped and
+                # recreated under the same name gets a new one.
+                "created_at": r.get("created_at") or "",
             }
             for r in rows
             if r.get("name")

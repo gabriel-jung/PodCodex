@@ -96,26 +96,38 @@ def _episode_status(
 
 
 # Indexed-stem sets by show folder (resolved path), guarded by the
-# collections' dataset versions. Not by display name: two shows may share
+# collections' creation stamps and dataset versions. Not by display name: two shows may share
 # one, and a stem indexed in either used to show up as indexed in both.
 # Listing the episodes means scanning every chunk row (tens of ms on a large
 # show) and the episode list route asks for it on every request, including
 # the 5s status poll.
-_INDEXED_STEMS_CACHE: dict[str, tuple[tuple[tuple[str, int], ...], set[str]]] = {}
+_INDEXED_STEMS_CACHE: dict[str, tuple[tuple[tuple[str, str, int], ...], set[str]]] = {}
 
 
 def _stems_cache_key(show_folder: Path | str) -> str:
     return str(Path(show_folder).resolve())
 
 
-def _versions_fingerprint(store, cols) -> tuple[tuple[str, int], ...]:
-    """Cache key for a set of collections: sorted (name, dataset version) pairs.
+def _versions_fingerprint(store, cols) -> tuple[tuple[str, str, int], ...]:
+    """Cache key for a set of collections: sorted (name, created_at, dataset
+    version) triples.
+
+    The version alone collides when a collection is dropped and recreated
+    under its name: the new table counts up from 1 again and passes through
+    the old number. The creation stamp in ``_collections`` tells the two
+    apart.
 
     The coherence contract of `_INDEXED_STEMS_CACHE`: every writer of the
     cache must build its key here, or the scan path and the warm path stop
     agreeing and the cache degrades to stale sets or perpetual rescans.
     """
-    return tuple(sorted((c, store.collection_version(c)) for c in cols))
+    info = store.get_all_collection_info()
+    return tuple(
+        sorted(
+            (c, (info.get(c) or {}).get("created_at", ""), store.collection_version(c))
+            for c in cols
+        )
+    )
 
 
 def lance_indexed_stems(show_folder: Path) -> set[str] | None:
@@ -183,8 +195,12 @@ def note_episode_indexed(show_folder: Path | str, stem: str) -> None:
     try:
         from podcodex.rag.index_store import get_index_store
 
-        versions = _versions_fingerprint(
-            get_index_store(), [name for name, _ in cached[0]]
+        store = get_index_store()
+        # Versions only, creation stamps carried over: re-reading them would
+        # scan the meta table on every indexed episode.
+        versions = tuple(
+            (name, created, store.collection_version(name))
+            for name, created, _ in cached[0]
         )
     except Exception as exc:
         # Can't trust the fingerprint: drop the entry so the next request
@@ -192,9 +208,25 @@ def note_episode_indexed(show_folder: Path | str, stem: str) -> None:
         _INDEXED_STEMS_CACHE.pop(key, None)
         logger.warning("indexed-set refresh failed for {}: {!r}", key, exc)
         return
+    if any(new[2] < old[2] for new, old in zip(versions, cached[0])):
+        # A table's version only grows: a lower one means the collection was
+        # dropped (0) or recreated since the set was built, and the old set
+        # holds the dropped table's episodes, so adding to it would keep them.
+        _INDEXED_STEMS_CACHE.pop(key, None)
+        return
     stems = set(cached[1])
     stems.add(stem)
     _INDEXED_STEMS_CACHE[key] = (versions, stems)
+
+
+def forget_indexed_stems(show_folder: Path | str) -> None:
+    """Drop the cached indexed set of *show_folder*.
+
+    For a write that swaps a show's collections wholesale (a bundle import
+    under REPLACE), where the imported ``_collections`` row can carry the
+    same creation stamp as the one it replaces.
+    """
+    _INDEXED_STEMS_CACHE.pop(_stems_cache_key(show_folder), None)
 
 
 def dir_holds_episode(names: set[str] | frozenset[str]) -> bool:

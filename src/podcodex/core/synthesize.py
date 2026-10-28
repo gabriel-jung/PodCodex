@@ -434,6 +434,7 @@ def load_tts_model(model_size: str = "1.7B"):
         from qwen_tts import Qwen3TTSModel
 
     from podcodex.core._hf_logging import timed_load
+    from podcodex.core.cache import load_cached
     from podcodex.core.device import device_str, torch_dtype
 
     device = device_str()
@@ -441,12 +442,18 @@ def load_tts_model(model_size: str = "1.7B"):
 
     _patch_sdpa_mask_for_mimi_vmap_bug()
 
+    # From the cached folder: given the repo id, qwen_tts syncs the speech
+    # tokenizer from the Hub on every load, which fails when the network goes
+    # through a proxy that is down.
     with timed_load(f"Qwen3-TTS {model_size} on {device} ({dtype})"):
-        model = Qwen3TTSModel.from_pretrained(
+        model = load_cached(
+            lambda source: Qwen3TTSModel.from_pretrained(
+                source,
+                device_map=device,
+                dtype=dtype,
+                attn_implementation="sdpa",
+            ),
             f"Qwen/Qwen3-TTS-12Hz-{model_size}-Base",
-            device_map=device,
-            dtype=dtype,
-            attn_implementation="sdpa",
         )
     return model
 

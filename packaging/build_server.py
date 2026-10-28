@@ -61,7 +61,6 @@ HIDDEN_IMPORTS = [
     "podcodex.api.app",
     "podcodex.api.routes",
     "podcodex.core",
-    "podcodex.pipeline",
     "podcodex.rag",
     "podcodex.mcp",
     # Job entry points imported dynamically by subprocess_runner via
@@ -328,6 +327,10 @@ def build_pyinstaller_args(*, gpu: bool, clean: bool) -> list[str]:
         str(PYI_STUBS_DIR),
         "--paths",
         str(SRC_DIR),
+        "--paths",
+        str(BUILD_INFO_DIR),
+        "--hidden-import",
+        "_podcodex_build",
         "--distpath",
         str(DIST_DIR),
         "--workpath",
@@ -383,7 +386,40 @@ def build_pyinstaller_args(*, gpu: bool, clean: bool) -> list[str]:
     return args
 
 
+BUILD_INFO_DIR = WORK_DIR / "build_info"
+
+
+def build_id() -> str:
+    """The commit this build is made from, or "" outside a git checkout.
+
+    Every build of one release (the CPU sidecars and the GPU server core)
+    comes from the same checkout, so the id tells two builds of one version
+    apart: the app's GPU download uses it to refuse another prerelease's
+    backend. package_gpu.py stamps the same id into the GPU manifest.
+    """
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+
+
+def write_build_info() -> None:
+    """Generate ``_podcodex_build.py``, bundled through BUILD_INFO_DIR on the
+    search path (gpu_backend._build_id reads it; absent in dev)."""
+    BUILD_INFO_DIR.mkdir(parents=True, exist_ok=True)
+    (BUILD_INFO_DIR / "_podcodex_build.py").write_text(
+        f"BUILD_ID = {build_id()!r}\n", encoding="utf-8"
+    )
+
+
 def run_pyinstaller(*, gpu: bool, clean: bool) -> Path:
+    write_build_info()
     args = build_pyinstaller_args(gpu=gpu, clean=clean)
     print(f"$ {' '.join(args)}")
     subprocess.check_call(args, cwd=PACKAGING_DIR)

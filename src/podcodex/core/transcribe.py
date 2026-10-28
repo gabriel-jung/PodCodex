@@ -143,16 +143,30 @@ def transcribe_file(
 
     audio = _decoded_audio(p.audio_path)
 
-    from podcodex.core._hf_logging import timed_load
-    from podcodex.core.cache import get_hf_cache_dir
+    try:  # private: a faster-whisper upgrade must not break transcription
+        from faster_whisper.utils import _MODELS as WHISPER_REPOS
+    except ImportError:
+        WHISPER_REPOS = {}
 
+    from podcodex.core._hf_logging import timed_load
+    from podcodex.core.cache import get_hf_cache_dir, get_hf_hub_dir, load_cached
+
+    cache_dir = str(get_hf_cache_dir())
+    # From the cached folder: given a size, faster-whisper asks the Hub for
+    # the latest revision first, which fails when the network goes through a
+    # proxy that is down. whisperx reads ".en" off the name to pin English,
+    # which a folder path no longer carries.
     with timed_load(f"WhisperX {model_size} on {device}"):
-        model = whisperx.load_model(
-            model_size,
-            device,
-            compute_type=compute_type,
-            language=language or None,
-            download_root=str(get_hf_cache_dir()),
+        model = load_cached(
+            lambda source: whisperx.load_model(
+                source,
+                device,
+                compute_type=compute_type,
+                language=language or ("en" if model_size.endswith(".en") else None),
+                download_root=cache_dir,
+            ),
+            WHISPER_REPOS.get(model_size, model_size),
+            cache_dir=cache_dir,
         )
     result = model.transcribe(audio, batch_size=batch_size, language=language)
     del model
@@ -160,10 +174,27 @@ def transcribe_file(
 
     # Use detected language when none was specified
     detected_lang = result.get("language") or language
+    try:  # module tables, not API: an upgrade must not break transcription
+        from whisperx.alignment import DEFAULT_ALIGN_MODELS_HF as ALIGN_HF
+        from whisperx.alignment import DEFAULT_ALIGN_MODELS_TORCH as ALIGN_TORCH
+    except ImportError:
+        ALIGN_HF, ALIGN_TORCH = {}, {}
+    # Languages torchaudio doesn't cover align with a Hub model, loaded by
+    # repo id: same cached-folder load as Whisper.
+    align_repo = None if detected_lang in ALIGN_TORCH else ALIGN_HF.get(detected_lang)
     with timed_load(f"WhisperX align model ({detected_lang}) on {device}"):
-        model_a, metadata = whisperx.load_align_model(
-            language_code=detected_lang, device=device
-        )
+        if align_repo:
+            model_a, metadata = load_cached(
+                lambda source: whisperx.load_align_model(
+                    language_code=detected_lang, device=device, model_name=source
+                ),
+                align_repo,
+                cache_dir=str(get_hf_hub_dir()),
+            )
+        else:
+            model_a, metadata = whisperx.load_align_model(
+                language_code=detected_lang, device=device
+            )
     result = whisperx.align(result["segments"], model_a, metadata, audio, device)
     del model_a, metadata
     free_vram()
@@ -293,20 +324,24 @@ def diarize_file(
         check_vram("diarization", DIARIZATION_VRAM_MB)
 
     from podcodex.core._hf_logging import timed_load
-    from podcodex.core.cache import get_hf_hub_dir
+    from podcodex.core.cache import get_hf_hub_dir, load_cached
     from whisperx.diarize import DiarizationPipeline
 
     audio = _decoded_audio(p.audio_path)
+    cache_dir = str(get_hf_hub_dir())
     with timed_load(f"pyannote DiarizationPipeline on {device}"):
         # Explicit model and cache: the model is the one provenance records,
         # and the cache holds even in a process whose huggingface_hub was
-        # imported before the env vars were set.
+        # imported before the env vars were set. From the cached folder:
+        # given the repo id, pyannote checks each of its five files with the
+        # Hub, about two minutes of retries offline.
         try:
-            pipeline = DiarizationPipeline(
-                model_name=DIARIZATION_MODEL,
-                token=token,
-                device=device,
-                cache_dir=str(get_hf_hub_dir()),
+            pipeline = load_cached(
+                lambda source: DiarizationPipeline(
+                    model_name=source, token=token, device=device, cache_dir=cache_dir
+                ),
+                DIARIZATION_MODEL,
+                cache_dir=cache_dir,
             )
         except Exception as exc:
             raise _diarization_load_error(exc) from exc

@@ -56,6 +56,7 @@ def release(tmp_path, monkeypatch):
         bad_sha=(),
         torch=b"torch-1",
         cuda=b"cuda-1",
+        build_id=None,
     ):
         server_reports = server_reports or app["version"]
         manifest_server = app["version"] if manifest_server == "" else manifest_server
@@ -91,6 +92,8 @@ def release(tmp_path, monkeypatch):
         manifest = {"schema": 2, "parts": parts, "version": parts[2]["tag"]}
         if manifest_server is not None:
             manifest["server_version"] = manifest_server
+        if build_id is not None:
+            manifest["build_id"] = build_id
         (rel / "cuda-libs.json").write_text(json.dumps(manifest))
         return (rel / "cuda-libs.json").as_uri()
 
@@ -518,3 +521,79 @@ def test_gpu_packager_publishes_every_part_hash(tmp_path):
     }
     assert second["cuda-libs"].tag == parts["cuda-libs"].tag
     assert second["torch-runtime"].tag == parts["torch-runtime"].tag
+
+
+@pytest.mark.parametrize(
+    "beta_server, expected",
+    [("0.3.0", "beta"), ("0.3.1", "latest"), (None, "latest"), ("broken", "latest")],
+)
+def test_a_prerelease_finds_its_gpu_build_on_the_beta_channel(
+    monkeypatch, beta_server, expected
+):
+    """A ``-beta.N`` tag is not derivable from the version, so the app's own
+    tag 404s; the beta channel is used only when it holds this version."""
+    import urllib.error
+
+    monkeypatch.setattr(gpu_backend, "_app_version", lambda: "0.3.0")
+    manifests = {
+        gpu_backend._DEFAULT_LATEST_MANIFEST_URL: {"server_version": "0.2.13"},
+    }
+    if beta_server and beta_server != "broken":
+        manifests[gpu_backend._BETA_MANIFEST_URL] = {"server_version": beta_server}
+
+    def load(url):
+        if beta_server == "broken" and url == gpu_backend._BETA_MANIFEST_URL:
+            raise RuntimeError("The GPU manifest is not valid JSON")
+        if url not in manifests:
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+        return manifests[url]
+
+    monkeypatch.setattr(gpu_backend, "_load_manifest", load)
+    _, url = gpu_backend._fetch_manifest(gpu_backend._tagged_manifest_url())
+    assert (
+        url
+        == {
+            "beta": gpu_backend._BETA_MANIFEST_URL,
+            "latest": gpu_backend._DEFAULT_LATEST_MANIFEST_URL,
+        }[expected]
+    )
+
+
+def test_another_build_of_the_same_version_is_refused(release, monkeypatch):
+    """Every 0.3.0 beta shares server_version 0.3.0, and the launcher refuses
+    a server core of another build, so the install refuses it first with a
+    sentence that says to update."""
+    root, build, _app = release
+    monkeypatch.setattr(gpu_backend, "_build_id", lambda: "beta1")
+    with pytest.raises(RuntimeError, match="another build"):
+        gpu_backend.download_and_install(_cb, manifest_url=build(build_id="beta2"))
+    assert not (root / "current").exists()
+
+
+def test_a_new_build_of_the_same_version_replaces_the_server_core(release, monkeypatch):
+    """beta.1's backend is installed; on beta.2 (same version) the server core
+    is downloaded again instead of reused, and the panel says to update."""
+    _root, build, _app = release
+    app_build = {"id": "beta1"}
+    monkeypatch.setattr(gpu_backend, "_build_id", lambda: app_build["id"])
+    gpu_backend.download_and_install(_cb, manifest_url=build(build_id="beta1"))
+    assert gpu_backend.installed_manifest()["build_id"] == "beta1"
+
+    app_build["id"] = "beta2"
+    installed = gpu_backend.installed_manifest()
+    assert gpu_backend._needs_update(gpu_backend._app_version(), installed)
+    # Not "unchanged": the server core of the other build is not reused.
+    gpu_backend.download_and_install(_cb, manifest_url=build(build_id="beta2"))
+    assert gpu_backend.installed_manifest()["build_id"] == "beta2"
+    assert not gpu_backend._needs_update(
+        gpu_backend._app_version(), gpu_backend.installed_manifest()
+    )
+
+
+@pytest.mark.parametrize("theirs", ["abc", None])
+def test_without_an_id_on_either_side_the_version_decides(release, monkeypatch, theirs):
+    """A dev run or a manifest from before build ids can't tell builds apart."""
+    _root, build, _app = release
+    monkeypatch.setattr(gpu_backend, "_build_id", lambda: "" if theirs else "abc")
+    gpu_backend.download_and_install(_cb, manifest_url=build(build_id=theirs))
+    assert gpu_backend.installed_manifest() is not None

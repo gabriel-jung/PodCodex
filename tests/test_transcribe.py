@@ -292,3 +292,92 @@ def test_export_transcript_clean_nodiarize_only_density(tmp_path):
     # Low-density segment removed; good segment + BREAK remain
     texts = [s["text"] for s in segments if s["speaker"] != "[BREAK]"]
     assert texts == ["Hello world this is a good segment"]
+
+
+def test_cached_whisper_and_diarization_models_load_from_their_folders(
+    tmp_path, monkeypatch
+):
+    """Given a name, faster-whisper and pyannote ask the Hub before using the
+    cache: offline, pyannote spends about two minutes on retries."""
+    import sys
+    import types
+
+    import numpy as np
+
+    import podcodex.core.cache as cache
+    from podcodex.core import transcribe
+
+    class Loaded(Exception):
+        pass
+
+    def record(source, *_a, **kw):
+        raise Loaded(kw.get("model_name", source), kw.get("language"))
+
+    whisperx = types.ModuleType("whisperx")
+    whisperx.load_model = record
+    diarize = types.ModuleType("whisperx.diarize")
+    diarize.DiarizationPipeline = lambda **kw: record(None, **kw)
+    monkeypatch.setitem(sys.modules, "whisperx", whisperx)
+    monkeypatch.setitem(sys.modules, "whisperx.diarize", diarize)
+    monkeypatch.setattr(transcribe, "_decoded_audio", lambda _p: np.zeros(16000))
+    monkeypatch.setattr(cache, "cached_snapshot", lambda repo, **_kw: f"/snap/{repo}")
+    audio = tmp_path / "ep.mp3"
+    audio.write_bytes(b"")
+
+    with pytest.raises(Loaded) as whisper:
+        transcribe.transcribe_file(audio, model_size="base.en", language="", force=True)
+    # The folder path no longer ends in ".en", so English is pinned explicitly.
+    assert whisper.value.args == ("/snap/Systran/faster-whisper-base.en", "en")
+
+    with pytest.raises(Exception) as pyannote:
+        transcribe.diarize_file(audio, hf_token="hf_x", force=True)
+    assert "/snap/pyannote/speaker-diarization-community-1" in repr(
+        pyannote.value.__cause__ or pyannote.value
+    )
+
+
+@pytest.mark.parametrize(
+    "language, expected",
+    [("ja", "/snap/jonatasgrosman/wav2vec2-large-xlsr-53-japanese"), ("fr", None)],
+)
+def test_a_hub_alignment_model_loads_from_its_folder(
+    tmp_path, monkeypatch, language, expected
+):
+    """Languages torchaudio doesn't cover align with a Hub model; torchaudio
+    ones keep whisperx's own default."""
+    import sys
+    import types
+
+    import numpy as np
+
+    import podcodex.core.cache as cache
+    from podcodex.core import transcribe
+
+    class Loaded(Exception):
+        pass
+
+    model = types.SimpleNamespace(
+        transcribe=lambda *_a, **_kw: {"segments": [], "language": language}
+    )
+    whisperx = types.ModuleType("whisperx")
+    whisperx.load_model = lambda *_a, **_kw: model
+
+    def load_align_model(**kw):
+        raise Loaded(kw.get("model_name"))
+
+    whisperx.load_align_model = load_align_model
+    alignment = types.ModuleType("whisperx.alignment")
+    alignment.DEFAULT_ALIGN_MODELS_TORCH = {"fr": "VOXPOPULI_ASR_BASE_10K_FR"}
+    alignment.DEFAULT_ALIGN_MODELS_HF = {
+        "ja": "jonatasgrosman/wav2vec2-large-xlsr-53-japanese"
+    }
+    monkeypatch.setitem(sys.modules, "whisperx", whisperx)
+    monkeypatch.setitem(sys.modules, "whisperx.alignment", alignment)
+    monkeypatch.setattr(transcribe, "_decoded_audio", lambda _p: np.zeros(16000))
+    monkeypatch.setattr(cache, "cached_snapshot", lambda repo, **_kw: f"/snap/{repo}")
+    audio = tmp_path / "ep.mp3"
+    audio.write_bytes(b"")
+
+    with pytest.raises(Loaded) as align:
+        transcribe.transcribe_file(audio, language=language, force=True)
+    assert align.value.args == (expected,)

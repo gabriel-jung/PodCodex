@@ -57,6 +57,98 @@ def get_hf_hub_dir() -> Path:
     return get_hf_cache_dir() / "hub"
 
 
+def cached_snapshot(
+    repo_id: str, *, cache_dir: Path | str | None = None, revision: str | None = None
+) -> str | None:
+    """Local folder of *repo_id*'s cached snapshot, or ``None`` if not cached.
+
+    For loaders that accept a path. Given a repo id they ask the Hub for the
+    latest revision first: with no network that request is retried with
+    backoff (about 12s for BGE-M3), and a refused connection fails the load
+    outright instead of falling back to the cache. Loading from the folder
+    skips the Hub, and keeps an index's embedding model from changing under
+    it when the repo is updated. *cache_dir* is the one the loader itself is
+    given (default: the hub store), since loaders disagree on it.
+    """
+    from huggingface_hub import snapshot_download
+
+    try:
+        return snapshot_download(
+            repo_id,
+            revision=revision,
+            cache_dir=str(cache_dir or get_hf_hub_dir()),
+            local_files_only=True,
+        )
+    except Exception:
+        return None
+
+
+def _snapshot_incomplete(local: str, exc: Exception) -> bool:
+    """Whether a failed load from *local* looks like a partial download.
+
+    Transformers reports a missing file as ``OSError``; otherwise the sign is
+    a download cut short, whose unfinished blobs stay as ``*.incomplete``
+    beside the snapshots.
+    """
+    if isinstance(exc, OSError):
+        return True
+    snapshot = Path(local)
+    if len(snapshot.parents) < 2:
+        return False
+    return any((snapshot.parents[1] / "blobs").glob("*.incomplete"))
+
+
+def _out_of_memory(exc: Exception) -> bool:
+    """torch, ctranslate2 and the allocator all say so in the message."""
+    return isinstance(exc, MemoryError) or "out of memory" in str(exc).lower()
+
+
+def load_cached(
+    load,
+    repo_id: str,
+    *,
+    cache_dir: Path | str | None = None,
+    revision: str | None = None,
+):
+    """``load(source)`` from the cached snapshot of *repo_id* when there is one.
+
+    See `cached_snapshot`: given the repo id, the loaders ask the Hub first,
+    which offline stalls on retries or fails outright. When the cached load
+    fails, it is retried by repo id so the Hub can complete a partial
+    download: loaders report a missing file every which way (``OSError``
+    from transformers, ``RuntimeError`` from ctranslate2, ``ValueError``
+    from whisperx's alignment loader), so any failure is retried except
+    running out of memory, which a second load would only repeat while the
+    first one's memory is still held. If the retry fails too, the error
+    raised is the one that names the problem: the Hub's (gated model,
+    rejected token, unreachable) when the snapshot looked incomplete, the
+    cached load's own otherwise.
+    """
+    from loguru import logger
+
+    local = cached_snapshot(repo_id, cache_dir=cache_dir, revision=revision)
+    if local is None:
+        return load(repo_id)
+    try:
+        return load(local)
+    except Exception as exc:
+        if _out_of_memory(exc):
+            raise
+        # The traceback's frames hold whatever the failed load built; log it
+        # and let it go, so the retry doesn't load beside it.
+        logger.opt(exception=exc).debug(f"Cached {repo_id} load failed")
+        first = exc.with_traceback(None)
+    logger.warning(
+        f"Cached {repo_id} snapshot did not load ({first}), retrying from the Hub"
+    )
+    try:
+        return load(repo_id)
+    except Exception:
+        if _snapshot_incomplete(local, first):
+            raise
+        raise first from None
+
+
 def wire_model_caches() -> None:
     """Point every ML cache env var at the PodCodex model cache.
 

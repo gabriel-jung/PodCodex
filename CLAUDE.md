@@ -42,10 +42,12 @@ Don't add `version` back to `tauri.conf.json` or hardcode `__version__` in `src/
 | Tag | Result |
 |-----|--------|
 | `vX.Y.Z` | Stable. Becomes "latest". README's `/releases/latest/download/PodCodex-{macos-arm64.dmg,windows-x64.msi}` links resolve here. |
-| `vX.Y.Z-beta.N`, `vX.Y.Z-rc.N` (any hyphen suffix) | Prerelease. Skipped by "latest". README links untouched. Direct asset URL still works. |
+| `vX.Y.Z-beta.N`, `vX.Y.Z-rc.N` (any hyphen suffix) | Prerelease. Skipped by "latest". README's stable links untouched; its beta links follow the rolling `beta` release (below). Direct asset URL still works. |
 | Actions UI → "Run workflow" | Draft. Hidden until manually published. |
 
 Workflow detects prerelease via `contains(github.ref_name, '-')`. Tag from main after merge for stable; tag from branch with `-beta`/`-rc` suffix for safe branch builds. Never tag stable from branch; main's README link will start serving unmerged code.
+
+Rolling `beta` release: the `beta-channel` job in `release.yml` mirrors each tagged build onto a prerelease tagged `beta` when it is newer than what it holds (stable `X.Y.Z` outranks `X.Y.Z-beta.N`), read from the `Build: <tag>` first line of its notes. The README's beta links (`/releases/download/beta/<alias>`) and the in-app GPU download depend on it: a `-beta.N` tag isn't derivable from the app version, so `gpu_backend._fetch_manifest` falls back to the `beta` manifest when its `server_version` and `build_id` (the commit, bundled by `build_server.py` as `_podcodex_build`, stamped by `package_gpu.py`) match the app, then to latest. The install refuses another build's manifest, and the launcher (`lib.rs::same_build`, commit stamped by `src-tauri/build.rs`) won't start an installed backend of another build. Don't rename the channel or its aliases. An MSI version can't carry `-beta.N`, so a prerelease and its stable share one MSI version (uninstall the prerelease first, see Versioning). Details in `deploy/BUILD.md` § Releasing. The release workflow runs no tests: tag only a commit whose CI run is green.
 
 README download links use stable aliases (`PodCodex-macos-arm64.dmg`, `PodCodex-windows-x64.msi`) uploaded by post-`tauri-action` `gh release upload ... #<alias>` steps. Don't rename, README breaks.
 

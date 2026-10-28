@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.3.0] - beta (2026-10-28)
+
+A release of fixes rather than features: every part of the app was reviewed, and what the reviews found is fixed here.
+
+### Your edits are harder to lose
+
+- Leaving an episode, switching versions or switching languages with unsaved edits now asks first. Before, moving around inside the app dropped them without a warning.
+- Undo works per typing burst in the transcript editor.
+- Applying a manual AI-correct or translate response checks it against the version its prompts were built from, and refuses a response with the wrong number of lines instead of saving the source text unchanged.
+
+### Errors show up instead of looking like empty results
+
+- A failed search, feed refresh, GPU download or settings load now says so, with a retry, instead of showing "no results" or loading forever.
+- Searches that fail on one show no longer read as "nothing found"; keyword search falls back to meaning search if its text index is unavailable.
+- AI correct and translate report batches the model returned untranslated or cut short, and keep the original text for them.
+
+### Shows keep their identity
+
+- Renaming a show, re-adding its feed or importing it on another machine keeps its index, its password and its search settings attached. Shows are now tracked by an id, not by their name.
+- Moving or deleting a show waits for any task still running on it.
+- Exported bundles leave out private feed tokens unless you ask for them, and imported shows keep their titles, dates and descriptions.
+
+### Search and indexing
+
+- Exact search finds words it used to miss and highlights them correctly; searching across many shows is about twice as fast.
+- An episode that fails to index is no longer marked as indexed.
+- Downloaded models load from disk: search, transcription, speaker detection and voice synthesis no longer wait on Hugging Face when you are offline (speaker detection used to stall about two minutes).
+
+### Running and stopping tasks
+
+- Stop takes effect at the next batch for AI correct and translate, and a task cancelled while queued never starts.
+- Batch runs use the same settings and source version as the episode panels.
+- Failed runs stay visible instead of disappearing from the task bar.
+
+### Discord bot and Claude Desktop
+
+- A show's unlocks are revoked when its password changes. Servers can be limited with `PODCODEX_ALLOWED_GUILDS`, and the models the bot may use with `--models`.
+- New episodes are announced once they are actually posted, with retries on temporary failures.
+- The Claude Desktop integration starts correctly from the installed app, and edits to your MCP prompts reach Claude without a restart.
+
+### GPU backend
+
+- GPU updates install beside the working version and switch only once complete, so a failed or cancelled update keeps the old one. App updates now download only the part that changed.
+- After upgrading, reinstall the GPU backend from Settings: the app only runs a GPU backend built for its own version, and uses the CPU until then.
+
 ## [0.2.13] - 2026-08-22
 
 ### Upgrading no longer warns that the upgrade failed

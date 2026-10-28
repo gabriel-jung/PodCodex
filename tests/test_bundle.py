@@ -321,6 +321,50 @@ def test_import_full_roundtrip(tmp_path, isolated_index):
     assert col in new_store.list_collections()
 
 
+@pytest.mark.parametrize("with_collection", [True, False])
+def test_imported_indexed_flags_follow_this_index(
+    tmp_path, isolated_index, with_collection
+):
+    """The archived pipeline.db says which episodes the source had indexed;
+    the shows list reads those flags as stored, so the import must settle
+    them against the collections that actually arrived."""
+    from podcodex.core.pipeline_db import get_pipeline_db
+
+    show = _make_show(tmp_path / "test_show")
+    get_pipeline_db(show).mark("ep1", indexed=True)
+    store = rag_index_store.get_index_store()
+    if with_collection:
+        _seed_collection(store)
+    archive = tmp_path / "out.podcodex"
+    export_show(show, archive, with_audio=False, include_feed_credentials=True)
+
+    target = tmp_path / "imported_shows"
+    import_archive(archive, shows_dir=target, on_conflict=ConflictPolicy.RENAME)
+
+    row = get_pipeline_db(target / "test_show").get_episode("ep1")
+    assert bool(row["indexed"]) is with_collection
+
+
+def test_index_only_import_marks_the_local_show_indexed(
+    tmp_path, isolated_index, monkeypatch
+):
+    from podcodex.core.pipeline_db import get_pipeline_db
+    from podcodex.ingest import show_registry
+
+    show = _make_show(tmp_path / "test_show")
+    store = rag_index_store.get_index_store()
+    col = _seed_collection(store)
+    archive = tmp_path / "out.podcodex"
+    export_show(show, archive, index_only=True)
+    store.delete_collection(col)
+    get_pipeline_db(show).mark("ep1", indexed=False)
+    monkeypatch.setattr(show_registry, "registered_folders", lambda: [show])
+
+    import_archive(archive)
+
+    assert get_pipeline_db(show).get_episode("ep1")["indexed"]
+
+
 def test_import_index_only_roundtrip(tmp_path, isolated_index):
     show = _make_show(tmp_path / "test_show")
     store = rag_index_store.get_index_store()

@@ -21,6 +21,7 @@ import time
 import numpy as np
 from loguru import logger
 
+from podcodex.core.cache import load_cached
 from podcodex.rag.defaults import MODELS
 
 
@@ -77,11 +78,16 @@ class PplxEmbedder:
                 from transformers import AutoModel
 
                 with timed_load(f"PplxEmbedder ctx {spec.hf_model} on {self._device}"):
-                    model = AutoModel.from_pretrained(
+                    model = load_cached(
+                        lambda source: AutoModel.from_pretrained(
+                            source,
+                            revision=spec.revision,
+                            trust_remote_code=True,
+                            cache_dir=self._cache_dir,
+                        ),
                         spec.hf_model,
-                        revision=spec.revision,
-                        trust_remote_code=True,
                         cache_dir=self._cache_dir,
+                        revision=spec.revision,
                     ).to(self._device)
             else:
                 from sentence_transformers import SentenceTransformer
@@ -89,12 +95,17 @@ class PplxEmbedder:
                 with timed_load(
                     f"PplxEmbedder query {spec.hf_query_model} on {self._device}"
                 ):
-                    model = SentenceTransformer(
+                    model = load_cached(
+                        lambda source: SentenceTransformer(
+                            source,
+                            revision=spec.query_revision,
+                            trust_remote_code=True,
+                            device=self._device,
+                            cache_folder=self._cache_dir,
+                        ),
                         spec.hf_query_model,
+                        cache_dir=self._cache_dir,
                         revision=spec.query_revision,
-                        trust_remote_code=True,
-                        device=self._device,
-                        cache_folder=self._cache_dir,
                     )
             self._loaded[which] = model
             return model
@@ -185,11 +196,14 @@ class E5Embedder:
         from podcodex.core._hf_logging import timed_load
         from podcodex.core.cache import get_hf_cache_dir
 
+        cache_dir = str(get_hf_cache_dir())
         with timed_load(f"E5Embedder {hf_model} on {device}"):
-            self._model = SentenceTransformer(
+            self._model = load_cached(
+                lambda source: SentenceTransformer(
+                    source, device=device, cache_folder=cache_dir
+                ),
                 hf_model,
-                device=device,
-                cache_folder=str(get_hf_cache_dir()),
+                cache_dir=cache_dir,
             )
         self._batch_size = batch_size
 
@@ -266,15 +280,17 @@ class BGEEmbedder:
         from podcodex.core.cache import get_hf_hub_dir
 
         devices = [device] if device else None
+        # Explicit cache: holds even where no bootstrap wired the env (a
+        # script, a test), and matches the hub dir the Dockerfile's
+        # build-time download fills.
+        cache_dir = str(get_hf_hub_dir())
         with timed_load(f"BGEEmbedder {self.MODEL} on {device}"):
-            # Explicit cache: holds even where no bootstrap wired the env
-            # (a script, a test), and matches the hub dir the Dockerfile's
-            # build-time download fills.
-            self._model = BGEM3FlagModel(
+            self._model = load_cached(
+                lambda source: BGEM3FlagModel(
+                    source, use_fp16=use_fp16, devices=devices, cache_dir=cache_dir
+                ),
                 self.MODEL,
-                use_fp16=use_fp16,
-                devices=devices,
-                cache_dir=str(get_hf_hub_dir()),
+                cache_dir=cache_dir,
             )
         self._batch_size = batch_size
 

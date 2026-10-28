@@ -323,7 +323,9 @@ def _app_version() -> str:
     return __version__
 
 
-def _needs_update(installed_server_version: str | None) -> bool:
+def _needs_update(
+    installed_server_version: str | None, manifest: dict | None = None
+) -> bool:
     """True when GPU is installed but the server-core version trails the app.
 
     This is the silent-regression path: user updates the MSI, the
@@ -335,7 +337,11 @@ def _needs_update(installed_server_version: str | None) -> bool:
     """
     if installed_server_version is None:
         return False
-    return installed_server_version != _app_version()
+    if installed_server_version != _app_version():
+        return True
+    # Same version, another build (one beta over another): the launcher
+    # falls back to CPU for it just the same.
+    return manifest is not None and not _same_build(manifest)
 
 
 def status() -> dict[str, Any]:
@@ -358,7 +364,7 @@ def status() -> dict[str, Any]:
         "activated": is_gpu_activated(),
         "install_dir": str(active_install_dir()),
         "platform_supported": gpu_supported_on_platform(),
-        "needs_update": _needs_update(server_version),
+        "needs_update": _needs_update(server_version, manifest),
     }
 
 
@@ -378,9 +384,8 @@ def _ensure_platform_supported() -> None:
     if not gpu_supported_on_platform():
         raise RuntimeError(
             f"GPU backend is not available on {sys.platform}. "
-            "Only Windows is currently supported. macOS uses the bundled "
-            "CPU sidecar (with Apple's MPS via torch); Linux users build "
-            "from source via `make dev`."
+            "Only Windows is currently supported. macOS runs on the CPU; "
+            "Linux users build from source with `--extra gpu`."
         )
 
 
@@ -681,11 +686,22 @@ def _download_and_install_locked(
             f"but this app is {target_app_version}. Update the app, or wait "
             "for this release's GPU build to be published."
         )
+    # Every X.Y.Z-beta.N and the stable X.Y.Z share that version, and the
+    # launcher refuses a server core of another build (lib.rs), so the build
+    # id has to match too.
+    if not _same_build(manifest):
+        raise RuntimeError(
+            f"The GPU download available is for another build of PodCodex "
+            f"{target_app_version}. Update the app to the newest release (or "
+            "the newest beta) and install the GPU backend from there."
+        )
 
     current = active_install_dir()
     installed = installed_manifest()
     installed_tags = _installed_part_tags(installed)
-    server_current = installed_server_core_version() == target_app_version
+    server_current = installed_server_core_version() == target_app_version and (
+        (installed or {}).get("build_id") or ""
+    ) == (manifest.get("build_id") or "")
 
     def _reusable(part: _Part) -> bool:
         same = (
@@ -1045,15 +1061,39 @@ def _uninstall_locked() -> None:
 # app's exact version and "latest" is the newest *stable* release: a beta
 # build, or an install one release behind, pulled a server core it then
 # refused. A prerelease tag (``vX.Y.Z-beta.N``) is not derivable from the
-# version, so "latest" stays as the fallback, and the manifest's
-# ``server_version`` (checked in ``download_and_install``) refuses a mismatch
-# there with a sentence instead of installing it.
+# version, so a prerelease finds its build on the rolling ``beta`` release,
+# which the workflow refreshes with the newest build. "Latest" stays as the
+# last fallback, and the manifest's ``server_version`` (checked in
+# ``download_and_install``) refuses a mismatch there with a sentence instead
+# of installing it.
 _RELEASES = "https://github.com/gabriel-jung/PodCodex/releases"
 _DEFAULT_LATEST_MANIFEST_URL = f"{_RELEASES}/latest/download/cuda-libs.json"
+_BETA_MANIFEST_URL = f"{_RELEASES}/download/beta/cuda-libs.json"
 
 
 def _tagged_manifest_url() -> str:
     return f"{_RELEASES}/download/v{_app_version()}/cuda-libs.json"
+
+
+def _build_id() -> str:
+    """Commit this bundle was built from ("" in dev; see build_server.py)."""
+    try:
+        from _podcodex_build import BUILD_ID  # generated at bundle build time
+    except ImportError:
+        return ""
+    return BUILD_ID
+
+
+def _same_build(manifest: dict) -> bool:
+    """Whether *manifest* comes from this app's own build.
+
+    Every ``X.Y.Z-beta.N`` shares ``server_version``, so on the beta channel
+    the version alone would hand an older beta the newest one's server core.
+    A side without an id (a dev run, a manifest from before ids) can't tell,
+    and the version match stands.
+    """
+    mine, theirs = _build_id(), manifest.get("build_id") or ""
+    return not mine or not theirs or mine == theirs
 
 
 def default_manifest_url() -> str:
@@ -1069,8 +1109,11 @@ def default_manifest_url() -> str:
 def _fetch_manifest(manifest_url: str) -> tuple[dict, str]:
     """The manifest and the URL it came from (archives resolve against it).
 
-    Falls back from the app's own tag to "latest" only for the default URL,
-    and only on a 404 (no GPU build on that tag); an override is used as is.
+    Falls back from the app's own tag only for the default URL, and only on
+    a 404 (no GPU build on that tag): to the beta channel when it holds this
+    exact version (a prerelease), else to "latest". An override is used as
+    is. Whether the manifest is this app's own build is checked at install,
+    where a beta superseded on the channel gets a sentence saying so.
     """
     import urllib.error
 
@@ -1079,6 +1122,13 @@ def _fetch_manifest(manifest_url: str) -> tuple[dict, str]:
     except urllib.error.HTTPError as exc:
         if exc.code != 404 or manifest_url != _tagged_manifest_url():
             raise _manifest_error(exc) from exc
+    try:
+        beta = _load_manifest(_BETA_MANIFEST_URL)
+    except (urllib.error.HTTPError, RuntimeError):
+        # No channel, or a manifest caught mid-refresh: "latest" decides.
+        beta = None
+    if beta is not None and beta.get("server_version") == _app_version():
+        return beta, _BETA_MANIFEST_URL
     try:
         return _load_manifest(
             _DEFAULT_LATEST_MANIFEST_URL

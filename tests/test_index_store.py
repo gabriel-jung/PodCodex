@@ -75,7 +75,9 @@ def test_list_collections_filter_model(tmp_path):
 def test_get_collection_info(tmp_path):
     s = _store(tmp_path)
     s.ensure_collection("c", show="S", model="bge-m3", chunker="semantic", dim=1024)
-    assert s.get_collection_info("c") == {
+    info = s.get_collection_info("c")
+    assert info.pop("created_at")  # stamped at creation, read by the stems cache
+    assert info == {
         "show_id": "",
         "show": "S",
         "model": "bge-m3",

@@ -58,6 +58,14 @@ def _reset_caches(tmp_path, isolated_index):
     mcp_server._SHOW_DATE_CACHE.clear()
 
 
+def test_server_info_reports_the_podcodex_version():
+    """Clients show serverInfo.version; FastMCP alone reports the SDK's."""
+    from podcodex import __version__
+
+    opts = mcp_server.mcp._mcp_server.create_initialization_options()
+    assert opts.server_version == __version__
+
+
 def test_list_shows_returns_indexed_shows():
     shows = mcp_server.list_shows()
     assert shows == [{"show": "My Show", "episodes": 1}]

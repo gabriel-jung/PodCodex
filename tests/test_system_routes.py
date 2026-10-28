@@ -118,12 +118,21 @@ def test_feed_urls_are_logged_without_their_secret():
     )
 
 
-def test_transcribe_start_accepts_a_null_batch_size():
+@pytest.mark.parametrize("field", ["batch_size", "num_speakers"])
+def test_episode_and_batch_runs_validate_counts_alike(field):
+    """The panel and the batch take the same transcribe counts: null means
+    the default, and anything below 1 is refused up front by both."""
+    from podcodex.api.routes.batch import BatchRequest
     from podcodex.api.routes.transcribe import TranscribeRequest
 
-    assert TranscribeRequest(audio_path="/x.mp3", batch_size=None).batch_size is None
-    with pytest.raises(ValueError):
-        TranscribeRequest(audio_path="/x.mp3", batch_size=0)
+    for model, base in (
+        (TranscribeRequest, {"audio_path": "/x.mp3"}),
+        (BatchRequest, {"show_folder": "/s", "audio_paths": ["/x.mp3"]}),
+    ):
+        assert getattr(model(**base, **{field: None}), field) is None
+        assert getattr(model(**base, **{field: 2}), field) == 2
+        with pytest.raises(ValueError):
+            model(**base, **{field: 0})
 
 
 def test_cancelling_an_extras_install_stops_uv(monkeypatch):

@@ -148,6 +148,19 @@ def write_archive(archive_path: Path, files: list[tuple[str, Path]]) -> None:
             tar.add(src, arcname=rel)
 
 
+def _build_id() -> str:
+    """``build_server.build_id``: one definition, since the app and its
+    launcher compare the id bundled there with the one stamped here."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "build_server", Path(__file__).with_name("build_server.py")
+    )
+    build_server = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(build_server)
+    return build_server.build_id()
+
+
 def _app_version() -> str:
     """Version from pyproject.toml, the source every other version derives from."""
     import tomllib
@@ -230,6 +243,8 @@ def package(onedir_path: Path, output_dir: Path, torch_compat: str) -> dict:
     manifest = {
         "schema": 2,
         "server_version": app_version,
+        # Which build of that version: prereleases share server_version.
+        "build_id": _build_id(),
         "torch_compat": torch_compat,
         "parts": list(by_name.values()),
         "version": by_name["cuda-libs"]["tag"],

@@ -375,6 +375,30 @@ def _settle_show_identities(
                 )
 
 
+def _refresh_indexed_flags(folders: list[Path]) -> None:
+    """Settle the indexed flags of the shows an import touched.
+
+    The shows list reads pipeline.db flags as stored. A full import brings the
+    source machine's flags, claiming every episode it had indexed whether or
+    not the collections came along; an index-only import adds collections to
+    a local show whose flags still say not indexed. Either way the list is
+    wrong until the show is opened. The caches go first: under REPLACE the
+    folder path and collection names are unchanged, and a recreated table can
+    match the cached fingerprint.
+    """
+    from podcodex.core.episode_status import reconcile_show_status
+    from podcodex.ingest.folder import forget_indexed_stems, invalidate_scan_cache
+
+    for folder in folders:
+        try:
+            invalidate_scan_cache(folder)
+            forget_indexed_stems(folder)
+            reconcile_show_status(folder)
+        except Exception as exc:
+            # The import itself is complete; opening the show reconciles too.
+            logger.warning(f"Could not refresh the status of {folder} ({exc})")
+
+
 def _purge_collection_from_disk(name: str, index_root: Path) -> None:
     """Remove all on-disk entries for a collection (table directory + sidecar files)."""
     for entry in list(index_root.iterdir()):
@@ -783,6 +807,21 @@ def import_archive(
                     f"Imported {shows_dir / final} but could not register it "
                     f"({exc}); add it from the app's show list"
                 )
+        refresh = [shows_dir / final for final in folder_map.values()]
+    else:
+        from podcodex.ingest.show_registry import folder_for_id
+
+        try:
+            refresh = [
+                folder
+                for entry_id in {c[5] for c in collection_plan if c[5]}
+                if (folder := folder_for_id(entry_id))
+            ]
+        except Exception as exc:
+            # Same as below: the import is complete, the status is a refresh.
+            logger.warning(f"Could not resolve the imported shows' folders ({exc})")
+            refresh = []
+    _refresh_indexed_flags(refresh)
 
     return ImportResult(
         shows_dir=str(shows_dir) if shows_dir else "",

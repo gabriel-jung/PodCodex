@@ -155,6 +155,104 @@ def test_bge_encode_query_shape():
     assert result.dtype == np.float32
 
 
+def test_a_cached_model_loads_from_its_folder_not_the_hub(monkeypatch, tmp_path):
+    """Given a repo id, the loaders ask the Hub first, which offline stalls on
+    retries or fails outright. A failed cached load is retried by repo id so
+    the Hub can complete a partial download, except out of memory; when the
+    retry fails too, the error raised is the one that names the problem."""
+    import pytest
+
+    import podcodex.core.cache as cache
+    from podcodex.core.cache import load_cached
+
+    repo = tmp_path / "models--org--m"
+    snap = repo / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    (repo / "blobs").mkdir()
+    seen = []
+    monkeypatch.setattr(
+        cache, "cached_snapshot", lambda r, **kw: seen.append(kw) or str(snap)
+    )
+    assert load_cached(lambda s: s, "org/m", cache_dir="/c", revision="abc") == str(
+        snap
+    )
+    assert seen == [{"cache_dir": "/c", "revision": "abc"}]
+
+    def loader(local_error, hub_error=None):
+        calls = []
+
+        def load(source):
+            calls.append(source)
+            if source == str(snap):
+                raise local_error
+            if hub_error:
+                raise hub_error
+            return source
+
+        return load, calls
+
+    # Missing files, however each loader words it, are completed by the Hub:
+    # OSError (transformers), RuntimeError (ctranslate2), ValueError (whisperx
+    # alignment wraps the OSError).
+    for error in (
+        OSError("missing file"),
+        RuntimeError("Unable to open file 'model.bin'"),
+        ValueError("could not be found in huggingface"),
+    ):
+        load, calls = loader(error)
+        assert load_cached(load, "org/m") == "org/m"
+        assert calls == [str(snap), "org/m"]
+
+    # Out of memory: no second load holding the first one's memory.
+    load, calls = loader(RuntimeError("CUDA failed with error out of memory"))
+    with pytest.raises(RuntimeError, match="out of memory"):
+        load_cached(load, "org/m")
+    assert calls == [str(snap)]
+
+    # The retry fails too. A partial snapshot: the Hub's error says why
+    # (gated, offline). A complete one: the model's own error is the real one.
+    load, _ = loader(OSError("missing file"), PermissionError("gated repo"))
+    with pytest.raises(PermissionError, match="gated"):
+        load_cached(load, "org/m")
+    load, _ = loader(RuntimeError("bad patch"), ConnectionError("offline"))
+    with pytest.raises(RuntimeError, match="bad patch"):
+        load_cached(load, "org/m")
+    (repo / "blobs" / "123.incomplete").write_bytes(b"")
+    load, _ = loader(RuntimeError("Unable to open file"), ConnectionError("offline"))
+    with pytest.raises(ConnectionError):
+        load_cached(load, "org/m")
+
+    monkeypatch.setattr(cache, "cached_snapshot", lambda r, **kw: None)
+    assert load_cached(lambda s: s, "org/m", cache_dir="/c") == "org/m"
+
+
+def test_every_embedder_loads_through_the_cache(monkeypatch):
+    import podcodex.core.cache as cache
+
+    monkeypatch.setattr(cache, "cached_snapshot", lambda repo, **kw: f"/snap/{repo}")
+    flag_mock = _make_bge_mock()
+    transformers_mock, st_mock = _make_pplx_mocks()
+    with _mock_modules("FlagEmbedding", "transformers", "sentence_transformers"):
+        sys.modules["FlagEmbedding"] = flag_mock
+        sys.modules["transformers"] = transformers_mock
+        sys.modules["sentence_transformers"] = st_mock
+        from importlib import reload
+        import podcodex.rag.embedder as emb_mod
+
+        reload(emb_mod)
+        emb_mod.BGEEmbedder()
+        assert flag_mock.BGEM3FlagModel.call_args.args[0].startswith("/snap/")
+        emb_mod.E5Embedder("e5-small")
+        assert st_mock.SentenceTransformer.call_args.args[0].startswith("/snap/")
+        pplx = emb_mod.PplxEmbedder()
+        pplx._load("ctx")
+        pplx._load("query")
+    assert transformers_mock.AutoModel.from_pretrained.call_args.args[0].startswith(
+        "/snap/"
+    )
+    assert st_mock.SentenceTransformer.call_args.args[0].startswith("/snap/")
+
+
 # ──────────────────────────────────────────────
 # get_embedder factory
 # ──────────────────────────────────────────────

@@ -223,3 +223,29 @@ Report build issues at <https://github.com/gabriel-jung/PodCodex/issues>. Includ
 - Tool versions: `python --version`, `node --version`, `rustc --version`, `cargo tauri --version`.
 - Full `make bundle` output (use `tee build.log`).
 - For PyInstaller failures, also attach `packaging/build_work/podcodex-server/warn-podcodex-server.txt`.
+
+---
+
+## Releasing (CI)
+
+`release.yml` builds and publishes on a pushed `v*` tag. Bump first (`make bump VERSION=X.Y.Z`, see [CLAUDE.md § Versioning](../CLAUDE.md#versioning-bump-on-every-windows-msi-release)), commit, then tag. The tag name decides the flow:
+
+| Tag | Result |
+|-----|--------|
+| `vX.Y.Z` | Stable release, becomes "latest". The README's `/releases/latest/download/...` links resolve to it. |
+| `vX.Y.Z-beta.N`, `vX.Y.Z-rc.N` | Prerelease. "Latest" skips it, so the README's stable links keep serving the previous stable. Its assets are reachable at `/releases/download/<tag>/...`. |
+| Actions UI, "Run workflow" | Draft, hidden until published by hand. |
+
+After both platform builds, the `beta-channel` job copies the release's files to a rolling prerelease tagged `beta` when the build is newer than what that release holds (a stable `X.Y.Z` outranks every `X.Y.Z` prerelease). The README's beta links point there (`/releases/download/beta/<alias>`), so they always serve the newest build and never one older than stable. The release notes of `beta` start with `Build: <tag>`, which the job reads to compare versions; don't edit that line by hand.
+
+The release workflow runs no tests. Check that the CI run on the commit you tag is green.
+
+### Prerelease caveats
+
+- **GPU backend download.** The app looks for its GPU manifest under its own version, `/releases/download/vX.Y.Z/cuda-libs.json`, which a prerelease tag doesn't match. It then tries the `beta` channel and uses it only when that manifest was built for the app's exact version, then "latest", whose manifest it refuses when built for another version. So a prerelease installs its GPU backend in one click. Every `X.Y.Z-beta.N` shares one version number, so the match also checks the build id: `build_server.py` bundles the commit a build is made from (`_podcodex_build.py`) and `package_gpu.py` stamps the same commit into the manifest. An older beta, superseded on the channel, is refused with a sentence saying to update rather than handed the newest beta's backend; update to the newest beta (the beta link always serves it). The same id guards an installed backend: `src-tauri/build.rs` stamps the commit into the desktop shell, which won't launch a backend whose manifest names another build (it falls back to CPU), and the GPU panel then asks to update, which downloads that build's server core instead of reusing the old one. A stable release can't pick up a beta's backend: its MSI is uploaded only after its own GPU files. `PODCODEX_GPU_MANIFEST_URL` still overrides the lookup (point it at `/releases/download/<tag>/cuda-libs.json`).
+- **Windows MSI version.** An MSI version cannot carry `-beta.N`, so every prerelease of `X.Y.Z` and the stable `X.Y.Z` share one MSI version, and WiX skips replacing files on a same-version install. On a machine that has a prerelease installed, uninstall it before installing the next prerelease or the stable build (the README says so next to the beta links).
+- **Updater.** The Tauri updater is off (`tauri.conf.json`), so prereleases reach only people who download them directly.
+
+### Local `make bundle` and the DMG
+
+`bundle_dmg.sh` sometimes fails locally (Finder layout over a mounted image); the `.app` under `src-tauri/target/release/bundle/macos/` is still complete, and CI builds the DMG. When the DMG step succeeds, Tauri deletes that `.app`; copy it out of the DMG to run it. A failed run can leave a multi-GB `rw.*.dmg` in `src-tauri/target/release/bundle/dmg/`; delete it.

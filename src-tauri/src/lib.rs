@@ -25,7 +25,11 @@ fn compute_config_dir() -> Result<PathBuf, String> {
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
         return Ok(PathBuf::from(xdg).join("podcodex"));
     }
-    let home_var = if cfg!(target_os = "windows") { "USERPROFILE" } else { "HOME" };
+    let home_var = if cfg!(target_os = "windows") {
+        "USERPROFILE"
+    } else {
+        "HOME"
+    };
     let home = std::env::var_os(home_var).ok_or_else(|| format!("{home_var} not set"))?;
     Ok(PathBuf::from(home).join(".config").join("podcodex"))
 }
@@ -44,7 +48,11 @@ fn read_ffmpeg_override_from_config() -> Option<PathBuf> {
         return None;
     }
     let p = PathBuf::from(trimmed);
-    if p.is_file() { Some(p) } else { None }
+    if p.is_file() {
+        Some(p)
+    } else {
+        None
+    }
 }
 
 /// Compute the platform-native app-data root joined with
@@ -156,7 +164,9 @@ fn refresh_path_from_registry() {
 
     let mut parts: Vec<String> = Vec::new();
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    if let Ok(env) = hklm.open_subkey(r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment") {
+    if let Ok(env) =
+        hklm.open_subkey(r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")
+    {
         if let Ok(p) = env.get_value::<String, _>("Path") {
             parts.push(expand(&p));
         }
@@ -196,7 +206,10 @@ fn restart_app(app: tauri::AppHandle) {
     log::info!("restart_app invoked from frontend");
     let child = app.state::<BackendProcess>().0.lock().unwrap().take();
     if let Some(mut child) = child {
-        log::info!("Killing backend process group before restart (pid={})", child.id());
+        log::info!(
+            "Killing backend process group before restart (pid={})",
+            child.id()
+        );
         if let Err(e) = child.kill() {
             log::error!("Failed to kill backend process group on restart: {e}");
         }
@@ -247,7 +260,9 @@ pub fn run() {
                     .level(log::LevelFilter::Info)
                     .targets([
                         tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
-                        tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: None }),
+                        tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                            file_name: None,
+                        }),
                     ])
                     .build(),
             )?;
@@ -303,20 +318,20 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
     // because we deliberately omit `version` from tauri.conf.json so it derives from
     // Cargo.toml — config().version is None at runtime in that setup.
     let app_version = app.package_info().version.to_string();
-    let (server_exe, server_dir, backend_label) =
-        match locate_gpu_sidecar(&data_dir, &app_version) {
-            Some((binary, install_dir)) => (binary, install_dir, "GPU"),
-            None => {
-                let (cpu, cpu_dir) = locate_bundled_server(app).ok_or_else(|| {
-                    format!(
-                        "Cannot find {SERVER_SIDECAR} under {SERVER_RESOURCE_SUBDIR}/ in the \
+    let (server_exe, server_dir, backend_label) = match locate_gpu_sidecar(&data_dir, &app_version)
+    {
+        Some((binary, install_dir)) => (binary, install_dir, "GPU"),
+        None => {
+            let (cpu, cpu_dir) = locate_bundled_server(app).ok_or_else(|| {
+                format!(
+                    "Cannot find {SERVER_SIDECAR} under {SERVER_RESOURCE_SUBDIR}/ in the \
                          app resources. Did `packaging/build_server.py` run before \
                          `cargo tauri build`?"
-                    )
-                })?;
-                (cpu, cpu_dir, "CPU")
-            }
-        };
+                )
+            })?;
+            (cpu, cpu_dir, "CPU")
+        }
+    };
 
     let models_dir = data_dir.join("models");
     let hf_home = models_dir.join("huggingface");
@@ -429,11 +444,7 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
 /// logged and ignored — on a read-only install the bit is usually already
 /// correct, and letting the spawn attempt proceed gives a better error.
 fn locate_bundled_server(app: &tauri::AppHandle) -> Option<(PathBuf, PathBuf)> {
-    let dir = app
-        .path()
-        .resource_dir()
-        .ok()?
-        .join(SERVER_RESOURCE_SUBDIR);
+    let dir = app.path().resource_dir().ok()?.join(SERVER_RESOURCE_SUBDIR);
     let binary = exe_in_dir(&dir, SERVER_SIDECAR).or_else(|| {
         log::warn!("Bundled CPU sidecar not found under {:?}", dir);
         None
@@ -505,9 +516,7 @@ fn active_gpu_install_dir(root: &std::path::Path) -> PathBuf {
         if valid_install_name(name) && root.join(name).is_dir() {
             return root.join(name);
         }
-        log::warn!(
-            "GPU install pointer {name:?} is not a usable folder, trying the root"
-        );
+        log::warn!("GPU install pointer {name:?} is not a usable folder, trying the root");
     }
     root.to_path_buf()
 }
@@ -523,10 +532,7 @@ fn active_gpu_install_dir(root: &std::path::Path) -> PathBuf {
 ///
 /// On success returns ``(binary_path, install_dir)`` so the caller can set
 /// cwd correctly — PyInstaller --onedir needs cwd at the install root.
-fn locate_gpu_sidecar(
-    data_dir: &std::path::Path,
-    app_version: &str,
-) -> Option<(PathBuf, PathBuf)> {
+fn locate_gpu_sidecar(data_dir: &std::path::Path, app_version: &str) -> Option<(PathBuf, PathBuf)> {
     let root = data_dir.join(GPU_BACKEND_SUBDIR);
     if !root.join(GPU_ACTIVATED_MARKER).is_file() {
         return None;
@@ -550,6 +556,16 @@ fn locate_gpu_sidecar(
         }
     };
 
+    let installed_build = installed_build_id(&install_dir.join(GPU_MANIFEST_FILE));
+    if !same_build(env!("PODCODEX_BUILD_ID"), &installed_build) {
+        log::warn!(
+            "GPU sidecar is from build {installed_build}, this app is build {}, \
+             falling back to CPU until user re-downloads",
+            env!("PODCODEX_BUILD_ID")
+        );
+        return None;
+    }
+
     match probe_sidecar_version(&binary, &install_dir) {
         Some(v) if v == app_version => Some((binary, install_dir)),
         Some(v) => {
@@ -560,21 +576,35 @@ fn locate_gpu_sidecar(
             None
         }
         None => {
-            log::warn!(
-                "Could not read GPU sidecar version, falling back to CPU"
-            );
+            log::warn!("Could not read GPU sidecar version, falling back to CPU");
             None
         }
     }
 }
 
+/// The ``build_id`` the installed GPU backend's manifest carries, or "" when
+/// it has none (installed before build ids) or can't be read.
+fn installed_build_id(manifest: &std::path::Path) -> String {
+    std::fs::read_to_string(manifest)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|v| v.get("build_id")?.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// Whether the installed backend comes from this app's build. Every
+/// X.Y.Z-beta.N shares the version ``probe_sidecar_version`` checks; the
+/// commit tells them apart. A side without an id (a dev build, a backend
+/// installed before ids) can't tell, and the version check alone decides.
+/// Mirrors ``gpu_backend._same_build``.
+fn same_build(app_build: &str, installed_build: &str) -> bool {
+    app_build.is_empty() || installed_build.is_empty() || app_build == installed_build
+}
+
 /// Run ``<binary> --version`` (with ``cwd`` set to the install dir so
 /// PyInstaller --onedir can find its support files) and return the trailing
 /// version token from the output, e.g. ``"0.1.0"``.
-fn probe_sidecar_version(
-    binary: &std::path::Path,
-    cwd: &std::path::Path,
-) -> Option<String> {
+fn probe_sidecar_version(binary: &std::path::Path, cwd: &std::path::Path) -> Option<String> {
     let output = Command::new(binary)
         .arg("--version")
         .current_dir(cwd)
@@ -604,7 +634,11 @@ fn augmented_path() -> Option<String> {
     let candidates: &[&str] = if cfg!(target_os = "macos") {
         &["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"]
     } else if cfg!(target_os = "linux") {
-        &["/usr/local/bin", "/snap/bin", "/var/lib/flatpak/exports/bin"]
+        &[
+            "/usr/local/bin",
+            "/snap/bin",
+            "/var/lib/flatpak/exports/bin",
+        ]
     } else {
         &[]
     };
@@ -613,9 +647,12 @@ fn augmented_path() -> Option<String> {
     }
 
     let current = std::env::var("PATH").unwrap_or_default();
-    let separator = if cfg!(target_os = "windows") { ';' } else { ':' };
-    let existing: std::collections::HashSet<&str> =
-        current.split(separator).collect();
+    let separator = if cfg!(target_os = "windows") {
+        ';'
+    } else {
+        ':'
+    };
+    let existing: std::collections::HashSet<&str> = current.split(separator).collect();
 
     let mut prepend: Vec<&str> = Vec::new();
     for c in candidates {
@@ -676,6 +713,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_backend_of_another_build_is_not_launched() {
+        assert!(same_build("abc", "abc"));
+        assert!(!same_build("beta2", "beta1"));
+        // No id on either side: the version check alone decides.
+        assert!(same_build("", "beta1"));
+        assert!(same_build("abc", ""));
+    }
+
+    #[test]
+    fn the_installed_build_id_comes_from_the_manifest() {
+        let dir = std::env::temp_dir().join(format!("podcodex-build-id-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join(GPU_MANIFEST_FILE);
+        std::fs::write(
+            &manifest,
+            r#"{"server_version": "0.3.0", "build_id": "abc"}"#,
+        )
+        .unwrap();
+        assert_eq!(installed_build_id(&manifest), "abc");
+        std::fs::write(&manifest, r#"{"server_version": "0.3.0"}"#).unwrap();
+        assert_eq!(installed_build_id(&manifest), "");
+        std::fs::write(&manifest, "not json").unwrap();
+        assert_eq!(installed_build_id(&manifest), "");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn install_names_are_folders_never_paths() {
         assert!(valid_install_name("v-0.2.14-1a2b3c4d"));
         assert!(!valid_install_name("0.2.14"));
@@ -686,8 +750,7 @@ mod tests {
 
     #[test]
     fn the_pointer_selects_the_install_folder() {
-        let root = std::env::temp_dir()
-            .join(format!("podcodex-gpu-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("podcodex-gpu-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("v-1-abc")).unwrap();
 

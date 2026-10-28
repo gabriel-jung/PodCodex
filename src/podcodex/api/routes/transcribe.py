@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, PositiveInt
 
 from podcodex.api.routes._helpers import (
     build_edit_provenance,
@@ -277,29 +277,14 @@ class TranscribeRequest(BaseModel):
     output_dir: str | None = None
     model_size: str = DEFAULT_WHISPER_MODEL
     language: str = ""
-    batch_size: int | None = None
+    batch_size: PositiveInt | None = None  # None: the device default
     force: bool = False
     diarize: bool = True
     hf_token: str | None = None
-    num_speakers: int | None = None
+    num_speakers: PositiveInt | None = None
     show: str = ""
     episode: str = ""
     clean: bool = False
-
-    @field_validator("batch_size")
-    @classmethod
-    def batch_size_positive(cls, v: int | None) -> int | None:
-        # None is "the device default"; comparing it raised a TypeError (500).
-        if v is not None and v < 1:
-            raise ValueError("batch_size must be at least 1")
-        return v
-
-    @field_validator("num_speakers")
-    @classmethod
-    def num_speakers_positive(cls, v: int | None) -> int | None:
-        if v is not None and v < 1:
-            raise ValueError("num_speakers must be at least 1")
-        return v
 
 
 @router.post("/start", response_model=TaskResponse)

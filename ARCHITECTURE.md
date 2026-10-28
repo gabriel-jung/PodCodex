@@ -123,7 +123,7 @@ Every variable the backend reads. None is required for a desktop install; the Ta
 | `PODCODEX_FFMPEG_EXE` | `core/_ffmpeg.py` | Path to the ffmpeg binary; the Tauri shell points it at the bundled one. |
 | `PODCODEX_API_TOKEN` | `api/api_token.py` | Loopback API token; overrides the persisted one in the config dir (tests pin it). |
 | `PODCODEX_API_PORT`, `PODCODEX_PARENT_PID` | `api/app.py`, `api/server.py` | Sidecar port, and the shell PID the sidecar watches so it exits with the app. Set by Tauri. |
-| `PODCODEX_GPU_MANIFEST_URL` | `api/gpu_backend.py` | Alternative manifest for the optional CUDA backend download (default: the app's own release tag, then latest). |
+| `PODCODEX_GPU_MANIFEST_URL` | `api/gpu_backend.py` | Alternative manifest for the optional CUDA backend download (default: the app's own release tag, then the rolling `beta` release when it holds this version, then latest). |
 | `PODCODEX_CPU_SERVER` | `api/routes/integrations.py` | Path of the bundled CPU sidecar, set by Tauri; the Claude Desktop MCP entry points at it even when the GPU backend is running. |
 | `OLLAMA_HOST` | `core/llm.py` | Ollama daemon URL, default `http://localhost:11434`. |
 | `HF_TOKEN` | `core/transcribe.py` | Hugging Face token for the gated pyannote diarization model. |

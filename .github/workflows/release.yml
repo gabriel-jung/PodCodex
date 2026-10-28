@@ -7,6 +7,8 @@ name: Release
 #     aliases so README can link to /releases/latest/download/<alias>
 #   - server-core.tar.gz + cuda-libs-<ver>.tar.gz + cuda-libs.json (Windows GPU
 #     archives for in-app download — VoiceBox-style runtime CUDA install)
+#   - the same aliases + GPU archives mirrored onto the rolling "beta"
+#     release when this build is the newest (see the beta-channel job)
 #   - latest.json (Tauri updater manifest — only when TAURI_SIGNING_PRIVATE_KEY
 #     is configured; see deploy/BUILD.md for keypair setup)
 #
@@ -176,6 +178,51 @@ jobs:
           }
           Write-Host "✓ $exe ($size bytes), _internal ($count files)"
 
+      # GPU build needs CUDA-flavored torch in the venv so PyInstaller can
+      # bundle the NVIDIA runtime libs. Without this, package_gpu.py would
+      # find no nvidia/* files and fail.
+      - name: Install CUDA-flavored torch for GPU build
+        run: |
+          uv pip install torch torchvision torchaudio `
+            --index-url https://download.pytorch.org/whl/cu128 `
+            --reinstall --no-deps `
+            --python .venv/Scripts/python.exe
+
+      - name: Verify CUDA torch is active
+        run: .venv/Scripts/python.exe -c "import torch; print('cuda:', torch.version.cuda); assert torch.version.cuda, 'CUDA torch not installed'"
+
+      # GPU build: separate --onedir output. --no-torch-swap because we
+      # explicitly want the cu128 torch we just installed in the bundle.
+      - name: Build GPU sidecar (--onedir, includes CUDA libs)
+        run: .venv/Scripts/python.exe packaging/build_server.py --gpu --clean --no-torch-swap
+
+      - name: Package GPU archives + manifest
+        run: .venv/Scripts/python.exe packaging/package_gpu.py
+
+      - name: Upload GPU archives to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            packaging/release-assets/server-core.tar.gz
+            packaging/release-assets/server-core.tar.gz.sha256
+            packaging/release-assets/torch-runtime-*.tar.gz
+            packaging/release-assets/torch-runtime-*.tar.gz.sha256
+            packaging/release-assets/cuda-libs-*.tar.gz
+            packaging/release-assets/cuda-libs-*.tar.gz.sha256
+            packaging/release-assets/cuda-libs.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The MSI goes up after the GPU archives, so a release's installer is
+      # never downloadable before its own GPU build: during that window the
+      # app's tagged manifest lookup 404s and would fall back to the beta
+      # channel, which can hold another build of the same version. The GPU
+      # build writes to packaging/dist; the CPU sidecar the MSI bundles stays
+      # in src-tauri/binaries/server.
       - uses: tauri-apps/tauri-action@v0.6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -213,41 +260,108 @@ jobs:
           gh release delete-asset "${{ github.ref_name }}" $msi.Name --yes 2>$null
           exit 0
 
-      # GPU build needs CUDA-flavored torch in the venv so PyInstaller can
-      # bundle the NVIDIA runtime libs. Without this, package_gpu.py would
-      # find no nvidia/* files and fail.
-      - name: Install CUDA-flavored torch for GPU build
+  # ── Rolling "beta" channel ──────────────────────────────────────────────
+  # The README's beta links point at /releases/download/beta/<alias>, the
+  # newest build. Every tagged release, stable included, refreshes the
+  # channel when it is newer than what the channel holds, so the beta link
+  # never serves a build older than the stable one. The app's GPU download
+  # falls back to this channel's manifest (gpu_backend._fetch_manifest),
+  # which is how a prerelease, whose tag is not derivable from its version,
+  # finds its GPU backend. Pushing the "beta" tag does not retrigger this
+  # workflow: it only matches v*.
+  beta-channel:
+    name: Beta channel
+    needs: [build-macos, build-windows]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # Two tags pushed close together would both read the same channel build
+    # and race their uploads; queue them instead (each compares again).
+    concurrency:
+      group: beta-channel
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      CHANNEL: beta
+    steps:
+      - name: Is this build newer than the channel's?
+        id: check
         run: |
-          uv pip install torch torchvision torchaudio `
-            --index-url https://download.pytorch.org/whl/cu128 `
-            --reinstall --no-deps `
-            --python .venv/Scripts/python.exe
+          set -euo pipefail
+          # tr: notes edited in the web UI come back with CRLF line ends.
+          current=$(gh release view "$CHANNEL" --json body -q .body 2>/dev/null \
+            | tr -d '\r' | sed -n 's/^Build: \(v[^ ]*\).*/\1/p' | head -1 || true)
+          newer=$(python3 - "$TAG" "$current" <<'PY'
+          import re, sys
 
-      - name: Verify CUDA torch is active
-        run: .venv/Scripts/python.exe -c "import torch; print('cuda:', torch.version.cuda); assert torch.version.cuda, 'CUDA torch not installed'"
+          def key(tag):
+              # Any hyphen suffix is a prerelease (CLAUDE.md "Release tags"):
+              # v1.2.3-beta, -beta.2, -rc1, -test all parse.
+              m = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)(?:-([A-Za-z]*)\.?(\d*).*)?", tag)
+              if not m:
+                  return None
+              major, minor, patch, stage, n = m.groups()
+              # A stable X.Y.Z outranks every X.Y.Z prerelease; an unknown
+              # suffix ranks below alpha.
+              if stage is None:
+                  rank = 4
+              else:
+                  rank = {"alpha": 1, "beta": 2, "rc": 3}.get(stage.lower(), 0)
+              return (int(major), int(minor), int(patch), rank, int(n or 0))
 
-      # GPU build — separate --onedir output. --no-torch-swap because we
-      # explicitly want the cu128 torch we just installed in the bundle.
-      - name: Build GPU sidecar (--onedir, includes CUDA libs)
-        run: .venv/Scripts/python.exe packaging/build_server.py --gpu --clean --no-torch-swap
+          new, cur = key(sys.argv[1]), key(sys.argv[2])
+          if new is None:
+              # The release itself is published; only the channel skips it.
+              print(f"Tag {sys.argv[1]!r} is not vX.Y.Z[-suffix], channel left as is", file=sys.stderr)
+              print("false")
+          else:
+              print("true" if cur is None or new > cur else "false")
+          PY
+          )
+          echo "Channel holds '${current:-nothing}', this build is $TAG: update=$newer"
+          echo "update=$newer" >> "$GITHUB_OUTPUT"
 
-      - name: Package GPU archives + manifest
-        run: .venv/Scripts/python.exe packaging/package_gpu.py
+      - name: Mirror this release onto the channel
+        if: steps.check.outputs.update == 'true'
+        run: |
+          set -euo pipefail
+          mkdir assets
+          gh release download "$TAG" --dir assets \
+            -p 'PodCodex-macos-arm64.dmg' -p 'PodCodex-windows-x64.msi' \
+            -p 'server-core.tar.gz*' -p 'torch-runtime-*' -p 'cuda-libs*'
+          ls -la assets
+          for f in PodCodex-macos-arm64.dmg PodCodex-windows-x64.msi cuda-libs.json server-core.tar.gz; do
+            [ -e "assets/$f" ] || { echo "Missing from $TAG: $f" >&2; exit 1; }
+          done
 
-      - name: Upload GPU archives to release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          draft: ${{ github.event_name == 'workflow_dispatch' }}
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          fail_on_unmatched_files: true
-          files: |
-            packaging/release-assets/server-core.tar.gz
-            packaging/release-assets/server-core.tar.gz.sha256
-            packaging/release-assets/torch-runtime-*.tar.gz
-            packaging/release-assets/torch-runtime-*.tar.gz.sha256
-            packaging/release-assets/cuda-libs-*.tar.gz
-            packaging/release-assets/cuda-libs-*.tar.gz.sha256
-            packaging/release-assets/cuda-libs.json
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          notes="Build: $TAG
+          The newest PodCodex build, beta or stable. For the newest stable release only, use https://github.com/$GH_REPO/releases/latest"
+          if gh release view "$CHANNEL" >/dev/null 2>&1; then
+            # Point the tag at this build so the release's source matches.
+            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/$CHANNEL" \
+              -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            # Notes name no build until the uploads are done (see below).
+            gh release create "$CHANNEL" --prerelease --target "$GITHUB_SHA" \
+              --title "PodCodex beta (newest build)" --notes "Build: pending"
+          fi
+          # Archives first and the GPU manifest after them, so the manifest
+          # never names an archive that isn't up yet. server-core.tar.gz keeps
+          # its name across builds, so a GPU install started during this
+          # upload can fail its digest check once; retrying succeeds.
+          find assets -type f ! -name cuda-libs.json -print0 \
+            | xargs -0 gh release upload "$CHANNEL" --clobber
+          gh release upload "$CHANNEL" assets/cuda-libs.json --clobber
+          # The notes name the build last: a run that dies before this point
+          # leaves the old name, so a rerun compares and uploads again.
+          gh release edit "$CHANNEL" --prerelease --notes "$notes"
+
+          # Drop files the previous build had and this one does not (an
+          # archive renamed by a version bump), so the channel holds one build.
+          keep=$(ls assets)
+          gh release view "$CHANNEL" --json assets -q '.assets[].name' | while read -r name; do
+            grep -qxF "$name" <<< "$keep" || gh release delete-asset "$CHANNEL" "$name" --yes
+          done

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from loguru import logger
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, PositiveInt, field_validator
 
 from podcodex.api.routes._helpers import (
     TaskCancelled,
@@ -36,11 +36,11 @@ class BatchRequest(BaseModel):
     # Transcribe config
     model_size: str = DEFAULT_WHISPER_MODEL
     language: str = ""
-    batch_size: int | None = None
+    batch_size: PositiveInt | None = None  # None: the device default
     diarize: bool = True
     clean: bool = False
     hf_token: str | None = None
-    num_speakers: int | None = None
+    num_speakers: PositiveInt | None = None
     # Transcribe source: "audio" (WhisperX) or "subtitles" (cached VTT)
     transcribe_source: str = "audio"
     sub_lang: str = "en"
@@ -62,13 +62,6 @@ class BatchRequest(BaseModel):
     # Per-episode source version override, keyed by audio_path. If a path
     # is absent the step helpers fall back to load_latest (edited-first).
     source_version_ids: dict[str, str] | None = None
-
-    @field_validator("batch_size")
-    @classmethod
-    def batch_size_positive(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError("batch_size must be at least 1")
-        return v
 
     @field_validator("llm_batch_minutes")
     @classmethod

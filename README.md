@@ -123,10 +123,17 @@ Each step is saved with its model and settings to a SQLite database. Roll back a
 
 ### Pre-built release
 
-Direct download (latest):
+Latest stable release:
 
 - **macOS (Apple Silicon)**: [PodCodex-macos-arm64.dmg](https://github.com/gabriel-jung/PodCodex/releases/latest/download/PodCodex-macos-arm64.dmg)
 - **Windows x64**: [PodCodex-windows-x64.msi](https://github.com/gabriel-jung/PodCodex/releases/latest/download/PodCodex-windows-x64.msi)
+
+Newest build, beta included (the same as stable when no beta is ahead of it):
+
+- **macOS (Apple Silicon)**: [PodCodex-macos-arm64.dmg](https://github.com/gabriel-jung/PodCodex/releases/download/beta/PodCodex-macos-arm64.dmg)
+- **Windows x64**: [PodCodex-windows-x64.msi](https://github.com/gabriel-jung/PodCodex/releases/download/beta/PodCodex-windows-x64.msi)
+
+On Windows, uninstall a beta before installing the stable release of the same version: the installer skips files when the version number matches, which leaves the beta's files in place.
 
 All assets + checksums on the [Releases](https://github.com/gabriel-jung/PodCodex/releases) page.
 
@@ -154,12 +161,12 @@ PodCodex looks for Ollama at `http://localhost:11434`, Ollama's default port. If
 
 | Hardware                       | GPU support                                                                          |
 |--------------------------------|--------------------------------------------------------------------------------------|
-| NVIDIA RTX 20xx or newer       | Bundled installer (in-app CUDA activation, ~2.4 GB), or `--extra gpu` from source    |
+| NVIDIA RTX 20xx or newer       | Windows installer (in-app CUDA activation, ~2.4 GB), or `--extra gpu` from source    |
 | NVIDIA Pascal (GTX 10xx, P40)  | `--extra gpu-pascal` from source only, see [PASCAL.md](deploy/PASCAL.md)             |
 | Apple Silicon                  | CPU only, no GPU/MPS path yet                                                        |
 | Other / no GPU                 | CPU only                                                                             |
 
-The bundled installer ships CPU-only. NVIDIA users activate the in-app CUDA backend from **Settings → GPU acceleration**; it downloads a CUDA-enabled torch build (~2.4 GB) on first activation. Force CPU at any time from the same panel.
+The installers ship CPU-only. On Windows, NVIDIA users activate the in-app CUDA backend from **Settings → GPU acceleration**; it downloads a CUDA-enabled torch build (~2.4 GB) on first activation. Force CPU at any time from the same panel.
 
 ---
 
@@ -167,7 +174,7 @@ The bundled installer ships CPU-only. NVIDIA users activate the in-app CUDA back
 
 ### Discord bot
 
-Share your archive with a small community. Drop the bot into any Discord server and listeners can run slash commands for semantic search (`/search`), exact phrase (`/exact`), random samples (`/random`), episode browsing (`/episodes`), speaker stats (`/speakers`), and library stats (`/stats`). Per-server passwords if you're running multiple shows on one bot.
+Share your archive with a small community. Drop the bot into any Discord server and listeners can run slash commands for semantic search (`/search`), exact phrase (`/exact`), random samples (`/random`), episode browsing (`/episodes`), speaker stats (`/speakers`), and library stats (`/stats`). Shows can be password-protected: a protected show answers only in servers that unlocked it with `/unlock`.
 
 ```bash
 uv sync --extra bot --extra rag --extra cpu
@@ -180,7 +187,7 @@ Full deploy guide (uv + Docker, systemd, password rotation, VPS rsync) in [`depl
 
 PodCodex ships a Model Context Protocol server, so any MCP-compatible client (Claude Desktop, Claude Code, Cursor, Continue, Zed, and others) can search your archive mid-conversation. It exposes search, exact phrase, show listing, and context-fetch tools, plus editable slash prompts like `/brief`, `/speaker`, `/timeline`.
 
-**Claude Desktop:** one-click setup at **Settings → Claude Desktop → Enable integration** writes the stdio config for you.
+**Claude Desktop:** one-click setup at **Settings → Integrations → Claude Desktop (MCP) → Enable** writes the stdio config for you.
 
 **Other clients:** point them at `http://127.0.0.1:18811/mcp` (HTTP transport, while the app is running), or run the server manually over stdio. See [`deploy/MCP.md`](deploy/MCP.md).
 

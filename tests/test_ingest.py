@@ -75,12 +75,11 @@ def test_scan_folder_indexed_true(tmp_path, monkeypatch):
 def test_note_episode_indexed_updates_cache(tmp_path, monkeypatch):
     from podcodex.ingest import folder as folder_mod
 
-    class FakeStore:
-        def get_all_collection_info(self):
-            return {"show_bge": {"show": "MyShow"}, "other": {"show": "Other"}}
+    version = {"show_bge": 7}
 
+    class FakeStore:
         def collection_version(self, col):
-            return 7
+            return version[col]
 
     monkeypatch.setattr("podcodex.rag.index_store.get_index_store", lambda: FakeStore())
     monkeypatch.setattr(folder_mod, "_INDEXED_STEMS_CACHE", {})
@@ -90,11 +89,47 @@ def test_note_episode_indexed_updates_cache(tmp_path, monkeypatch):
     assert folder_mod._INDEXED_STEMS_CACHE == {}
 
     key = folder_mod._stems_cache_key(tmp_path)
-    folder_mod._INDEXED_STEMS_CACHE[key] = ((("show_bge", 3),), {"ep00"})
+    folder_mod._INDEXED_STEMS_CACHE[key] = ((("show_bge", "t1", 3),), {"ep00"})
     folder_mod.note_episode_indexed(tmp_path, "ep01")
     versions, stems = folder_mod._INDEXED_STEMS_CACHE[key]
     assert stems == {"ep00", "ep01"}
-    assert versions == (("show_bge", 7),)
+    assert versions == (("show_bge", "t1", 7),)
+
+    # The collection was dropped and recreated (its version starts over): the
+    # cached set holds the old table's episodes, so it is dropped rather than
+    # added to.
+    version["show_bge"] = 2
+    folder_mod.note_episode_indexed(tmp_path, "ep02")
+    assert key not in folder_mod._INDEXED_STEMS_CACHE
+
+
+def test_a_recreated_collection_rescans_at_the_same_version(tmp_path, monkeypatch):
+    """A recreated table counts up from 1 again: at the old version number
+    the key must still differ, or the dropped table's episodes are served."""
+    from podcodex.ingest import folder as folder_mod
+    from podcodex.ingest.show import ShowMeta, save_show_meta
+
+    save_show_meta(tmp_path, ShowMeta(name="MyShow"))
+    state = {"created": "t1", "episodes": ["old"]}
+
+    class FakeStore:
+        def collections_for_show(self, *_a, **_kw):
+            return ["show_bge"]
+
+        def get_all_collection_info(self):
+            return {"show_bge": {"created_at": state["created"]}}
+
+        def collection_version(self, col):
+            return 3
+
+        def list_episodes(self, col):
+            return list(state["episodes"])
+
+    monkeypatch.setattr("podcodex.rag.index_store.get_index_store", lambda: FakeStore())
+    monkeypatch.setattr(folder_mod, "_INDEXED_STEMS_CACHE", {})
+    assert folder_mod.lance_indexed_stems(tmp_path) == {"old"}
+    state.update(created="t2", episodes=["new"])
+    assert folder_mod.lance_indexed_stems(tmp_path) == {"new"}
 
 
 # ──────────────────────────────────────────────
