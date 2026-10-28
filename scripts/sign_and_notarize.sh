@@ -47,7 +47,8 @@ fi
 
 # Each PyInstaller-bundled .so / .dylib needs its own signature under hardened
 # runtime. cargo tauri build signs the outer .app, but nested PyInstaller
-# binaries shipped via externalBin sometimes get missed. Re-sign defensively.
+# binaries shipped in the binaries/server/ resource tree can get missed.
+# Re-sign defensively.
 echo "==> Re-signing nested binaries"
 find "$APP_PATH/Contents" -type f \( -name "*.so" -o -name "*.dylib" \) -print0 | \
     xargs -0 -I {} codesign --force --sign "$APPLE_SIGNING_IDENTITY" \

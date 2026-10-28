@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -16,6 +17,7 @@ from podcodex.api.routes._helpers import (
     list_show_stems,
     scan_show_stems,
     require_registered_show,
+    require_subtitle_lang,
     rss_episode_to_out,
     submit_task,
 )
@@ -108,18 +110,13 @@ def youtube_fetch(show_folder: str) -> list[dict]:
     if not episodes:
         raise HTTPException(502, "No videos found")
 
-    # yt-dlp returns videos newest-first; persist that position so the UI can
-    # sort sensibly even when pub_date is missing from flat extraction.
-    for idx, ep in enumerate(episodes):
-        ep.feed_order = idx
-
     # YouTube flat extraction often omits upload_date/duration/description, and
     # legacy numbered entries (pre-fix) need their episode_number kept so their
     # on-disk ``{n}_slug`` stems still resolve. Per-video subtitle import
     # (``cache_youtube_subtitles``) backfills those fields into the cache;
     # fall back to the cached value whenever the fresh record has nothing.
     def _preserve_enriched(fresh: RSSEpisode, old: RSSEpisode) -> RSSEpisode:
-        merged = RSSEpisode(**fresh.__dict__)
+        merged = replace(fresh)
         fill_empty_fields(merged, old)
         return merged
 
@@ -177,6 +174,9 @@ def youtube_download(
         cache_youtube_subtitles,
         download_youtube_audio,
     )
+
+    if req.import_subs:
+        require_subtitle_lang(req.sub_lang)
 
     path = require_registered_show(show_folder)
     cached = load_feed_cache(path)
@@ -296,6 +296,8 @@ def youtube_import_subs(
 ) -> TaskResponse:
     """Download and cache YouTube subtitles (VTT files). Background task."""
     from podcodex.ingest.youtube import cache_youtube_subtitles
+
+    require_subtitle_lang(req.lang)
 
     path = require_registered_show(show_folder)
     cached = load_feed_cache(path)

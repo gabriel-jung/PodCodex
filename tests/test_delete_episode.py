@@ -303,7 +303,11 @@ def _feed_show(client, tmp_path, *, removed: bool):
     assert (
         client.post("/api/shows/register", json={"path": str(show)}).status_code == 200
     )
-    save_show_meta(show, ShowMeta(name="FeedShow", rss_url="https://example.com/f.xml"))
+    save_show_meta(
+        show,
+        ShowMeta(name="FeedShow", rss_url="https://example.com/f.xml"),
+        remint=True,
+    )
 
     ep = RSSEpisode(
         guid="guid-1",

@@ -198,7 +198,7 @@ def test_rename_to_a_taken_name_is_rejected(client, tmp_path):
     # called Alpha here, so saving it again (with a language change) is fine.
     from podcodex.ingest.show import ShowMeta, load_show_meta, save_show_meta
 
-    save_show_meta(b, ShowMeta(name="Alpha"))
+    save_show_meta(b, ShowMeta(name="Alpha"), remint=True)
     r = client.put(
         f"/api/shows/{b}/meta",
         json={"name": "Alpha", "language": "en", "speakers": [], "pipeline": {}},

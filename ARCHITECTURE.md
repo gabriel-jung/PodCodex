@@ -75,7 +75,7 @@ Each show is a self-contained folder under a user-chosen root:
 
 Every step uses the same storage layout: `{ep_dir}/{step}/{version_id}.{json|parquet|wav}` resolved by `version_path(base, step, id)` in `core/versions.py`, except the parquet substeps, which nest under `transcript/`. Versions are content-hashed; metadata (model, params, timestamp, segment count, input hash for lineage) lives in the `versions` table of `pipeline.db`. The `versions` table is the truth; the directory listing is incidental.
 
-`.episode_meta.json` is the indexer's RSS-metadata source (title, pub_date, description, episode_number, artwork_url). It mirrors a single `RSSEpisode` from `.feed_cache.json`. Whenever a richer extraction lands (per-video YouTube call, RSS refetch, one-shot backfill), the merge goes through `fill_empty_fields()` in `ingest/rss.py`. Three call sites pre-consolidation each rolled their own and drifted on which keys counted. Don't add a fourth.
+`.episode_meta.json` is the indexer's RSS-metadata source (title, pub_date, description, episode_number, artwork_url). It mirrors a single `RSSEpisode` from `.feed_cache.json`. Whenever a richer extraction lands on top of a sparser one (the per-video YouTube subtitle import, and a flat YouTube channel re-fetch over an enriched cache), the merge goes through `fill_empty_fields()` in `ingest/rss.py`. An RSS refetch replaces entries wholesale, since nothing enriches them after the feed. Three call sites pre-consolidation each rolled their own and drifted on which keys counted. Don't add a fourth.
 
 ### `pipeline.db` schema (per show)
 

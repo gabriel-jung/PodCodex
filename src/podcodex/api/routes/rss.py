@@ -52,11 +52,9 @@ async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
 
     feed_art = ""
     try:
-        # feedparser blocks on network — keep it off the event loop.
-        # `fetch_feed_with_artwork`, not `fetch_feed`: the artwork upgrade
-        # below used to make its own `feed_artwork` call, downloading and
-        # re-parsing the same multi-megabyte XML a second time on a request
-        # that already had the parsed document in hand.
+        # feedparser blocks on network, so keep it off the event loop. One
+        # fetch yields both the episodes and the artwork the upgrade below
+        # needs, rather than downloading the same XML twice.
         episodes, feed_art = await asyncio.to_thread(fetch_feed_with_artwork, rss_url)
     except ValueError as exc:
         # Scheme rejection and other bad input: the caller's URL is wrong,
@@ -82,6 +80,9 @@ async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
 
     # Upgrade artwork if missing or low-res (e.g. old 60px iTunes thumbnails).
     # A locally uploaded cover (LOCAL_ARTWORK_MARKER) is never upgraded over.
+    # Re-read: the fetch can take minutes, and a rename or settings edit saved
+    # meanwhile must not be written over by the snapshot taken before it.
+    meta = load_show_meta(path)
     if meta:
         current = meta.artwork_url or ""
         if current != LOCAL_ARTWORK_MARKER and (

@@ -23,6 +23,25 @@ MANIFEST_FILENAME = "manifest.json"
 """Path of the manifest within the archive root."""
 
 
+def is_collection_entry(entry_name: str, collection: str) -> bool:
+    """True when an index-root entry belongs to *collection*.
+
+    The table directory ``<name>.lance`` or a sentinel file ``<name>.<suffix>``.
+    A bare prefix match is not enough: model keys contain dots
+    (``pplx-0.6B``), so ``show__pplx-0`` would also claim
+    ``show__pplx-0.6B__chunker.lance``. Sentinel suffixes hold neither a dot
+    nor ``__``, and the remainder of a longer collection name always holds
+    ``__`` (the chunker follows the model). Shared by export, import and purge
+    so the three cannot disagree on what a collection is.
+    """
+    if entry_name == f"{collection}.lance":
+        return True
+    if not entry_name.startswith(collection + "."):
+        return False
+    rest = entry_name[len(collection) + 1 :]
+    return bool(rest) and "." not in rest and "__" not in rest
+
+
 class Mode(StrEnum):
     """Bundle mode — drives import path and which directories are present."""
 
@@ -33,7 +52,7 @@ class Mode(StrEnum):
 class CollectionEntry(BaseModel):
     """One LanceDB collection included in the bundle."""
 
-    name: str  # canonical "{show}__{model}__{chunker}" key
+    name: str  # "{show_id}__{model}__{chunker}" (legacy tables: show name)
     model: str
     chunker: str
     dim: int  # vector dimensionality (needed to register on import)

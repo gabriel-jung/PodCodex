@@ -14,7 +14,7 @@ import os
 import re
 import unicodedata
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -36,13 +36,44 @@ def loggable_url(url: str) -> str:
     from urllib.parse import urlsplit, urlunsplit
 
     parts = urlsplit(url)
-    host = parts.hostname or ""
-    if parts.port:
-        host = f"{host}:{parts.port}"
-    return urlunsplit((parts.scheme, host, parts.path, "", ""))
+    return urlunsplit((parts.scheme, _host_port(parts), parts.path, "", ""))
 
 
-_URL_IN_TEXT = re.compile(r"https?://[^\s'\"<>]+")
+def _host_port(parts) -> str:
+    """The netloc of a split URL without its userinfo, IPv6 brackets kept."""
+    return parts.netloc.rpartition("@")[2]
+
+
+# Stops at whitespace, quotes, angle brackets and a backslash (an escaped
+# quote inside a JSON string), and at square brackets except around an IPv6
+# host, so "[https://site]" in a description does not swallow the "]".
+_URL_IN_TEXT = re.compile(
+    r"https?://(?:[^\s'\"<>\[\]\\/@]*@)?(?:\[[0-9A-Fa-f:.]+\])?[^\s'\"<>\[\]\\]*"
+)
+
+
+def shareable_url(url: str) -> str:
+    """*url* safe to hand to someone else: ``loggable_url``, which never
+    raises (a URL ``urlsplit`` rejects goes through ``_crude_strip``).
+
+    The whole query and the userinfo go. Private feeds keep the subscriber
+    token there under any name (``token``, ``token-hash``, S3's
+    ``X-Amz-Signature`` ...), so guessing by key name leaked; a public feed
+    whose query selects the show needs its link pasted again, which the
+    export UI says.
+    """
+    if not url:
+        return url
+    try:
+        return loggable_url(url)
+    except ValueError:
+        return _crude_strip(url)
+
+
+def _crude_strip(url: str) -> str:
+    """*url* minus its query and userinfo by plain string surgery, for a URL
+    ``urlsplit`` rejects (so ``loggable_url`` would raise too)."""
+    return re.sub(r"//[^/@]*@", "//", url.split("?", 1)[0])
 
 
 def redact_urls(text: str) -> str:
@@ -52,7 +83,14 @@ def redact_urls(text: str) -> str:
     ``HTTPStatusError`` does), which would otherwise carry a private feed's
     token into the log and the UI.
     """
-    return _URL_IN_TEXT.sub(lambda m: loggable_url(m.group(0)), text)
+
+    def _one(m: re.Match) -> str:
+        try:
+            return loggable_url(m.group(0))
+        except ValueError:
+            return _crude_strip(m.group(0))
+
+    return _URL_IN_TEXT.sub(_one, text)
 
 
 def _require_http_scheme(url: str, what: str = "URL") -> None:
@@ -85,6 +123,58 @@ class RSSEpisode:
     # Position in the source feed (0 = newest). Used as a sort fallback when
     # pub_date is missing (YouTube flat extraction often omits dates).
     feed_order: int | None = None
+
+
+_EPISODE_FIELDS = frozenset(f.name for f in fields(RSSEpisode))
+_STR_FIELDS = frozenset(f.name for f in fields(RSSEpisode) if f.type == "str")
+
+
+def _int_or_none(value) -> int | None:
+    """An episode/season number from stored JSON, or None when it is not one."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        # isdecimal + isascii: isdigit also accepts "²", which int() rejects.
+        if text.isascii() and text.isdecimal():
+            return int(text)
+    return None
+
+
+def episode_from_dict(data: dict) -> RSSEpisode:
+    """Build an ``RSSEpisode`` from stored JSON (feed cache or episode meta).
+
+    These files travel inside ``.podcodex`` bundles, so they are untrusted
+    and may come from a newer build. Unknown keys are dropped (a new field
+    used to raise ``TypeError`` in every reader), and the episode and season
+    numbers are coerced to int: ``episode_stem`` formats the number into a
+    filename, and a string there could escape the show folder. Every other
+    field is type-checked too, so a bad entry fails here, where readers skip
+    it, instead of later inside ``episode_stem`` for the whole show.
+
+    Raises:
+        TypeError: *data* is not a dict, lacks ``guid``/``title``/``pub_date``,
+            or holds a non-string where a string belongs.
+    """
+    if not isinstance(data, dict):
+        raise TypeError(f"episode entry is not an object: {type(data).__name__}")
+    kept = {k: v for k, v in data.items() if k in _EPISODE_FIELDS}
+    for key, value in kept.items():
+        if key in _STR_FIELDS:
+            if value is None and key not in ("guid", "title", "pub_date"):
+                kept[key] = ""
+            elif not isinstance(value, str):
+                raise TypeError(f"{key} is not a string: {value!r}")
+        elif key in ("episode_number", "season_number", "feed_order"):
+            kept[key] = _int_or_none(value)
+        elif key == "duration":
+            ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+            kept[key] = float(value) if ok else 0.0
+        elif key == "removed":
+            kept[key] = value is True
+    return RSSEpisode(**kept)
 
 
 # Fields that flow from a richer extraction (per-video YouTube call, RSS
@@ -378,19 +468,6 @@ def _artwork_from_parsed(parsed) -> str:
     return itunes_img.get("href", "") or img.get("href", "")
 
 
-def feed_artwork(url: str) -> str:
-    """Extract the channel-level artwork URL from an RSS feed."""
-    import httpx
-
-    _require_http_scheme(url, "Feed URL")
-    try:
-        content = _fetch_feed_bytes(url)
-    except httpx.HTTPError as exc:
-        logger.warning("feed_artwork fetch failed for {}: {}", loggable_url(url), exc)
-        return ""
-    return _artwork_from_parsed(feedparser.parse(content))
-
-
 def _episodes_from_parsed(feed) -> list[RSSEpisode]:
     """Convert a feedparser-parsed feed into ``RSSEpisode`` records."""
     if feed.bozo and not feed.entries:
@@ -429,17 +506,11 @@ def parse_feed_content(content: str) -> list[RSSEpisode]:
     return _episodes_from_parsed(feedparser.parse(content))
 
 
-def fetch_feed(url: str) -> list[RSSEpisode]:
-    """Fetch and parse an RSS feed. Returns episodes in feed order."""
-    content = _fetch_feed_bytes(url)
-    return _episodes_from_parsed(feedparser.parse(content))
-
-
 def fetch_feed_with_artwork(url: str) -> tuple[list[RSSEpisode], str]:
     """Fetch a feed once and return both episodes and channel artwork.
 
-    Avoids the back-to-back ``fetch_feed`` + ``feed_artwork`` pattern,
-    which previously downloaded and parsed the same RSS XML twice.
+    The only feed fetch: separate episode and artwork fetches used to
+    download and parse the same RSS XML twice.
     """
     content = _fetch_feed_bytes(url)
     parsed = feedparser.parse(content)
@@ -497,10 +568,21 @@ _feed_cache_memo: dict[str, tuple[float, list[RSSEpisode] | None]] = {}
 def load_feed_cache(show_folder: Path) -> list[RSSEpisode] | None:
     """Load cached feed data from *show_folder*. Returns None if no cache exists.
 
-    Result is memoised per ``(path, mtime)`` so hot paths that call this
+    Each call returns fresh objects (see ``_copy_episodes``). Result is
+    memoised per ``(path, mtime)`` so hot paths that call this
     once per episode directory (``load_episode_meta`` self-heal,
     ``list_shows`` endpoint) don't re-parse the JSON on every call. Reads
     at most once per write.
+    """
+    return _copy_episodes(_shared_feed_cache(show_folder))
+
+
+def _shared_feed_cache(show_folder: Path) -> list[RSSEpisode] | None:
+    """The memoised feed cache itself: read-only for the caller.
+
+    For scans that only look (``load_episode_meta``'s recovery runs once per
+    episode without a meta file); copying every entry each time made that
+    quadratic.
     """
     path = Path(show_folder) / _FEED_CACHE
     try:
@@ -516,12 +598,37 @@ def load_feed_cache(show_folder: Path) -> list[RSSEpisode] | None:
         return cached[1]
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        _feed_cache_memo[key] = (mtime, None)
-        return None
-    episodes = [RSSEpisode(**ep) for ep in raw]
-    _feed_cache_memo[key] = (mtime, episodes)
+        if not isinstance(raw, list):
+            raise TypeError("feed cache is not a list")
+    except (OSError, json.JSONDecodeError, TypeError) as exc:
+        logger.warning(f"Unreadable feed cache {path}: {exc}")
+        episodes = None
+    else:
+        # One bad entry (a bundle from another build, a hand edit) costs that
+        # entry only: dropping the whole cache made the next refresh save over
+        # it and lose every backfilled field.
+        episodes = []
+        for entry in raw:
+            try:
+                episodes.append(episode_from_dict(entry))
+            except TypeError as exc:
+                logger.warning(f"Skipping a malformed entry in {path}: {exc}")
+    # Stored only once the mtime has settled, as for the sibling caches: a
+    # second write inside the same coarse timestamp bucket would otherwise
+    # be hidden behind this entry.
+    if mtime_settled(mtime):
+        _feed_cache_memo[key] = (mtime, episodes)
     return episodes
+
+
+def _copy_episodes(episodes: list[RSSEpisode] | None) -> list[RSSEpisode] | None:
+    """Fresh episode objects: callers mutate them (``merge_with_cache`` flags
+    leftovers removed, the subtitle import backfills fields), and a change
+    that is never saved must not reach the next reader through the memo.
+    Every field is a scalar, so a shallow copy is a full one."""
+    if episodes is None:
+        return None
+    return [replace(ep) for ep in episodes]
 
 
 def merge_with_cache(
@@ -614,10 +721,11 @@ def save_episode_meta(episode_dir: Path, rss_episode: RSSEpisode) -> Path:
     episode_dir = Path(episode_dir)
     episode_dir.mkdir(parents=True, exist_ok=True)
     path = episode_dir / EPISODE_META_FILE
-    path.write_text(
-        json.dumps(asdict(rss_episode), indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    # Atomic, like the feed cache: a crash mid-write left a truncated file
+    # that the next read had to treat as corrupt.
+    from podcodex.core._utils import write_json_atomic
+
+    write_json_atomic(path, asdict(rss_episode))
     return path
 
 
@@ -660,7 +768,7 @@ def load_episode_meta(episode_dir: Path) -> RSSEpisode | None:
     if mtime is not None:
         hit = _EPISODE_META_CACHE.get(str(path))
         if hit is not None and hit[0] == mtime:
-            return hit[1]
+            return replace(hit[1])
     try:
         text = path.read_text(encoding="utf-8").strip()
     except FileNotFoundError:
@@ -670,12 +778,12 @@ def load_episode_meta(episode_dir: Path) -> RSSEpisode | None:
     if text:
         try:
             data = json.loads(text)
-            ep = RSSEpisode(**data)
+            ep = episode_from_dict(data)
             # Files written before the field existed need the legacy bridge;
             # newer files carry an explicit (possibly empty) youtube_id.
             ep = ep if "youtube_id" in data else _bridge_legacy_youtube_id(ep)
             if mtime is not None and mtime_settled(mtime):
-                _EPISODE_META_CACHE[str(path)] = (mtime, ep)
+                _EPISODE_META_CACHE[str(path)] = (mtime, replace(ep))
             return ep
         except (json.JSONDecodeError, TypeError, KeyError):
             logger.warning(
@@ -683,14 +791,14 @@ def load_episode_meta(episode_dir: Path) -> RSSEpisode | None:
             )
 
     show_folder = episode_dir.parent
-    cached = load_feed_cache(show_folder)
+    cached = _shared_feed_cache(show_folder)
     if not cached:
         return None
     stem = episode_dir.name
-    for ep in cached:
-        if episode_stem(ep, show_folder) == stem:
+    for shared in cached:
+        if episode_stem(shared, show_folder) == stem:
             # Cache entries may predate the youtube_id field too.
-            ep = _bridge_legacy_youtube_id(ep)
+            ep = _bridge_legacy_youtube_id(replace(shared))
             try:
                 save_episode_meta(episode_dir, ep)
                 logger.info(f"Recovered .episode_meta.json for {stem} from feed cache")
@@ -767,7 +875,11 @@ def download_audio(
     dest = Path(show_folder) / f"{stem}{ext}"
 
     # Always persist episode metadata (even if audio already downloaded)
-    save_episode_meta(Path(show_folder) / stem, rss_episode)
+    try:
+        save_episode_meta(Path(show_folder) / stem, rss_episode)
+    except OSError as exc:
+        logger.warning(f"Could not write episode metadata for {stem}: {exc}")
+        return None, f"disk error: {exc.strerror or type(exc).__name__}"
 
     if not force and dest.exists():
         logger.info(f"Audio already exists: {dest.name}")
@@ -804,9 +916,28 @@ def download_audio(
                 headers=headers,
             ) as resp:
                 resp.raise_for_status()
+                # A captive portal or a CDN challenge answers 200 with a web
+                # page. Refused only when the header says HTML *and* the body
+                # starts like markup: small hosts serve real MP3s as
+                # text/html, and CDNs use every type for audio.
+                ctype = resp.headers.get("content-type", "").lower()
+                html_header = ctype.startswith(("text/html", "application/xhtml"))
                 with open(part, "wb") as f:
-                    for chunk in resp.iter_bytes(chunk_size=65536):
+                    for i, chunk in enumerate(resp.iter_bytes(chunk_size=65536)):
+                        if i == 0 and html_header and chunk.lstrip()[:1] == b"<":
+                            logger.warning(
+                                f"Download of {dest.name} returned a web page"
+                            )
+                            break
                         f.write(chunk)
+                    else:
+                        html_header = False
+                if html_header:
+                    _cleanup_partial(part)
+                    return None, "not audio (the server returned a web page)"
+            if part.stat().st_size == 0:
+                _cleanup_partial(part)
+                return None, "empty download"
             os.replace(part, dest)
             break  # success
         except httpx.HTTPStatusError as exc:
@@ -856,6 +987,12 @@ def download_audio(
             if attempt == max_retries:
                 return None, last_error
             _time.sleep(2 * attempt)
+        except OSError as exc:
+            # A full disk or a permission error: retrying will not help, and
+            # escaping here aborted the whole batch and left the .part file.
+            logger.warning(f"Download failed for {dest.name}: {exc}")
+            _cleanup_partial(part)
+            return None, f"disk error: {exc.strerror or type(exc).__name__}"
 
     logger.success(
         f"Downloaded {dest.name} ({dest.stat().st_size / 1024 / 1024:.1f} MB)"

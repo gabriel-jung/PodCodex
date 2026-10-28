@@ -118,3 +118,40 @@ def test_delete_surfaces_a_failed_index_purge(client, show, monkeypatch):
     assert r.status_code == 200, r.text
     assert "index is locked" in r.json()["warning"]
     assert not show.exists()
+
+
+def test_a_broken_show_toml_does_not_block_removal(client, show):
+    """Removing the show is the way out of an unreadable show.toml."""
+    (show / "show.toml").write_text('name = "unterminated', encoding="utf-8")
+    r = client.post(f"/api/shows/{show}/delete", json={"delete_files": True})
+    assert r.status_code == 200, r.text
+    assert not show.exists()
+
+
+def test_an_unreadable_show_toml_is_a_409_not_a_500(client, show):
+    """ShowMetaUnreadableError carries a message the user can act on."""
+    (show / "show.toml").write_text('name = "unterminated', encoding="utf-8")
+    r = client.post("/api/shows/register", json={"path": str(show)})
+    assert r.status_code == 409, r.text
+    assert "cannot be read" in r.json()["detail"]
+
+
+def test_deleting_a_broken_show_still_purges_its_index(client, show, monkeypatch):
+    """The id line survives most damage; without it the purge matched nothing."""
+    from podcodex.api.routes import shows as shows_route
+    from podcodex.ingest.show import load_show_meta
+
+    sid = load_show_meta(show).id
+    (show / "show.toml").write_text(
+        f'id = "{sid}"\nname = "unterminated', encoding="utf-8"
+    )
+    seen = {}
+
+    def _purge(show_id, *_a, **_k):
+        seen["id"] = show_id
+        return 0, False, None
+
+    monkeypatch.setattr(shows_route, "_purge_show_from_index", _purge)
+    r = client.post(f"/api/shows/{show}/delete", json={"delete_files": True})
+    assert r.status_code == 200, r.text
+    assert seen["id"] == sid

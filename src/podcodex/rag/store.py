@@ -25,6 +25,11 @@ def _normalize_show(show: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", show.lower()).strip("_")
 
 
+def normalize_show_id(show_id: str) -> str:
+    """The form a show id takes inside collection names (public alias)."""
+    return _normalize_show(show_id)
+
+
 def collection_name(show: str, model: str, chunker: str = "semantic") -> str:
     """Build the canonical collection name: ``{show}__{model}__{chunker}``.
 

@@ -512,6 +512,15 @@ def create_app() -> FastAPI:
         redoc_url=None if bundled else "/redoc",
         openapi_url=None if bundled else "/openapi.json",
     )
+    from podcodex.ingest.show import ShowMetaUnreadableError
+
+    # A show.toml that no longer parses is refused everywhere instead of
+    # being minted over (which loses the show's id); one handler turns it
+    # into a message the user can act on rather than a bare 500.
+    @app.exception_handler(ShowMetaUnreadableError)
+    async def _unreadable_show_meta(_request: Request, exc: ShowMetaUnreadableError):
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+
     app.state.mcp_available = _mcp_installed()
     if not app.state.mcp_available:
         logger.warning("MCP extra not installed; /mcp will answer 503")

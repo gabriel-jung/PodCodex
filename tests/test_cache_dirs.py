@@ -130,6 +130,7 @@ def test_wire_model_caches_keeps_preset_values(
         "bootstrap_for_mcp_stdio",
         "bootstrap_for_dev",
         "bootstrap_for_bot",
+        "bootstrap_for_cli",
         "bootstrap_for_subprocess_child",
     ],
 )
@@ -150,7 +151,11 @@ def test_every_bootstrap_wires_caches_before_anything_else(
                 bootstrap, name, lambda *a, _n=name, **k: calls.append(_n)
             )
     getattr(bootstrap, entry)()
-    assert calls and calls[0] == "_wire_model_caches", calls
+    # Only loading .env may come first: it can set PODCODEX_DATA_DIR, which
+    # decides where the caches go.
+    steps = [c for c in calls if c != "_load_dotenv"]
+    assert steps and steps[0] == "_wire_model_caches", calls
+    assert calls.index("_wire_model_caches") <= 1, calls
 
 
 def test_delete_cached_model_removes_a_hub_layout_model(

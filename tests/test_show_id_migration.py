@@ -165,7 +165,7 @@ def test_show_renamed_before_upgrading_is_still_adopted(env):
     """The row says the old name, show.toml says the new one, and the table
     name is the only surviving link."""
     store, folder = env
-    save_show_meta(folder, ShowMeta(name="Renamed Before Upgrade"))
+    save_show_meta(folder, ShowMeta(name="Renamed Before Upgrade"), remint=True)
     store.set_collection_identity(
         "my_show__bge-m3__semantic", show_id="", show="My Show"
     )
@@ -184,7 +184,7 @@ def test_password_of_a_show_renamed_before_upgrading_is_rekeyed(env):
     """The password is under the old name, which only the collection row keeps.
     Missing it would serve a protected show as public in the bot."""
     store, folder = env
-    save_show_meta(folder, ShowMeta(name="Renamed Before Upgrade"))
+    save_show_meta(folder, ShowMeta(name="Renamed Before Upgrade"), remint=True)
     store.set_collection_identity(
         "my_show__bge-m3__semantic", show_id="", show="My Show"
     )

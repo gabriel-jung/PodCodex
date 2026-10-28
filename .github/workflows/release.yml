@@ -60,18 +60,13 @@ jobs:
       - name: Build CPU sidecar
         run: .venv/bin/python packaging/build_server.py --clean
 
-      - name: Fetch native sidecar (yt-dlp)
-        run: make bundle-natives
-
       # Same guard as the Windows job: catch a missing/stale sidecar tree
       # here rather than shipping a DMG whose backend never starts.
       - name: Verify bundled sidecars are present
         run: |
           set -euo pipefail
           exe=src-tauri/binaries/server/podcodex-server
-          for p in "$exe" src-tauri/binaries/yt-dlp-aarch64-apple-darwin; do
-            [ -e "$p" ] || { echo "Missing: $p" >&2; exit 1; }
-          done
+          [ -e "$exe" ] || { echo "Missing: $exe" >&2; exit 1; }
           test -x "$exe"
           # Size floor, not mere existence: scripts/setup_dev_sidecar.py
           # leaves an executable 3-line shell stub at the same path, and a
@@ -159,19 +154,12 @@ jobs:
       - name: Build CPU sidecar
         run: .venv/Scripts/python.exe packaging/build_server.py --clean
 
-      - name: Fetch native sidecar (yt-dlp)
-        run: .venv/Scripts/python.exe scripts/fetch_native_binaries.py
-
       # The server sidecar is a --onedir tree bundled as a Tauri resource,
-      # not an externalBin file — check the exe inside it, plus the one
-      # externalBin entry that is still a single file.
+      # not an externalBin file, so check the exe inside it.
       - name: Verify bundled sidecars are present
         run: |
           $exe = "src-tauri\binaries\server\podcodex-server.exe"
-          $ytdlp = "src-tauri\binaries\yt-dlp-x86_64-pc-windows-msvc.exe"
-          foreach ($p in @($exe, $ytdlp)) {
-            if (-not (Test-Path $p)) { Write-Error "Missing: $p"; exit 1 }
-          }
+          if (-not (Test-Path $exe)) { Write-Error "Missing: $exe"; exit 1 }
           # Size floor, not mere existence: scripts/setup_dev_sidecar.py
           # leaves a 66-byte stub at the same path, and a stub tree passes
           # every presence check while producing a bundle whose backend
@@ -186,7 +174,7 @@ jobs:
             Write-Error "_internal holds $count files — incomplete PyInstaller tree"
             exit 1
           }
-          Write-Host "✓ $exe ($size bytes), _internal ($count files), $ytdlp"
+          Write-Host "✓ $exe ($size bytes), _internal ($count files)"
 
       - uses: tauri-apps/tauri-action@v0.6
         env:

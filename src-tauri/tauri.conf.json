@@ -38,9 +38,6 @@
   "bundle": {
     "active": true,
     "targets": ["dmg", "msi"],
-    "externalBin": [
-      "binaries/yt-dlp"
-    ],
     "resources": [
       "binaries/server/"
     ],

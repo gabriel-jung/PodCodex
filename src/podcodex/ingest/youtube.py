@@ -10,6 +10,7 @@ Requires the optional ``[youtube]`` dependency group (``yt-dlp``).
 
 from __future__ import annotations
 
+import os
 import tempfile
 import threading
 from datetime import datetime, timezone
@@ -18,10 +19,13 @@ from typing import Any, Callable
 
 from loguru import logger
 
+from podcodex.core._utils import is_subtitle_lang
+from podcodex.core.constants import AUDIO_EXTENSIONS
 from podcodex.ingest.rss import (
     RSSEpisode,
     fill_empty_fields,
     load_feed_cache,
+    loggable_url,
     save_episode_meta,
     save_feed_cache,
 )
@@ -118,12 +122,12 @@ def _require_yt_dlp():
         return yt_dlp
     except ImportError:
         raise ImportError(
-            "yt-dlp is required for YouTube support. "
-            "Install with: pip install podcodex[youtube]"
-        )
+            "YouTube support is not installed in this build of PodCodex "
+            "(the yt-dlp module is missing; from source: uv sync --extra youtube)."
+        ) from None
 
 
-def _entry_to_episode(entry: dict[str, Any], idx: int) -> RSSEpisode:
+def _entry_to_episode(entry: dict[str, Any]) -> RSSEpisode:
     """Map a yt-dlp info_dict entry to an RSSEpisode."""
     video_id = entry.get("id", "")
     title = entry.get("title") or entry.get("fulltitle") or "Untitled"
@@ -224,25 +228,6 @@ def _info_to_show_meta(info: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def youtube_show_info(url: str) -> dict[str, Any]:
-    """Extract channel/playlist metadata for show creation.
-
-    Args:
-        url: YouTube channel, playlist, or single video URL.
-
-    Returns:
-        Dict with ``name``, ``artwork_url``, and ``video_count`` keys.
-    """
-    yt_dlp = _require_yt_dlp()
-    url = _normalize_channel_url(url)
-
-    ydl_opts = _base_ydl_opts(extract_flat=True, skip_download=True)
-    with _EXTRACT_SEMAPHORE, yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-
-    return _info_to_show_meta(info)
-
-
 def fetch_youtube(url: str) -> tuple[list[RSSEpisode], dict[str, Any]]:
     """Extract video metadata from a YouTube channel, playlist, or video URL.
 
@@ -254,10 +239,10 @@ def fetch_youtube(url: str) -> tuple[list[RSSEpisode], dict[str, Any]]:
         url: YouTube channel, playlist, or single video URL.
 
     Returns:
-        ``(episodes, show_info)``: episodes newest first, plus the same
-        ``name``/``artwork_url``/``video_count`` dict ``youtube_show_info``
-        returns, distilled from the single extraction so callers never need
-        a second full channel crawl.
+        ``(episodes, show_info)``: episodes newest first, each with its
+        ``feed_order``, plus a ``name``/``artwork_url``/``video_count`` dict
+        distilled from the same extraction so callers never need a second
+        full channel crawl.
     """
     yt_dlp = _require_yt_dlp()
     url = _normalize_channel_url(url)
@@ -278,14 +263,17 @@ def fetch_youtube(url: str) -> tuple[list[RSSEpisode], dict[str, Any]]:
         entries = [info]
 
     episodes: list[RSSEpisode] = []
-    for idx, entry in enumerate(entries):
+    for entry in entries:
         if not entry:
             continue
-        ep = _entry_to_episode(entry, idx)
+        ep = _entry_to_episode(entry)
         if ep.guid:
+            # yt-dlp lists newest first; the position is the UI's sort
+            # fallback when flat extraction leaves pub_date empty.
+            ep.feed_order = len(episodes)
             episodes.append(ep)
 
-    logger.info("Fetched {} videos from {}", len(episodes), url)
+    logger.info("Fetched {} videos from {}", len(episodes), loggable_url(url))
     return episodes, show_info
 
 
@@ -305,9 +293,9 @@ def download_youtube_audio(
         show_folder: Show folder to save the MP3 into.
         stem: Filename stem for the output file.
         progress_cb: Optional ``(fraction, message)`` callback for progress.
-        force: Re-download even when the MP3 already exists (the existing file
-            is removed first, so a truncated or wrong-format download can be
-            replaced).
+        force: Re-download even when the MP3 already exists. The existing
+            file is set aside as ``.previous`` and put back if the download
+            fails (or on the next run, if this one is killed).
 
     Returns:
         Path to the downloaded MP3 file.
@@ -321,11 +309,47 @@ def download_youtube_audio(
     show_folder.mkdir(parents=True, exist_ok=True)
     output_path = show_folder / f"{stem}.mp3"
 
+    previous: Path | None = None
+    set_aside = output_path.with_name(output_path.name + ".previous")
+    if not output_path.exists() and set_aside.exists():
+        # A forced re-download that was killed before it could clean up.
+        os.replace(set_aside, output_path)
+        logger.info(
+            "Restored audio set aside by an interrupted re-download: {}", output_path
+        )
     if output_path.exists():
         if not force:
             logger.debug("Audio already exists: {}", output_path)
             return output_path
-        output_path.unlink()
+        # Set aside rather than deleted: a failed re-download must not cost
+        # the copy the user already had.
+        previous = set_aside
+        os.replace(output_path, previous)
+    try:
+        output_path = _run_audio_download(
+            yt_dlp, video_id, show_folder, stem, output_path, progress_cb
+        )
+    except BaseException:
+        if previous is not None and previous.exists():
+            # Over whatever the failed run left at the path (a half-converted
+            # mp3, say): the copy the user had is the one to keep. Checked:
+            # another run on the same stem may have restored it already.
+            os.replace(previous, output_path)
+        raise
+    if previous is not None:
+        previous.unlink(missing_ok=True)
+    return output_path
+
+
+def _run_audio_download(
+    yt_dlp,
+    video_id: str,
+    show_folder: Path,
+    stem: str,
+    output_path: Path,
+    progress_cb: Callable[[float, str], None] | None,
+) -> Path:
+    """Run yt-dlp for one video and return the file it produced."""
 
     url = _YT_VIDEO_URL.format(video_id=video_id)
 
@@ -358,7 +382,13 @@ def download_youtube_audio(
     if not output_path.exists():
         # yt-dlp may have used a different extension before post-processing
         # Look for the file with any extension and the same stem
-        candidates = list(show_folder.glob(f"{stem}.*"))
+        # Audio files only: yt-dlp also leaves fragments (.part-Frag3),
+        # .temp and format-tagged files under the same stem.
+        candidates = [
+            c
+            for c in show_folder.glob(f"{stem}.*")
+            if c.suffix.lower() in AUDIO_EXTENSIONS
+        ]
         mp3s = [c for c in candidates if c.suffix == ".mp3"]
         if mp3s:
             output_path = mp3s[0]
@@ -491,7 +521,12 @@ def cache_youtube_subtitles(
 
     Returns:
         ``True`` if subtitles were found and cached, ``False`` otherwise.
+
+    Raises:
+        ValueError: *lang* is not a language code (it becomes part of a filename).
     """
+    if not is_subtitle_lang(lang):
+        raise ValueError(f"invalid subtitle language code: {lang!r}")
     vtt_text, video_info = download_youtube_subtitles(video_id, lang=lang)
 
     # Per-video extraction carries the full upload_date / duration /
@@ -503,7 +538,7 @@ def cache_youtube_subtitles(
         show_folder = episode_dir.parent
         cached = load_feed_cache(show_folder)
         if cached:
-            full_ep = _entry_to_episode(video_info, 0)
+            full_ep = _entry_to_episode(video_info)
             for ep in cached:
                 if ep.guid != video_id:
                     continue

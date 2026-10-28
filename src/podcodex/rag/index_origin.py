@@ -134,6 +134,7 @@ def require_owner(index_path: Path | str, action: str) -> None:
         f"Cannot {action}: this index is owned by machine "
         f"{read_origin(index_path)!r}, not {machine_id()!r}. "
         "It is a replica, and the next rsync from the owner would overwrite the change. "
-        "Make the change on the owning machine, or run with --claim-index to take "
-        "ownership here (after which syncing from the old owner will overwrite it)."
+        "Make the change on the owning machine, or take ownership here with "
+        "the bot's `podcodex-bot --claim-index` command (after which syncing "
+        "from the old owner will overwrite it)."
     )

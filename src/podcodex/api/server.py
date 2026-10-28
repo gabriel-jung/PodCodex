@@ -67,12 +67,12 @@ def _redirect_stdio_to_logfile() -> None:
 
 
 def _wire_native_binaries() -> None:
-    """Prepend yt-dlp, ffmpeg override, and standard package-manager dirs to PATH.
+    """Prepend the ffmpeg override and standard package-manager dirs to PATH.
 
-    Libraries that shell out with bare ``"yt-dlp"`` / ``"ffmpeg"`` need
-    these on PATH. ``YT_DLP_BINARY`` (Tauri-injected) lets us hot-swap
-    yt-dlp without rebuilding the sidecar; ``PODCODEX_FFMPEG_EXE`` is
-    the user-facing override for non-PATH ffmpeg installs.
+    Libraries that shell out with a bare ``"ffmpeg"`` (yt-dlp's audio
+    extraction, whisperx) need it on PATH. ``PODCODEX_FFMPEG_EXE`` is the
+    user-facing override for non-PATH ffmpeg installs. yt-dlp itself runs
+    as the bundled Python module, not a binary.
 
     Also injects standard install dirs (``/opt/homebrew/bin`` etc.) when
     missing — macOS GUI processes inherit ``launchd``'s minimal PATH and
@@ -82,10 +82,6 @@ def _wire_native_binaries() -> None:
     from podcodex.core._ffmpeg import ffmpeg_override_dir
 
     extra_path: list[str] = []
-
-    ytdlp = os.environ.get("YT_DLP_BINARY")
-    if ytdlp and Path(ytdlp).is_file():
-        extra_path.append(str(Path(ytdlp).parent))
 
     ffmpeg_dir = ffmpeg_override_dir()
     if ffmpeg_dir:

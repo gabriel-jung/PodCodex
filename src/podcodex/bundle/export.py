@@ -22,12 +22,14 @@ from podcodex.bundle.manifest import (
     Manifest,
     Mode,
     ShowEntry,
+    is_collection_entry,
     manifest_to_json,
     show_member_prefix,
 )
 from podcodex.core._utils import atomic_write
-from podcodex.core.constants import AUDIO_EXTENSIONS
-from podcodex.ingest.show import show_display
+from podcodex.core.constants import AUDIO_EXTENSIONS, PARTIAL_DOWNLOAD_SUFFIXES
+from podcodex.core.pipeline_db import DB_FILENAME
+from podcodex.ingest.show import SHOW_META_FILENAME, show_display
 
 if TYPE_CHECKING:
     from podcodex.rag.index_store import IndexStore
@@ -39,6 +41,102 @@ ProgressCallback = Callable[[str, float], None]
 # archive. Kept as literals rather than imported from ingest.rss so export
 # does not pull the feed parser onto the bundle path.
 _META_DOTFILES = frozenset({".feed_cache.json", ".episode_meta.json"})
+
+# Episode fields in those files that can carry a private feed's token.
+_URL_FIELDS = ("audio_url", "artwork_url")
+
+
+def _sqlite_snapshot(path: Path) -> bytes | None:
+    """A consistent copy of a SQLite file, taken through the backup API.
+
+    Copying the raw file can catch a transaction halfway (the per-show
+    ``pipeline.db`` runs with a rollback journal), which the importer would
+    then open as a corrupt database. Read-only first; a read-only handle
+    cannot roll back a hot journal left by a crash, so a second, read-write
+    attempt lets SQLite recover it. Returns None when neither works: the
+    file is then left out (the importer rebuilds step status from the files
+    on disk) rather than shipped torn, without the journal that would fix it.
+    """
+    import sqlite3
+
+    uri = path.resolve().as_uri()  # percent-encodes "#" and "?" in folder names
+    for mode in ("ro", "rw"):
+        try:
+            src = sqlite3.connect(f"{uri}?mode={mode}", uri=True)
+            try:
+                dst = sqlite3.connect(":memory:")
+                try:
+                    src.backup(dst)
+                    return dst.serialize()
+                finally:
+                    dst.close()
+            finally:
+                src.close()
+        except sqlite3.Error as exc:
+            last = exc
+    logger.warning(f"Could not snapshot {path} ({last}); leaving it out of the bundle")
+    return None
+
+
+def _scrubbed_payload(rel: str, path: Path) -> bytes | None:
+    """Archive bytes for a file that carries feed URLs, with secrets stripped.
+
+    Returns None for files that carry none, which are added as they are. A
+    private feed keeps its per-subscriber token in its URLs (feed, enclosure
+    and image), so a bundle shared with someone else drops their query and
+    userinfo unless the exporter opts in (``shareable_url``). The recipient
+    pastes their own feed URL to refresh. The search index, which holds its
+    own copy of the enclosure URLs, is left out of such a bundle altogether.
+
+    Rewrites the known fields only (``rss_url`` and ``artwork_url`` in
+    show.toml, ``audio_url`` and ``artwork_url`` in the meta files): guids
+    are episode identity and links in descriptions are content. A file that
+    does not parse falls back to stripping every URL in its text, so it
+    fails closed.
+    """
+    import json
+
+    from podcodex.ingest.rss import redact_urls, shareable_url
+
+    def _strip(value):
+        return shareable_url(value) if isinstance(value, str) else value
+
+    name = Path(rel).name
+    if rel == SHOW_META_FILENAME:
+        from podcodex.ingest.show import load_show_meta, render_show_toml
+
+        meta = load_show_meta(path.parent)
+        if meta is not None:
+            before = (meta.rss_url, meta.artwork_url)
+            meta.rss_url, meta.artwork_url = map(_strip, before)
+            if (meta.rss_url, meta.artwork_url) == before:
+                return None  # nothing to hide: ship the file as written
+            return render_show_toml(meta, meta.id).encode("utf-8")
+    elif name in _META_DOTFILES:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = None
+        if isinstance(data, (list, dict)):
+            for entry in data if isinstance(data, list) else [data]:
+                if isinstance(entry, dict):
+                    for key in _URL_FIELDS:
+                        if key in entry:
+                            entry[key] = _strip(entry[key])
+            return json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+    else:
+        return None
+    text = path.read_text(encoding="utf-8", errors="surrogateescape")
+    return redact_urls(text).encode("utf-8", errors="surrogateescape")
+
+
+def _has_rss_feed(show_folder: Path) -> bool:
+    """True when the show's episodes come from an RSS feed (YouTube and local
+    shows carry no subscriber token)."""
+    from podcodex.ingest.show import load_show_meta
+
+    meta = load_show_meta(show_folder)
+    return bool(meta and meta.rss_url)
 
 
 def _now_iso() -> str:
@@ -88,14 +186,9 @@ def _show_collections(
 def _collection_sidecars(collection: str, entries: list[Path]) -> list[Path]:
     """Pick on-disk entries belonging to ``collection`` from a pre-scanned list.
 
-    Includes ``{col}.lance`` plus any ``{col}.<index_name>`` sidecar. Trailing
-    dot prevents prefix collisions with longer collection names.
+    Includes ``{col}.lance`` plus its sentinel files (``is_collection_entry``).
     """
-    return [
-        e
-        for e in entries
-        if e.name == f"{collection}.lance" or e.name.startswith(collection + ".")
-    ]
+    return [e for e in entries if is_collection_entry(e.name, collection)]
 
 
 def _walk_show_files(folder: Path, *, with_audio: bool) -> list[tuple[str, Path]]:
@@ -118,6 +211,10 @@ def _walk_show_files(folder: Path, *, with_audio: bool) -> list[tuple[str, Path]
             continue
         if rel.name.startswith(".") and rel.name not in _META_DOTFILES:
             continue
+        if path.suffix.lower() in PARTIAL_DOWNLOAD_SUFFIXES or rel.name.endswith(
+            ("-journal", "-wal", "-shm")
+        ):
+            continue
         if not with_audio and path.suffix.lower() in AUDIO_EXTENSIONS:
             continue
         pairs.append((str(rel), path))
@@ -139,11 +236,29 @@ def _add_manifest(tf: tarfile.TarFile, manifest: Manifest) -> None:
 
 
 def _add_show(
-    tf: tarfile.TarFile, folder_name: str, src: Path, *, with_audio: bool
+    tf: tarfile.TarFile,
+    folder_name: str,
+    src: Path,
+    *,
+    with_audio: bool,
+    include_feed_credentials: bool,
 ) -> None:
     arc_prefix = show_member_prefix(folder_name)
     for rel, abs_path in _walk_show_files(src, with_audio=with_audio):
-        tf.add(abs_path, arcname=arc_prefix + rel)
+        if rel == DB_FILENAME:
+            payload: bytes | None = _sqlite_snapshot(abs_path)
+            if payload is None:
+                continue
+        elif include_feed_credentials:
+            payload = None
+        else:
+            payload = _scrubbed_payload(rel, abs_path)
+        if payload is None:
+            tf.add(abs_path, arcname=arc_prefix + rel)
+            continue
+        info = tf.gettarinfo(abs_path, arcname=arc_prefix + rel)
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
 
 
 def _add_collection(tf: tarfile.TarFile, sidecars: list[Path]) -> None:
@@ -166,6 +281,7 @@ def _build_archive(
     *,
     with_audio: bool,
     progress: ProgressCallback | None,
+    include_feed_credentials: bool = False,
 ) -> None:
     """Write `.podcodex` (tar.gz) atomically with manifest + payload."""
     total = 1 + len(show_dirs) + len(collection_dirs)
@@ -181,7 +297,13 @@ def _build_archive(
             _add_manifest(tf, manifest)
             _bump("manifest")
             for folder_name, src in show_dirs.items():
-                _add_show(tf, folder_name, src, with_audio=with_audio)
+                _add_show(
+                    tf,
+                    folder_name,
+                    src,
+                    with_audio=with_audio,
+                    include_feed_credentials=include_feed_credentials,
+                )
                 _bump(f"show:{folder_name}")
             for col, sidecars in collection_dirs.items():
                 _add_collection(tf, sidecars)
@@ -196,6 +318,7 @@ def export_show(
     *,
     with_audio: bool = False,
     index_only: bool = False,
+    include_feed_credentials: bool = False,
     progress: ProgressCallback | None = None,
 ) -> ExportResult:
     """Export a single show as a `.podcodex` bundle.
@@ -205,6 +328,12 @@ def export_show(
         output_path: Destination archive path.
         with_audio: Include audio files. Ignored when ``index_only=True``.
         index_only: Skip show folder content; export only LanceDB collections.
+        include_feed_credentials: Keep the feed, enclosure and image URLs
+            verbatim, and the search index with them. Off by default: a
+            private feed's token lives in those URLs, and the index rows
+            hold their own copy of the enclosure URLs, so a full bundle of
+            an RSS show without credentials carries no collections (the
+            recipient re-indexes).
         progress: Optional ``(message, fraction)`` callback.
 
     Raises:
@@ -230,6 +359,15 @@ def export_show(
     collections = _show_collections(show_name, store, show_id=export_show_id)
 
     mode = Mode.INDEX_ONLY if index_only else Mode.FULL
+    if (
+        mode == Mode.FULL
+        and not include_feed_credentials
+        and _has_rss_feed(show_folder)
+    ):
+        # Index rows carry the raw enclosure URLs, token and all, and cannot
+        # be rewritten from here; the recipient re-indexes instead. Shows
+        # without an RSS feed have no such token and keep their index.
+        collections = []
     if mode == Mode.INDEX_ONLY and not collections:
         raise ValueError(f"show '{show_name}' has no LanceDB collections to export")
 
@@ -262,6 +400,7 @@ def export_show(
         collection_dirs,
         with_audio=audio_in_bundle,
         progress=progress,
+        include_feed_credentials=include_feed_credentials,
     )
 
     size = Path(output_path).stat().st_size

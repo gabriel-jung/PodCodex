@@ -8,9 +8,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, NamedTuple
 
+import gzip
+import lzma
+import os
 import shutil
 import tarfile
-from collections.abc import Callable, Container
+import uuid
+import zlib
+from collections.abc import Callable, Container, Iterator
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from loguru import logger
@@ -27,6 +33,7 @@ from podcodex.bundle.manifest import (
     ImportResult,
     Manifest,
     Mode,
+    is_collection_entry,
     manifest_from_json,
 )
 from podcodex.core._utils import bad_path_component
@@ -37,9 +44,33 @@ if TYPE_CHECKING:
 ProgressCallback = Callable[[str, float], None]
 
 
+# What tarfile and the decompressors raise on a file that is not an archive or
+# was cut short. Left unmapped, picking the wrong file is a 500 in the app and
+# a traceback in the CLI.
+_UNREADABLE_ARCHIVE = (
+    tarfile.TarError,
+    EOFError,
+    zlib.error,
+    gzip.BadGzipFile,  # a bad CRC or block partway through the payload
+    lzma.LZMAError,
+    UnicodeDecodeError,
+)
+
+
+@contextmanager
+def _archive_errors(archive_path: Path) -> Iterator[None]:
+    """Re-raise a malformed or truncated archive as ``ArchiveCorruptError``."""
+    try:
+        yield
+    except _UNREADABLE_ARCHIVE as exc:
+        raise ArchiveCorruptError(
+            f"{archive_path.name} is not a readable .podcodex archive ({exc})"
+        ) from exc
+
+
 def _read_manifest(archive_path: Path) -> Manifest:
     """Open the archive only long enough to parse manifest.json."""
-    with tarfile.open(archive_path, mode="r:*") as tf:
+    with _archive_errors(archive_path), tarfile.open(archive_path, mode="r:*") as tf:
         try:
             f = tf.extractfile(MANIFEST_FILENAME)
         except KeyError as exc:
@@ -87,6 +118,21 @@ def preview_archive(archive_path: Path) -> ArchivePreview:
         size_bytes=archive_path.stat().st_size,
         embedder_warnings=_embedder_warnings(manifest),
     )
+
+
+def _normalize_carried_ids(manifest: Manifest) -> None:
+    """Bring every carried show id to its normalized form, in place.
+
+    Collection names embed the normalized id, so a hand-edited ``My-Show``
+    was indexed under ``my_show__...``, and a case variant of a taken id
+    would land on that show's tables unless it is compared normalized.
+    Minted ids are already normalized, so this changes nothing for them.
+    """
+    from podcodex.rag.store import normalize_show_id
+
+    for show in manifest.shows:
+        if show.id:
+            show.id = normalize_show_id(show.id)
 
 
 def _plan_folder_targets(
@@ -166,6 +212,7 @@ def _plan_show_identities(
     """
     from podcodex.ingest.show import load_show_meta, show_display
     from podcodex.ingest.show_registry import registered_folders
+    from podcodex.rag.store import normalize_show_id
 
     targets = {(shows_dir / final).resolve() for final in folder_map.values()}
     taken_labels: set[str] = set()
@@ -176,7 +223,7 @@ def _plan_show_identities(
         taken_labels.add(show_display(folder).strip().lower())
         meta = load_show_meta(folder)
         if meta and meta.id:
-            taken_ids.add(meta.id)
+            taken_ids.add(normalize_show_id(meta.id))
 
     in_bundle: set[str] = set()  # labels of the archive's own earlier shows
     out: dict[str, _ShowIdentity] = {}
@@ -312,7 +359,7 @@ def _settle_show_identities(
         elif show.id:
             meta.id = show.id
         if (meta.name, meta.id) != before or not meta.id:
-            save_show_meta(folder, meta)
+            save_show_meta(folder, meta, remint=not ident.keep_id)
         if not ident.keep_id:
             # The collections belong to the show that already had this id.
             continue
@@ -331,14 +378,12 @@ def _settle_show_identities(
 def _purge_collection_from_disk(name: str, index_root: Path) -> None:
     """Remove all on-disk entries for a collection (table directory + sidecar files)."""
     for entry in list(index_root.iterdir()):
-        if entry.name == f"{name}.lance" or entry.name.startswith(name + "."):
+        if is_collection_entry(entry.name, name):
             if entry.is_dir():
                 shutil.rmtree(entry, ignore_errors=True)
             else:
-                try:
+                with suppress(OSError):
                     entry.unlink()
-                except OSError:
-                    pass
 
 
 def _confine(target: Path, root: Path) -> Path | None:
@@ -356,8 +401,8 @@ def _confine(target: Path, root: Path) -> Path | None:
 def _collection_member(first_segment: str, collection_names: Container[str]) -> bool:
     """True when a ``lancedb/`` member's first segment belongs to a planned collection.
 
-    Same shape as ``_purge_collection_from_disk``: the table directory
-    ``<name>.lance`` or a sidecar ``<name>.<ext>``. Anything else under
+    Same rule as ``_purge_collection_from_disk`` (``is_collection_entry``):
+    the table directory or one of its sentinel files. Anything else under
     ``lancedb/`` (``_show_passwords.lance``, ``_collections.lance``,
     ``index_origin.json``, a collection the manifest never declared) is
     index state the archive has no business replacing.
@@ -370,10 +415,7 @@ def _collection_member(first_segment: str, collection_names: Container[str]) -> 
     stem = first_segment.split(".", 1)[0]
     if stem in reserved_index_names():
         return False
-    for name in collection_names:
-        if first_segment == f"{name}.lance" or first_segment.startswith(name + "."):
-            return True
-    return False
+    return any(is_collection_entry(first_segment, name) for name in collection_names)
 
 
 def _resolve_target(
@@ -448,15 +490,151 @@ def _extract(
             with open(target, "wb") as dst:
                 shutil.copyfileobj(src, dst)
             if member.mode:
-                try:
-                    target.chmod(member.mode & 0o7777)
-                except OSError:
-                    pass
+                # Permission bits only, never setuid/setgid/sticky, and never
+                # writable by others: the archive is untrusted input.
+                with suppress(OSError):
+                    target.chmod((member.mode & 0o755) | 0o600)
             written += 1
             if progress and written % 10 == 0:
                 progress(f"extract:{member.name}", -1.0)
     if progress:
         progress("extract:done", 1.0)
+
+
+def _remove_partial_import(
+    shows_dir: Path | None,
+    folder_map: dict[str, str],
+    collection_plan: list[tuple[str, str, str, str, int, str]],
+    store: IndexStore,
+) -> None:
+    """Delete what a failed import wrote, before the set-aside data comes back.
+
+    Drops the planned collections' rows too, not only their files: once the
+    import reached ``ensure_collection``, a row left behind would either list
+    an empty collection or, for a replaced one, shadow the restored table's
+    own row (``ensure_collection`` keeps an existing row).
+    """
+    if shows_dir is not None:
+        for final in folder_map.values():
+            shutil.rmtree(shows_dir / final, ignore_errors=True)
+    store.reconnect()
+    for col_name, *_rest in collection_plan:
+        try:
+            store.delete_collection(col_name)
+        except Exception:
+            logger.opt(exception=True).error(
+                f"import rollback: could not drop partial collection {col_name!r}"
+            )
+        _purge_collection_from_disk(col_name, store.path)
+
+
+@contextmanager
+def _set_aside(
+    folders: list[Path], collections: list[str], store: IndexStore
+) -> Iterator[list[Callable[[], None]]]:
+    """Move data a REPLACE import overwrites out of the way, restoring it on failure.
+
+    Deleting first meant a kill, a full disk or a bad member mid-extraction
+    lost both the old show and the new one. Folders move to a hidden sibling
+    and collection entries to a hidden directory in the index root (same
+    volume, so each move is a rename); the ``_collections`` rows are dropped
+    and re-created from the saved info if the import fails. Yields a list
+    the caller appends cleanup steps to, run (in order) before the restore,
+    whether or not anything was set aside. A failure while setting aside
+    restores what was already moved. After a hard kill the set-aside copies
+    stay on disk under ``.<name>.replaced-*`` and ``.import-backup-*``, so
+    nothing is lost.
+    """
+    tag = uuid.uuid4().hex[:8]
+    moved: list[tuple[Path, Path]] = []
+    index_backup = store.path / f".import-backup-{tag}"
+    infos = store.get_all_collection_info() if collections else {}
+    saved_rows = {name: infos[name] for name in collections if name in infos}
+    on_failure: list[Callable[[], None]] = []
+
+    def _restore() -> None:
+        for step in on_failure:
+            try:
+                step()
+            except Exception:
+                logger.opt(exception=True).error("import rollback: cleanup step failed")
+        for original, backup in reversed(moved):
+            try:
+                os.replace(backup, original)
+            except OSError as exc:
+                logger.error(
+                    f"import rollback: could not put {original} back; "
+                    f"the original is kept at {backup} ({exc})"
+                )
+        with suppress(OSError):
+            index_backup.rmdir()
+        if not saved_rows:
+            return
+        try:
+            store.reconnect()
+        except Exception:
+            logger.opt(exception=True).error("import rollback: index reconnect failed")
+        for name, row in saved_rows.items():
+            try:
+                store.ensure_collection(
+                    name=name,
+                    show=row["show"],
+                    model=row["model"],
+                    chunker=row["chunker"],
+                    dim=row["dim"],
+                    artwork_url=row.get("artwork_url", ""),
+                    show_id=row.get("show_id", ""),
+                )
+            except Exception:
+                logger.opt(exception=True).error(
+                    f"import rollback: could not re-register collection {name!r}; "
+                    "its table is back on disk but hidden until re-indexed"
+                )
+
+    try:
+        for folder in folders:
+            if folder.exists():
+                # The app keeps a connection to each show's pipeline.db; left
+                # open it keeps reading the moved file (and blocks the move on
+                # Windows).
+                from podcodex.core.pipeline_db import close_pipeline_db
+
+                close_pipeline_db(folder)
+                backup = folder.with_name(f".{folder.name}.replaced-{tag}")
+                os.replace(folder, backup)
+                moved.append((folder, backup))
+        if collections:
+            # Before the moves: the store's cached handles keep the tables
+            # open, which blocks moving them on Windows.
+            store.reconnect()
+        entries = list(store.path.iterdir()) if collections else []
+        for entry in entries:
+            if any(is_collection_entry(entry.name, name) for name in collections):
+                index_backup.mkdir(exist_ok=True)
+                os.replace(entry, index_backup / entry.name)
+                moved.append((entry, index_backup / entry.name))
+        if collections:
+            store.reconnect()  # the moved tables must not linger in the cache
+        for name in collections:
+            # Not swallowed: a row left behind would keep the old model and
+            # dim for the imported table (ensure_collection keeps a row).
+            store.delete_collection(name)
+        yield on_failure
+    except BaseException:
+        _restore()
+        raise
+    for _original, backup in moved:
+        try:
+            if backup.is_dir():
+                shutil.rmtree(backup)
+            else:
+                backup.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning(
+                f"Import done, but could not remove the old copy at {backup}: {exc}"
+            )
+    with suppress(OSError):
+        index_backup.rmdir()
 
 
 def import_archive(
@@ -500,6 +678,7 @@ def import_archive(
 
     if manifest is None:
         manifest = _read_manifest(archive_path)
+    _normalize_carried_ids(manifest)
 
     if name and len(manifest.shows) != 1:
         raise ValueError("--name only valid for single-show bundles")
@@ -548,44 +727,62 @@ def import_archive(
         manifest, on_conflict, store, resolved, identities
     )
 
-    if is_full:
-        for _original, final in folder_map.items():
-            if resolved.get(f"folder:{final}") == "replaced":
-                target = shows_dir / final
-                if target.exists():
-                    shutil.rmtree(target)
-
-    for col_name, *_rest in collection_plan:
-        if resolved.get(f"collection:{col_name}") != "replaced":
-            continue
-        try:
-            store.delete_collection(col_name)
-        except Exception as exc:
-            logger.warning(f"failed to delete existing collection {col_name}: {exc}")
-        _purge_collection_from_disk(col_name, store.path)
-
-    _extract(
-        archive_path,
-        shows_dir,
-        store.path,
-        folder_map,
-        frozenset(c[0] for c in collection_plan),
-        progress,
-    )
-
-    store.reconnect()
-
-    for col_name, show_name, model, chunker, dim, entry_id in collection_plan:
-        store.ensure_collection(
-            name=col_name,
-            show=show_name,
-            model=model,
-            chunker=chunker,
-            dim=dim,
-            show_id=entry_id,
+    replaced_folders = [
+        shows_dir / final
+        for final in folder_map.values()
+        if resolved.get(f"folder:{final}") == "replaced"
+    ]
+    replaced_collections = [
+        c[0]
+        for c in collection_plan
+        if resolved.get(f"collection:{c[0]}") == "replaced"
+    ]
+    with _set_aside(replaced_folders, replaced_collections, store) as on_failure:
+        on_failure.append(
+            lambda: _remove_partial_import(
+                shows_dir, folder_map, collection_plan, store
+            )
         )
+        with _archive_errors(archive_path):
+            _extract(
+                archive_path,
+                shows_dir,
+                store.path,
+                folder_map,
+                frozenset(c[0] for c in collection_plan),
+                progress,
+            )
 
-    _settle_show_identities(manifest, folder_map, identities, shows_dir, store)
+        store.reconnect()
+
+        for col_name, show_name, model, chunker, dim, entry_id in collection_plan:
+            store.ensure_collection(
+                name=col_name,
+                show=show_name,
+                model=model,
+                chunker=chunker,
+                dim=dim,
+                show_id=entry_id,
+            )
+
+        _settle_show_identities(manifest, folder_map, identities, shows_dir, store)
+
+    if is_full:
+        # Without this the show exists on disk but not in the app, and the
+        # next import of the same bundle cannot see it, so it lands a second
+        # folder under the same id.
+        from podcodex.ingest.show_registry import register_folder
+
+        for final in folder_map.values():
+            try:
+                register_folder(shows_dir / final)
+            except Exception as exc:
+                # The import is complete and its backups are gone; failing now
+                # would report an error for data that is already in place.
+                logger.warning(
+                    f"Imported {shows_dir / final} but could not register it "
+                    f"({exc}); add it from the app's show list"
+                )
 
     return ImportResult(
         shows_dir=str(shows_dir) if shows_dir else "",

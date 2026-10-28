@@ -38,6 +38,16 @@ from tests.fixtures.index import add_show, default_show_id
 DIM = 8
 
 
+@pytest.fixture(autouse=True)
+def _own_config(tmp_path, monkeypatch):
+    """A config.json per test: a full import registers its show folders, and
+    ids here are deterministic, so a shared config would leak one test's
+    shows into the next one's conflict checks."""
+    import podcodex.core.app_config as app_config
+
+    monkeypatch.setattr(app_config, "CONFIG_PATH", tmp_path / "config.json")
+
+
 def _make_show(
     folder: Path, name: str = "Test Show", *, audio: bool = True, show_id: str = ""
 ) -> Path:
@@ -122,7 +132,7 @@ def test_export_show_full_no_audio(tmp_path, isolated_index):
     _seed_collection(store)
     out = tmp_path / "out.podcodex"
 
-    result = export_show(show, out, with_audio=False)
+    result = export_show(show, out, with_audio=False, include_feed_credentials=True)
 
     assert result.mode == Mode.FULL
     assert result.shows_exported == 1
@@ -294,7 +304,7 @@ def test_import_full_roundtrip(tmp_path, isolated_index):
     store = rag_index_store.get_index_store()
     col = _seed_collection(store)
     archive = tmp_path / "out.podcodex"
-    export_show(show, archive, with_audio=False)
+    export_show(show, archive, with_audio=False, include_feed_credentials=True)
 
     # Drop local state
     store.delete_collection(col)
@@ -608,7 +618,7 @@ def test_import_carries_the_id_onto_the_new_machine(
     show = _make_show(tmp_path / "test_show")
     _seed_collection(rag_index_store.get_index_store())
     out = tmp_path / "out.podcodex"
-    export_show(show, out, with_audio=False)
+    export_show(show, out, with_audio=False, include_feed_credentials=True)
     original_id = show_id(show)
 
     # A different machine: fresh index, fresh shows dir.
@@ -631,7 +641,7 @@ def test_legacy_archive_import_mints_an_id(tmp_path, isolated_index, monkeypatch
     show = _make_show(tmp_path / "test_show")
     _seed_collection(rag_index_store.get_index_store())
     out = tmp_path / "out.podcodex"
-    export_show(show, out, with_audio=False)
+    export_show(show, out, with_audio=False, include_feed_credentials=True)
 
     # Rewrite the archive as it would have looked before ids existed.
     legacy = tmp_path / "legacy.podcodex"
@@ -681,7 +691,7 @@ def test_reimport_under_rename_gets_a_new_label_and_id(
     store = rag_index_store.get_index_store()
     _seed_collection(store)
     out = tmp_path / "out.podcodex"
-    export_show(show, out, with_audio=False)
+    export_show(show, out, with_audio=False, include_feed_credentials=True)
     original_id = show_id(show)
 
     result = import_archive(out, shows_dir=tmp_path / "shows2")
@@ -717,7 +727,7 @@ def test_rename_import_keeps_the_id_when_only_the_label_is_taken(
     store = rag_index_store.get_index_store()
     col = _seed_collection(store)
     out = tmp_path / "out.podcodex"
-    export_show(show, out, with_audio=False)
+    export_show(show, out, with_audio=False, include_feed_credentials=True)
     carried = show_id(show)
 
     import_archive(out, shows_dir=tmp_path / "shows2")
@@ -818,7 +828,7 @@ def test_rename_import_refuses_to_take_over_another_shows_table(
     col = _seed_collection(store)
     source = _make_show(tmp_path / "elsewhere" / "test_show")
     archive = tmp_path / "out.podcodex"
-    export_show(source, archive, with_audio=False)
+    export_show(source, archive, with_audio=False, include_feed_credentials=True)
 
     # On this machine the same-named table belongs to another registered show.
     other = _make_show(tmp_path / "other", show_id="other_12345678")
@@ -907,3 +917,273 @@ def test_import_refuses_a_manifest_declaring_a_reserved_collection(
         )
         with pytest.raises(ArchiveCorruptError):
             _plan_collections(manifest, None, _Store(), {}, {})
+
+
+# ── Review fixes (2026-10-28) ──────────────────────────────────────────
+
+
+def test_full_import_registers_the_show(tmp_path, isolated_index):
+    """Without registration the show was invisible to the app and every CLI."""
+    from podcodex.core.app_config import load_config
+
+    show = _make_show(tmp_path / "test_show")
+    archive = tmp_path / "out.podcodex"
+    export_show(show, archive, with_audio=False)
+    import_archive(archive, shows_dir=tmp_path / "imported")
+    registered = {Path(p).resolve() for p in load_config().show_folders}
+    assert (tmp_path / "imported" / "test_show").resolve() in registered
+
+
+@pytest.mark.parametrize("payload", [b"not an archive", b"\x1f\x8b\x08\x00trunc"])
+def test_a_non_archive_is_reported_as_corrupt(tmp_path, payload):
+    """A wrong or truncated file used to escape as a raw tarfile error (a 500)."""
+    bad = tmp_path / "bad.podcodex"
+    bad.write_bytes(payload)
+    with pytest.raises(ArchiveCorruptError):
+        preview_archive(bad)
+
+
+def test_collection_entry_rule_does_not_claim_a_longer_name():
+    """Model keys contain dots, so a prefix match let one collection claim another."""
+    from podcodex.bundle.manifest import is_collection_entry
+
+    assert is_collection_entry("s__bge-m3__semantic.lance", "s__bge-m3__semantic")
+    assert is_collection_entry("s__bge-m3__semantic.fts_v2", "s__bge-m3__semantic")
+    assert not is_collection_entry("s__pplx-0.6B__semantic.lance", "s__pplx-0")
+    assert not is_collection_entry("s__pplx-0.6B__semantic.fts_v2", "s__pplx-0")
+
+
+def test_a_carried_id_is_normalized_on_the_way_in(tmp_path, isolated_index):
+    """Collection names embed the normalized id, so a hand-edited or crafted
+    variant is compared, and kept, in that form."""
+    from podcodex.ingest.show import show_id
+
+    manifest = _manifest(Mode.FULL)
+    manifest.shows[0].id = "Show-A_1234ABCD"
+    archive = _write_raw_archive(
+        tmp_path / "a.podcodex",
+        manifest,
+        {"shows/showa/show.toml": b'id = "Show-A_1234ABCD"\nname = "Show A"\n'},
+    )
+    import_archive(archive, shows_dir=tmp_path / "shows")
+    assert show_id(tmp_path / "shows" / "showa") == "show_a_1234abcd"
+
+
+def test_failed_replace_restores_the_existing_show(
+    tmp_path, isolated_index, monkeypatch
+):
+    """REPLACE used to delete the old show before extracting; a failure mid-way
+    lost both."""
+    from podcodex.bundle import import_show as import_mod
+
+    shows = tmp_path / "shows"
+    show = _make_show(shows / "test_show")
+    store = rag_index_store.get_index_store()
+    col = _seed_collection(store)
+    archive = tmp_path / "out.podcodex"
+    export_show(show, archive, with_audio=False, include_feed_credentials=True)
+    (show / "ep1" / "transcript.txt").write_text("local edit", encoding="utf-8")
+
+    def _dies_midway(_archive, shows_dir, *_a, **_k):
+        (shows_dir / "test_show").mkdir(parents=True)
+        (shows_dir / "test_show" / "half.txt").write_text("x")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(import_mod, "_extract", _dies_midway)
+    with pytest.raises(OSError):
+        import_archive(archive, shows_dir=shows, on_conflict=ConflictPolicy.REPLACE)
+
+    assert (show / "ep1" / "transcript.txt").read_text(encoding="utf-8") == "local edit"
+    assert not (show / "half.txt").exists()
+    assert not list(shows.glob(".*replaced*"))
+    assert col in store.list_collections()
+    assert store.count_rows(col) == 1
+
+
+def test_full_export_strips_feed_credentials_unless_asked(tmp_path, isolated_index):
+    """A private feed's token lives in its URL and in every enclosure URL."""
+    import json
+
+    show = _make_show(tmp_path / "test_show")
+    toml = show / "show.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8")
+        + 'rss_url = "https://user:pw@feeds.example/p.xml?token=SECRET"\n',
+        encoding="utf-8",
+    )
+    ep = {
+        "guid": "g",
+        "title": "T",
+        "pub_date": "",
+        "audio_url": "https://cdn.example/a.mp3?token=SECRET",
+    }
+    (show / ".feed_cache.json").write_text(json.dumps([ep]), encoding="utf-8")
+    (show / "ep1" / ".episode_meta.json").write_text(json.dumps(ep), encoding="utf-8")
+
+    def _archive_text(path: Path) -> str:
+        with tarfile.open(path) as tf:
+            return "".join(
+                tf.extractfile(m).read().decode("utf-8", "replace")
+                for m in tf.getmembers()
+                if m.isfile() and m.name.endswith((".toml", ".json"))
+            )
+
+    scrubbed = tmp_path / "shared.podcodex"
+    export_show(show, scrubbed, with_audio=False)
+    text = _archive_text(scrubbed)
+    assert "SECRET" not in text and "user:pw" not in text
+    assert "https://feeds.example/p.xml" in text
+
+    kept = tmp_path / "mine.podcodex"
+    export_show(show, kept, with_audio=False, include_feed_credentials=True)
+    assert "SECRET" in _archive_text(kept)
+
+
+def test_replace_failing_after_the_index_rows_restores_the_old_row(
+    tmp_path, isolated_index, monkeypatch
+):
+    """The bundle's own row used to shadow the restored table's row."""
+    from podcodex.bundle import import_show as import_mod
+
+    shows = tmp_path / "shows"
+    show = _make_show(shows / "test_show")
+    store = rag_index_store.get_index_store()
+    col = _seed_collection(store)
+    archive = tmp_path / "out.podcodex"
+    export_show(show, archive, with_audio=False, include_feed_credentials=True)
+    store.set_collection_identity(
+        col, show_id=store.get_collection_info(col)["show_id"], show="Local Label"
+    )
+
+    def _boom(*_a, **_k):
+        raise OSError("late failure")
+
+    monkeypatch.setattr(import_mod, "_settle_show_identities", _boom)
+    with pytest.raises(OSError):
+        import_archive(archive, shows_dir=shows, on_conflict=ConflictPolicy.REPLACE)
+    store.reconnect()
+    assert store.get_collection_info(col)["show"] == "Local Label"
+    assert store.count_rows(col) == 1
+
+
+def test_a_failure_while_setting_aside_puts_the_folder_back(
+    tmp_path, isolated_index, monkeypatch
+):
+    """A failed move used to leave the show renamed to a hidden folder."""
+    import os as os_mod
+
+    from podcodex.bundle import import_show as import_mod
+
+    shows = tmp_path / "shows"
+    show = _make_show(shows / "test_show")
+    store = rag_index_store.get_index_store()
+    _seed_collection(store)
+    archive = tmp_path / "out.podcodex"
+    export_show(show, archive, with_audio=False, include_feed_credentials=True)
+
+    real_replace = os_mod.replace
+
+    def _replace(src, dst):
+        if str(src).endswith(".lance") and ".import-backup-" in str(dst):
+            raise PermissionError("table is open")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(import_mod.os, "replace", _replace)
+    with pytest.raises(PermissionError):
+        import_archive(archive, shows_dir=shows, on_conflict=ConflictPolicy.REPLACE)
+    assert (show / "show.toml").is_file()
+    assert not list(shows.glob(".*replaced*"))
+
+
+def test_pipeline_db_snapshot_survives_a_hash_in_the_folder_name(tmp_path):
+    """A raw '#' in the SQLite URI opened some other, empty database."""
+    import sqlite3
+
+    from podcodex.bundle.export import _sqlite_snapshot
+
+    folder = tmp_path / "Show #1"
+    folder.mkdir()
+    db = folder / "pipeline.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("create table t (x)")
+        conn.execute("insert into t values (42)")
+    copy = tmp_path / "copy.db"
+    copy.write_bytes(_sqlite_snapshot(db))
+    with sqlite3.connect(copy) as conn:
+        assert conn.execute("select x from t").fetchone() == (42,)
+
+
+def test_scrub_fails_closed_on_a_file_that_does_not_parse(tmp_path):
+    """A truncated meta file used to ship raw, token included."""
+    from podcodex.bundle.export import _scrubbed_payload
+
+    meta = tmp_path / ".episode_meta.json"
+    meta.write_text('{"audio_url": "https://cdn/a.mp3?token=SECRET&id=1", "tit')
+    out = _scrubbed_payload("ep/.episode_meta.json", meta).decode()
+    assert "SECRET" not in out and "https://cdn/a.mp3" in out
+
+
+def test_a_damaged_gzip_payload_is_reported_as_corrupt(tmp_path, isolated_index):
+    """Damage past the manifest surfaces mid-extraction (zlib.error or
+    BadGzipFile, depending on where it lands), which was a bare 500."""
+    show = _make_show(tmp_path / "test_show")
+    archive = tmp_path / "out.podcodex"
+    export_show(show, archive, with_audio=True)
+    data = bytearray(archive.read_bytes())
+    for i in range(len(data) // 2, len(data) - 16, 7):
+        data[i] ^= 0xFF  # garble the second half of the compressed stream
+    archive.write_bytes(bytes(data))
+    with pytest.raises(ArchiveCorruptError):
+        import_archive(archive, shows_dir=tmp_path / "shows")
+
+
+def test_a_damaged_pipeline_db_still_exports(tmp_path, isolated_index):
+    """An unreadable database is left out (status is rebuilt from the files)
+    instead of failing the export or shipping a torn copy."""
+    show = _make_show(tmp_path / "test_show", audio=False)
+    (show / "pipeline.db").write_bytes(b"not a database at all")
+    archive = tmp_path / "out.podcodex"
+    export_show(show, archive, with_audio=False)
+    with tarfile.open(archive) as tf:
+        names = [m.name for m in tf.getmembers()]
+    assert not any(n.endswith("pipeline.db") for n in names)
+    assert any(n.endswith("transcript.txt") for n in names)
+
+
+def test_scrub_leaves_guids_and_descriptions_and_survives_bad_urls(tmp_path):
+    """Scrubbing every URL in the text rewrote guids (episode identity) and
+    crashed the export on a bracketed link in a description."""
+    import json
+
+    from podcodex.bundle.export import _scrubbed_payload
+
+    ep = {
+        "guid": "https://host/ep?key=42",
+        "description": "Follow [https://patreon.com] now",
+        "audio_url": "https://cdn/a.mp3?token=SECRET&id=1",
+    }
+    meta = tmp_path / ".episode_meta.json"
+    meta.write_text(json.dumps(ep))
+    out = json.loads(_scrubbed_payload("ep/.episode_meta.json", meta))
+    assert out["guid"] == ep["guid"]
+    assert out["description"] == ep["description"]
+    assert out["audio_url"] == "https://cdn/a.mp3"
+
+
+def test_a_stripped_full_bundle_leaves_the_index_out(tmp_path, isolated_index):
+    """Index rows hold the raw enclosure URLs, so a bundle for sharing carries
+    no collections; the owner's own bundle keeps them."""
+    show = _make_show(tmp_path / "test_show")
+    toml = show / "show.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8") + 'rss_url = "https://h/p.xml"\n',
+        encoding="utf-8",
+    )
+    _seed_collection(rag_index_store.get_index_store())
+    shared = tmp_path / "shared.podcodex"
+    assert export_show(show, shared, with_audio=False).collections_exported == 0
+    with tarfile.open(shared) as tf:
+        assert not any(m.name.startswith("lancedb/") for m in tf.getmembers())
+    mine = tmp_path / "mine.podcodex"
+    kept = export_show(show, mine, with_audio=False, include_feed_credentials=True)
+    assert kept.collections_exported == 1

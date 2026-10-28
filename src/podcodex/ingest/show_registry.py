@@ -6,8 +6,10 @@ name to go on resolves through here, so "which show is this" has exactly one
 definition and one tie-breaking rule.
 
 Uniqueness is enforced on the write path (``PUT /api/shows/{folder}/meta``
-rejects a colliding rename) and merely tolerated here: a duplicate resolves to
-the oldest matching folder and logs, rather than failing or picking at random.
+rejects a colliding rename) and merely tolerated here: a duplicate, by label or
+by id, resolves to the first registered folder and logs, rather than failing or
+picking at random. Registration order, not a directory timestamp: ``st_ctime``
+is the inode change time on Linux and macOS, so any write flipped the winner.
 """
 
 from __future__ import annotations
@@ -16,7 +18,12 @@ from pathlib import Path
 
 from loguru import logger
 
+from typing import TYPE_CHECKING
+
 from podcodex.ingest.show import load_show_meta, show_display
+
+if TYPE_CHECKING:
+    from podcodex.core.app_config import AppConfig
 
 
 def registered_folders() -> list[Path]:
@@ -28,7 +35,36 @@ def registered_folders() -> list[Path]:
     except Exception:
         logger.opt(exception=True).warning("show registry: cannot read config")
         return []
-    return [p for p in (Path(f) for f in folders) if p.is_dir()]
+    out: list[Path] = []
+    seen: set[Path] = set()
+    for p in (Path(f).expanduser() for f in folders):
+        key = p.resolve()
+        # One folder registered under two spellings (an old unresolved path,
+        # a symlink) would otherwise read as two shows with one id or label.
+        if key in seen or not p.is_dir():
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
+
+
+def register_folder(folder: Path) -> AppConfig:
+    """Add *folder* to the registered shows, if it is not there already.
+
+    Goes through ``mutate_config`` so a concurrent settings save cannot drop
+    the new entry. Returns the config as saved.
+    """
+    from podcodex.core.app_config import mutate_config
+
+    resolved = str(Path(folder).resolve())
+
+    def _add(cfg) -> bool:
+        if resolved in {str(Path(p).resolve()) for p in cfg.show_folders}:
+            return False
+        cfg.show_folders.append(resolved)
+        return True
+
+    return mutate_config(_add)
 
 
 def folders_for_label(label: str) -> list[Path]:
@@ -44,14 +80,13 @@ def folders_for_label(label: str) -> list[Path]:
 def folder_for_label(label: str) -> Path | None:
     """The folder for a display name, or None when no registered show matches.
 
-    On a duplicate, the oldest folder wins so repeated calls agree with each
-    other, and the ambiguity is logged rather than hidden.
+    On a duplicate, the first registered folder wins so repeated calls agree
+    with each other, and the ambiguity is logged rather than hidden.
     """
     matches = folders_for_label(label)
     if not matches:
         return None
     if len(matches) > 1:
-        matches = sorted(matches, key=lambda p: (p.stat().st_ctime, str(p)))
         logger.warning(
             f"show registry: {len(matches)} shows are called {label!r}; "
             f"resolving to {matches[0]}"
@@ -71,8 +106,8 @@ def show_id_for_label(label: str) -> str:
 def show_id_for_folder(show_dir: Path, label: str = "", *, mint: bool = False) -> str:
     """Stable id of the show that owns *show_dir*, from its own ``show.toml``.
 
-    For callers that have the episode path: a label lookup picks the oldest
-    same-named show when two share a label, and returns "" for a label that
+    For callers that have the episode path: a label lookup picks the first
+    registered same-named show when two share a label, and returns "" for a label that
     matches nothing, which builds an id-less collection a rename orphans.
     *mint* (writers only) mints an id when the folder has none; readers fall
     back to the label lookup instead, so reading never writes ``show.toml``.
@@ -90,11 +125,14 @@ def show_id_for_folder(show_dir: Path, label: str = "", *, mint: bool = False) -
 def folder_for_id(show_id: str) -> Path | None:
     """The registered folder carrying this show id, or None.
 
-    Identity-first lookup, unlike ``folder_for_label``: this one cannot be
-    wrong, because nothing lets a user change an id.
+    Identity-first lookup, unlike ``folder_for_label``. Two folders can still
+    carry one id when a show folder was copied by hand and both registered;
+    the first registered wins, as for labels.
     """
     if not show_id:
         return None
+    # First match, no full scan: this runs once per collection row when the
+    # index heals its metadata, and registration order already decides.
     for folder in registered_folders():
         meta = load_show_meta(folder)
         if meta and meta.id == show_id:

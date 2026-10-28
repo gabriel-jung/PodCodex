@@ -358,9 +358,11 @@ podcodex-export --all --index-only -o shows-index.podcodex
 # Transfer (any path: scp, web, S3)
 scp shows-index.podcodex user@host:/tmp/
 
-# Bot host: replaces existing collections atomically
+# Bot host: replaces existing collections (the old ones come back if the import fails)
 podcodex-import /tmp/shows-index.podcodex --on-conflict replace
 ```
+
+The import writes to the bot's index, so the bot host must own it. An index that was ever rsynced from the desktop belongs to the desktop, and the import is refused there; run `podcodex-bot --claim-index` once on the bot host first. After that, stick to bundles: a later rsync from the desktop would overwrite the claimed index. Like the bot, `podcodex-import` reads `.env` from the working directory, so a `PODCODEX_INDEX` set there applies to both.
 
 Bundle format records each collection's embedding model + chunker in a manifest so the importer can warn if a model isn't installed. rsync stays the canonical option for "ship everything, fast updates"; bundle wins on selective deploy and atomic transfer without SSH.
 

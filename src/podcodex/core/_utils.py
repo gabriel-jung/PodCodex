@@ -416,6 +416,15 @@ def parse_time(value: str | int | float) -> float:
     return float(hours * 3600 + minutes * 60 + secs)
 
 
+def is_subtitle_lang(lang: str) -> bool:
+    """True when *lang* is a subtitle language code safe to put in a filename."""
+    import re
+
+    from podcodex.core.constants import SUBTITLE_LANG_PATTERN
+
+    return bool(lang) and re.fullmatch(SUBTITLE_LANG_PATTERN, lang) is not None
+
+
 def bad_path_component(name: str) -> bool:
     """True when *name* is unusable as a single path component: empty,
     traversal (".", ".."), carrying a separator, or a Windows drive prefix.

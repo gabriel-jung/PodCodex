@@ -94,11 +94,23 @@ def bootstrap_for_bot() -> None:
     transcribes. Patches are eager, as for dev, because the first search
     embeds a query.
     """
-    from dotenv import find_dotenv, load_dotenv
-
-    load_dotenv(find_dotenv(usecwd=True))
+    _load_dotenv()
     _wire_model_caches()
     _install_all_patches()
+    _setup_loguru_stderr_sink()
+    _install_stdlib_intercept()
+
+
+def bootstrap_for_cli() -> None:
+    """For ``podcodex-export`` and ``podcodex-import``. Logs to stderr.
+
+    Loads ``.env`` like the bot does, so a ``PODCODEX_INDEX``,
+    ``PODCODEX_DATA_DIR`` or ``PODCODEX_MACHINE_ID`` set there reaches the
+    bundle commands too; without it a bot-host import landed in a different
+    index than the bot reads. No patches: neither command loads a model.
+    """
+    _load_dotenv()
+    _wire_model_caches()
     _setup_loguru_stderr_sink()
     _install_stdlib_intercept()
 
@@ -123,6 +135,13 @@ def bootstrap_for_subprocess_child() -> None:
     _patch_missing_stdio()
     _install_all_patches()
     _wire_ffmpeg_path()
+
+
+def _load_dotenv() -> None:
+    """Load ``.env`` from the working directory upward, for the bot and CLIs."""
+    from dotenv import find_dotenv, load_dotenv
+
+    load_dotenv(find_dotenv(usecwd=True))
 
 
 def _wire_model_caches() -> None:

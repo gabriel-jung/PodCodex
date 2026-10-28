@@ -26,6 +26,7 @@ from podcodex.bundle import (
     preview_archive,
 )
 from podcodex.bundle.conflicts import resolve_policy
+from podcodex.rag.index_origin import IndexOwnershipError
 
 router = APIRouter()
 
@@ -35,6 +36,9 @@ class ExportShowRequest(BaseModel):
     output_path: str
     with_audio: bool = False
     index_only: bool = False
+    # Keep the feed URL and enclosure URLs verbatim. Off by default: a private
+    # feed's per-subscriber token lives in them.
+    include_feed_credentials: bool = False
 
 
 class ExportIndexRequest(BaseModel):
@@ -49,7 +53,7 @@ class PreviewRequest(BaseModel):
 class ImportRequest(BaseModel):
     archive_path: str
     shows_dir: str | None = None
-    name: str | None = None
+    name: str | None = None  # folder name on disk; the display name stays
     on_conflict: Literal["auto", "rename", "replace", "abort"] = "auto"
 
 
@@ -61,6 +65,7 @@ def post_export_show(req: ExportShowRequest) -> ExportResult:
             Path(req.output_path),
             with_audio=req.with_audio,
             index_only=req.index_only,
+            include_feed_credentials=req.include_feed_credentials,
         )
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
@@ -112,7 +117,7 @@ def post_import(req: ImportRequest) -> ImportResult:
             on_conflict=policy,
             manifest=preview.manifest,
         )
-    except ConflictError as exc:
+    except (ConflictError, IndexOwnershipError) as exc:
         raise HTTPException(409, str(exc)) from exc
     except (ManifestVersionError, ArchiveCorruptError) as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -120,3 +125,7 @@ def post_import(req: ImportRequest) -> ImportResult:
         raise HTTPException(400, str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
+    except OSError as exc:
+        # A locked file or a full disk mid-import: the rollback has run, and
+        # the message says which file, which a bare 500 would not.
+        raise HTTPException(500, f"Import failed and was rolled back: {exc}") from exc

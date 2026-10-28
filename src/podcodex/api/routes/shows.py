@@ -36,7 +36,7 @@ from podcodex.core._utils import (
     virtual_audio_path,
 )
 from podcodex.core.app_config import AppConfig, mutate_config
-from podcodex.api.routes.config import _load, _register_folder
+from podcodex.api.routes.config import _load
 from podcodex.api.schemas import (
     BroadcastPreviewOut,
     CreateFromRSSRequest,
@@ -77,8 +77,10 @@ from podcodex.ingest.rss import (
     fetch_feed_with_artwork,
     load_episode_meta,
     load_feed_cache,
+    redact_urls,
     save_feed_cache,
 )
+from podcodex.ingest.show_registry import register_folder
 from podcodex.ingest.show import PipelineDefaults as _PipelineDefaults
 from podcodex.ingest.show import ShowMeta as _ShowMeta
 from podcodex.ingest.show import (
@@ -269,7 +271,7 @@ def _ensure_files_bucket() -> Path:
         bucket.mkdir(parents=True, exist_ok=True)
         if load_show_meta(bucket) is None:
             save_show_meta(bucket, _ShowMeta(name=bucket.name))
-        _register_folder(cfg, str(bucket))
+        register_folder(bucket)
         return bucket
     raise HTTPException(500, "Could not allocate a Files bucket folder")
 
@@ -306,7 +308,7 @@ def create_local_show(req: CreateLocalShowRequest) -> CreateLocalShowResponse:
             409, detail={"suggested": rename_suffix(name, taken, suffix="")}
         )
     save_show_meta(folder, _ShowMeta(name=name))
-    _register_folder(cfg, str(folder))
+    register_folder(folder)
     return CreateLocalShowResponse(folder=str(folder), name=name)
 
 
@@ -561,7 +563,7 @@ def delete_artwork(show_folder: str = Query(...)) -> dict:
     downloads the feed's own art again. On a local show there is no feed, so
     ``GET /artwork`` 404s and the UI falls back to ``default-cover.png``.
 
-    No re-fetch happens here: ``feed_artwork`` is a network call and would
+    No re-fetch happens here: fetching the feed is a network call and would
     make removing a cover fail whenever the feed is unreachable.
     """
     # Registered-show gate: this unlinks files inside the folder.
@@ -740,7 +742,11 @@ async def create_from_rss(req: CreateFromRSSRequest) -> CreateFromRSSResponse:
             fetch_feed_with_artwork, req.rss_url
         )
     except Exception as exc:
-        raise HTTPException(502, f"Failed to fetch feed: {exc}") from exc
+        # The error text can embed the feed URL (httpx's HTTPStatusError
+        # does), private token and all.
+        raise HTTPException(
+            502, f"Failed to fetch feed: {redact_urls(str(exc))}"
+        ) from exc
     if not episodes:
         raise HTTPException(502, "Feed returned no episodes")
 
@@ -775,8 +781,7 @@ async def create_from_rss(req: CreateFromRSSRequest) -> CreateFromRSSResponse:
     save_feed_cache(show_path, episodes)
 
     # Register in config
-    cfg = _load()
-    _register_folder(cfg, str(show_path))
+    register_folder(show_path)
 
     return CreateFromRSSResponse(
         folder=str(show_path),
@@ -801,8 +806,8 @@ def create_from_youtube(
         raise HTTPException(400, f"Save path does not exist: {req.save_path}")
 
     # One extraction yields both the episode list and the channel info
-    # (name, artwork); a separate youtube_show_info call would re-crawl
-    # the whole channel.
+    # (name, artwork); a separate channel-info call would re-crawl the
+    # whole channel.
     try:
         episodes, info = fetch_youtube(req.youtube_url)
     except ImportError as exc:
@@ -844,8 +849,7 @@ def create_from_youtube(
     save_feed_cache(show_path, episodes)
 
     # Register in config
-    cfg = _load()
-    _register_folder(cfg, str(show_path))
+    register_folder(show_path)
 
     return CreateFromYouTubeResponse(
         folder=str(show_path),
@@ -871,8 +875,7 @@ def register_show(req: RegisterShowRequest) -> dict:
         # A show.toml from before ids: search and bot access key on the id.
         ensure_show_id(p)
 
-    cfg = _load()
-    _register_folder(cfg, str(p))
+    register_folder(p)
     return {"status": "ok", "path": str(p)}
 
 
@@ -1833,10 +1836,25 @@ def delete_show(show_folder: str, req: DeleteShowRequest) -> dict:
     # there is no way back to the collections this show owns. Minted rather
     # than merely read, because a never-minted show would otherwise have its
     # folder deleted and its collections stranded with nothing to find them by.
-    from podcodex.ingest.show import ensure_show_id, show_display
+    from podcodex.ingest.show import (
+        ShowMetaUnreadableError,
+        ensure_show_id,
+        salvage_show_id,
+        show_display,
+    )
 
     show_label = show_display(path)
-    show_id = ensure_show_id(path)
+    try:
+        show_id = ensure_show_id(path)
+    except ShowMetaUnreadableError:
+        # Removing it is the way out of a broken show.toml, so it cannot be
+        # refused for one. The id line usually survives the damage; without
+        # it the index purge has nothing to match and is skipped.
+        show_id = salvage_show_id(path)
+        logger.warning(
+            f"Deleting {path} with an unreadable show.toml "
+            f"(salvaged id: {show_id or 'none'})"
+        )
 
     # Close DB handles and invalidate caches
     close_pipeline_db(path)

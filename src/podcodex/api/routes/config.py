@@ -50,27 +50,6 @@ _load = load_config
 _save = save_config
 
 
-def _register_folder(cfg: AppConfig, folder_path: str) -> AppConfig:
-    """Add a folder to known shows if not already tracked.
-
-    Ignores the passed (possibly stale) config and re-loads under the
-    config lock via ``mutate_config``, so a concurrent settings save can't
-    make the new show vanish. The parameter stays for call-site
-    compatibility.
-    """
-    del cfg  # potentially stale; mutate_config re-loads under the lock
-    resolved = str(Path(folder_path).resolve())
-
-    def _add(fresh: AppConfig) -> bool:
-        existing = {str(Path(p).resolve()) for p in fresh.show_folders}
-        if resolved in existing:
-            return False
-        fresh.show_folders.append(resolved)
-        return True
-
-    return mutate_config(_add)
-
-
 def _detect_env_keys() -> dict[str, str]:
     """Return masked values for service tokens found in the environment.
 

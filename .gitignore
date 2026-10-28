@@ -151,8 +151,8 @@ frontend/dist/
 # ============================================================================
 src-tauri/target/
 
-# Bundled sidecar binaries — produced by `make bundle-server` and
-# `make bundle-natives`. Each is 30-500 MB; never commit.
+# Bundled sidecar tree, produced by `make bundle-server`. Hundreds of MB;
+# never commit.
 src-tauri/binaries/
 
 # Apple notary submission zip

@@ -168,6 +168,24 @@ def require_show_folder(show_folder: str) -> Path:
     return path
 
 
+def require_subtitle_lang(lang: str) -> None:
+    """422 up front for a code that cannot name a subtitle file.
+
+    Checked by the routes that import subtitles rather than on the request
+    models: the show page sends the show's free-text language on every
+    request, used or not, and only a subtitle import turns it into a
+    filename.
+    """
+    from podcodex.core._utils import is_subtitle_lang
+
+    if not is_subtitle_lang(lang):
+        raise HTTPException(
+            422,
+            f"{lang!r} is not a subtitle language code (like 'en' or 'pt-BR'); "
+            "set the show's language to one",
+        )
+
+
 def require_registered_show(show_folder: str) -> Path:
     """Resolve a show folder that must be a *registered* show.
 

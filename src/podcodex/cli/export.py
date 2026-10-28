@@ -15,11 +15,13 @@ import argparse
 import sys
 from pathlib import Path
 
-from loguru import logger
-
 from podcodex.bundle import export_index, export_show
 from podcodex.bundle.manifest import Mode, default_archive_filename
-from podcodex.cli.resolve import all_registered_show_folders, resolve_show_folder
+from podcodex.cli.resolve import (
+    all_registered_show_folders,
+    expected_errors,
+    resolve_show_folder,
+)
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -43,6 +45,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Include audio files in a full bundle (single-show only).",
     )
     p.add_argument(
+        "--include-feed-credentials",
+        action="store_true",
+        help="Keep the feed, audio and image URLs verbatim in a full bundle, and "
+        "include the search index. Off by default (for sharing): those URLs lose "
+        "their query and login, where private feeds keep the token, and the "
+        "index is left out because it stores them too.",
+    )
+    p.add_argument(
         "--index-only",
         action="store_true",
         help="Export only LanceDB collections (no show folder content).",
@@ -64,11 +74,21 @@ def _print_progress(msg: str, frac: float) -> None:
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
 
+    from podcodex.bootstrap import bootstrap_for_cli
+
+    bootstrap_for_cli()
+    with expected_errors():
+        _run(args)
+
+
+def _run(args: argparse.Namespace) -> None:
     # Argument validation
     if args.all and not args.index_only:
         sys.exit("--all requires --index-only")
     if args.with_audio and args.index_only:
         sys.exit("--with-audio cannot be combined with --index-only")
+    if args.include_feed_credentials and args.index_only:
+        sys.exit("--include-feed-credentials applies to full bundles, not --index-only")
     if not args.all and not args.shows:
         sys.exit("provide at least one show name/path, or --all --index-only")
 
@@ -104,13 +124,14 @@ def main(argv: list[str] | None = None) -> None:
             output,
             with_audio=args.with_audio,
             index_only=args.index_only,
+            include_feed_credentials=args.include_feed_credentials,
             progress=_print_progress,
         )
 
-    logger.info(
+    print(
         f"Exported {result.shows_exported} show(s), "
         f"{result.collections_exported} collection(s) "
-        f"({result.size_bytes / 1e6:.2f} MB) → {result.output_path}"
+        f"({result.size_bytes / 1e6:.2f} MB) to {result.output_path}"
     )
 
 

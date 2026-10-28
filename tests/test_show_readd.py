@@ -187,7 +187,7 @@ def test_create_refuses_a_label_another_show_uses(client, tmp_path):
     other.mkdir(parents=True)
     r = client.post("/api/shows/register", json={"path": str(other)})
     assert r.status_code == 200, r.text
-    save_show_meta(other, ShowMeta(name="Taken"))
+    save_show_meta(other, ShowMeta(name="Taken"), remint=True)
 
     r = _post_rss(client, tmp_path, name="Taken")
     assert r.status_code == 409, r.text
@@ -236,7 +236,7 @@ def test_readd_keeps_a_name_that_collides_since(client, tmp_path):
     assert (
         client.post("/api/shows/register", json={"path": str(other)}).status_code == 200
     )
-    save_show_meta(other, ShowMeta(name="Kept Show"))
+    save_show_meta(other, ShowMeta(name="Kept Show"), remint=True)
 
     r = _post_rss(client, tmp_path)
     assert r.status_code == 200, r.text

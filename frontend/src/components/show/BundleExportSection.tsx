@@ -32,6 +32,7 @@ export default function BundleExportSection({ folder, showName }: Props) {
   const [saveDir, setSaveDir] = useState(parentPath(folder));
   const [filename, setFilename] = useState(`${defaultSlug}.podcodex`);
   const [withAudio, setWithAudio] = useState(false);
+  const [withFeedCredentials, setWithFeedCredentials] = useState(false);
   const [resultMsg, setResultMsg] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
 
@@ -52,6 +53,7 @@ export default function BundleExportSection({ folder, showName }: Props) {
         output_path: target,
         with_audio: variant === "full" ? withAudio : false,
         index_only: variant === "index",
+        include_feed_credentials: variant === "full" ? withFeedCredentials : false,
       });
     },
     onMutate: () => setResultMsg("Exporting… this may take a moment for large shows."),
@@ -119,6 +121,30 @@ export default function BundleExportSection({ folder, showName }: Props) {
           />
           <label htmlFor="bundle-with-audio" className="text-sm cursor-pointer">
             Include audio files in full bundle
+          </label>
+        </div>
+
+        <div className="flex items-start gap-2">
+          <input
+            id="bundle-with-feed-credentials"
+            type="checkbox"
+            checked={withFeedCredentials}
+            onChange={(e) => setWithFeedCredentials(e.target.checked)}
+            disabled={busy}
+            className="accent-primary mt-1"
+          />
+          <label
+            htmlFor="bundle-with-feed-credentials"
+            className="text-sm cursor-pointer"
+          >
+            Keep the private feed link and the search index
+            <span className="block text-xs text-muted-foreground">
+              For your own machines. Off (for sharing): feed, audio and image links
+              lose their query and login, where private feeds keep your access
+              token, and for an RSS show the search index is left out since it
+              stores those links too. The recipient adds their own feed link and
+              re-indexes. A token written into the link path itself is not removed.
+            </span>
           </label>
         </div>
 

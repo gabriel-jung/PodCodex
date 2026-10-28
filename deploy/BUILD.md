@@ -13,12 +13,12 @@ The flow is the same on every shipped target:
 1. **Freeze the Python backend** with PyInstaller (`--onedir`) →
    `src-tauri/binaries/server/` (CPU-only), bundled by Tauri as a
    resource rather than an externalBin file.
-2. **Fetch the `yt-dlp` static binary** for the host triple. ffmpeg is **not** bundled; the app shells out to the user's system install (see [LICENSE_AUDIT.md](../LICENSE_AUDIT.md)).
-3. **Build the frontend** (`npm run build`).
-4. **Bundle with Tauri** (`cargo tauri build`) → native installer.
+2. **Build the frontend** (`npm run build`).
+3. **Bundle with Tauri** (`cargo tauri build`) → native installer.
 
-`make bundle` chains all four. Use the individual `make bundle-*` targets
-when iterating on a single layer.
+yt-dlp ships inside the sidecar as its Python module; there is no separate binary. ffmpeg is **not** bundled; the app shells out to the user's system install (see [LICENSE_AUDIT.md](../LICENSE_AUDIT.md)).
+
+`make bundle` chains all three. Use the individual `make bundle-*` targets when iterating on a single layer.
 
 > **GPU acceleration:** the bundled installer is CPU-only. NVIDIA users
 > activate an in-app CUDA backend (~2.4 GB download) from the GPU panel
@@ -196,7 +196,7 @@ Iterating on a single layer is faster:
 | Frontend (TS / CSS) | `cd src-tauri && cargo tauri build` (its beforeBuildCommand runs `npm run build` in frontend/) |
 | Rust shell only     | `cd src-tauri && cargo tauri build`                                |
 | Python backend      | `make bundle-server && cd src-tauri && cargo tauri build`          |
-| yt-dlp              | `make bundle-natives`                                              |
+| yt-dlp              | bump it in `uv.lock`, then `make bundle-server && cd src-tauri && cargo tauri build` |
 
 ---
 

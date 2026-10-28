@@ -110,6 +110,16 @@ AUDIO_EXTENSIONS = {
     ".wma",
 }
 
+# Suffixes of files an interrupted or replaced download leaves next to the
+# audio: our own ``.part`` stream, yt-dlp's ``.part``/``.ytdl``, and the
+# ``.previous`` copy a forced YouTube re-download sets aside. Never episode
+# audio, never part of an exported show.
+PARTIAL_DOWNLOAD_SUFFIXES = frozenset({".part", ".ytdl", ".previous"})
+
+# A subtitle language code as yt-dlp names it ("en", "pt-BR", "zh-Hans",
+# "en-orig"). It ends up in a filename, so requests are checked against it.
+SUBTITLE_LANG_PATTERN = r"[A-Za-z0-9]{1,12}(?:-[A-Za-z0-9]{1,12}){0,3}"
+
 # Sentinel value in show.toml's ``artwork_url``: the cover is a locally
 # uploaded ``artwork.{ext}`` file in the show folder, not a URL. Mirrored
 # into the frontend via ``scripts/generate_types.py``. Every feed-refresh

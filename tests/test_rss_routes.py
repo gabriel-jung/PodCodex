@@ -138,6 +138,7 @@ def test_the_feed_is_downloaded_once_even_when_artwork_is_upgraded(
     save_show_meta(
         show,
         ShowMeta(name="Kept Show", rss_url=FEED, artwork_url="https://a/60x60.jpg"),
+        remint=True,
     )
 
     calls: list[str] = []

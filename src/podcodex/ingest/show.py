@@ -1,12 +1,14 @@
 """
 podcodex.ingest.show — Show-level metadata stored as ``show.toml``.
 
-Each show folder may contain a ``show.toml`` with the canonical show name,
-an optional RSS feed URL, a speaker roster, and a primary language.
+Each show folder may contain a ``show.toml`` with the show's stable id, its
+display name, an optional RSS feed URL, a speaker roster, and a primary language.
 """
 
 from __future__ import annotations
 
+import dataclasses
+import re
 import tomllib
 import uuid
 from dataclasses import dataclass, field
@@ -73,13 +75,71 @@ class ShowMeta:
     pipeline: PipelineDefaults = field(default_factory=PipelineDefaults)
 
 
+class ShowMetaUnreadableError(OSError):
+    """``show.toml`` exists but does not parse.
+
+    An ``OSError`` so callers that already skip unwritable folders skip this
+    one too. Raised instead of minting over the file: a fresh ``show.toml``
+    would discard the existing id, which orphans every collection keyed on it.
+    """
+
+
 # Re-parsing TOML for every show on every render was the single biggest
 # HomePage stall — mtime-keyed so save_show_meta auto-invalidates.
 _SHOW_META_CACHE: dict[str, tuple[float, ShowMeta | None]] = {}
 
 
+def _copy_meta(meta: ShowMeta | None) -> ShowMeta | None:
+    """A copy safe to mutate: the scalars plus fresh containers.
+
+    Field by field rather than ``deepcopy``: this runs on every cache hit,
+    the hot path the cache exists for.
+    """
+    if meta is None:
+        return None
+    pipeline = dataclasses.replace(
+        meta.pipeline, llm_models_by_mode=dict(meta.pipeline.llm_models_by_mode)
+    )
+    return dataclasses.replace(meta, speakers=list(meta.speakers), pipeline=pipeline)
+
+
+def _as_str_list(value) -> list[str]:
+    """A speaker roster from TOML: a hand-written ``speakers = "Alice"`` is
+    one speaker, not five letters (``list("Alice")``)."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    return []
+
+
+_ID_LINE = re.compile(r'^\s*id\s*=\s*"([^"\\\n]+)"', re.MULTILINE)
+
+
+def salvage_show_id(folder: Path) -> str:
+    """The id from a ``show.toml`` that no longer parses, or "".
+
+    The id is written first, on a line of its own, so it usually survives
+    whatever broke the rest of the file. Only for cleanup paths (deleting a
+    show must still find its collections); everything else refuses the file.
+    """
+    try:
+        text = (Path(folder) / SHOW_META_FILENAME).read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        return ""
+    m = _ID_LINE.search(text)
+    return m.group(1).strip() if m else ""
+
+
 def load_show_meta(show_folder: Path) -> ShowMeta | None:
-    """Read ``show.toml`` from *show_folder*. Returns None if the file is missing."""
+    """Read ``show.toml`` from *show_folder*.
+
+    Returns None if the file is missing or does not parse. The result is a
+    copy, so a caller mutating it without saving cannot change what the next
+    reader sees.
+    """
     path = Path(show_folder) / SHOW_META_FILENAME
     cache_key = str(path)
     try:
@@ -90,15 +150,18 @@ def load_show_meta(show_folder: Path) -> ShowMeta | None:
     except OSError:
         return None
 
+    from podcodex.core._utils import mtime_settled
+
     cached = _SHOW_META_CACHE.get(cache_key)
     if cached is not None and cached[0] == mtime:
-        return cached[1]
+        return _copy_meta(cached[1])
 
     try:
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (tomllib.TOMLDecodeError, OSError) as exc:
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError) as exc:
         logger.warning(f"Invalid show.toml, skipping: {path} ({exc})")
-        _SHOW_META_CACHE[cache_key] = (mtime, None)
+        if mtime_settled(mtime):
+            _SHOW_META_CACHE[cache_key] = (mtime, None)
         return None
     pipe_raw = raw.get("pipeline", {})
     pipeline = PipelineDefaults(
@@ -124,13 +187,14 @@ def load_show_meta(show_folder: Path) -> ShowMeta | None:
         name=raw.get("name", ""),
         rss_url=raw.get("rss_url", ""),
         youtube_url=raw.get("youtube_url", ""),
-        speakers=raw.get("speakers", []),
+        speakers=_as_str_list(raw.get("speakers")),
         language=raw.get("language", ""),
         artwork_url=raw.get("artwork_url", ""),
         broadcast_number_pattern=raw.get("broadcast_number_pattern", ""),
         pipeline=pipeline,
     )
-    _SHOW_META_CACHE[cache_key] = (mtime, meta)
+    if mtime_settled(mtime):
+        _SHOW_META_CACHE[cache_key] = (mtime, _copy_meta(meta))
     return meta
 
 
@@ -201,24 +265,39 @@ def ensure_show_id(folder: Path) -> str:
     machine.
 
     Creates ``show.toml`` when the folder has none. Idempotent.
+
+    Raises:
+        ShowMetaUnreadableError: ``show.toml`` exists but does not parse.
     """
     folder = Path(folder)
     meta = load_show_meta(folder)
     if meta and meta.id:
         return meta.id
     if meta is None:
-        meta = ShowMeta(name=folder.name)
+        meta = ShowMeta(name=folder.name)  # save_show_meta refuses an unreadable file
     save_show_meta(folder, meta)  # mints on write
     logger.info(f"Minted show id {meta.id!r} for {folder}")
     return meta.id
 
 
+_TOML_ESCAPES = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\t": "\\t", "\r": "\\r"}
+
+
 def _toml_string(s: str) -> str:
-    """Escape a string for TOML double-quoted format."""
-    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    """Escape a string for TOML double-quoted format.
+
+    TOML forbids every control character but tab in a basic string, so a CR
+    from a pasted feed title would otherwise write a file that no longer
+    parses.
+    """
+    return "".join(
+        _TOML_ESCAPES.get(c)
+        or (f"\\u{ord(c):04X}" if ord(c) < 0x20 or ord(c) == 0x7F else c)
+        for c in s
+    )
 
 
-def save_show_meta(show_folder: Path, meta: ShowMeta) -> Path:
+def save_show_meta(show_folder: Path, meta: ShowMeta, *, remint: bool = False) -> Path:
     """Write ``show.toml`` to *show_folder*. Creates the directory if needed.
 
     Mints an ``id`` when the metadata has none, so identity is established
@@ -226,18 +305,81 @@ def save_show_meta(show_folder: Path, meta: ShowMeta) -> Path:
     side effect of whichever reader touched the show first, and a show
     created and indexed before any of them ran got collections with no id,
     which a later rename then orphaned.
+
+    *remint* (bundle import only) writes a fresh id over whatever the file
+    holds, for an imported copy of a show whose carried id is taken.
+
+    *remint* (bundle import only) writes a fresh id over whatever the file
+    holds, for an imported copy of a show whose carried id is taken.
+
+    Raises:
+        ShowMetaUnreadableError: *meta* has no id and an existing
+            ``show.toml`` does not parse; minting would discard its id.
+        OSError: *meta* has no id but the existing file holds one (the
+            caller's read of it failed a moment ago), or it cannot be read.
+        OSError: *meta* has no id but the existing file holds one (the
+            caller's read of it failed a moment ago), or it cannot be read.
     """
     folder = Path(show_folder)
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / SHOW_META_FILENAME
-    if not meta.id:
-        meta.id = _mint_id(meta.name or folder.name)
+    if not meta.id and path.exists() and not remint:
+        _refuse_minting_over(path)
+    # Assigned back only once the write lands, so a failed write cannot leave
+    # an id on the caller's object that is not on disk.
+    show_id = meta.id or _mint_id(meta.name or folder.name)
+    body = render_show_toml(meta, show_id)
 
+    from podcodex.core._utils import atomic_write
+
+    atomic_write(
+        path,
+        lambda p: p.write_text(body, encoding="utf-8"),
+        suffix=".toml",
+    )
+    meta.id = show_id
+    return path
+
+
+def _refuse_minting_over(path: Path) -> None:
+    """Raise unless the existing *path* parses and holds no id to lose.
+
+    The caller has a ShowMeta without an id, often a fresh one it fell back
+    to because ``load_show_meta`` returned None; writing it would replace
+    whatever id the file holds. A file that does not parse is refused for
+    good (``ShowMetaUnreadableError``). One that cannot be read right now (a
+    sync client or antivirus holding a lock) is a plain ``OSError``: the file
+    may be fine, and telling the user to remove it could cost them the id.
+    """
+    try:
+        existing = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        raise ShowMetaUnreadableError(
+            f"{path} exists but cannot be read ({exc}); fix or remove it "
+            "before this show can be used"
+        ) from exc
+    except UnicodeDecodeError as exc:
+        raise ShowMetaUnreadableError(
+            f"{path} is not valid UTF-8; fix or remove it before this show can be used"
+        ) from exc
+    if str(existing.get("id") or "").strip():
+        # The file parses and carries an id, so the caller's id-less meta
+        # comes from a read that failed (a lock now gone). Writing it would
+        # mint over the id and fall back on every other field.
+        raise OSError(f"{path} could not be read just now; try again")
+    if str(existing.get("id") or "").strip():
+        # The file parses and carries an id, so the caller's id-less meta
+        # comes from a read that failed (a lock now gone). Writing it would
+        # mint over the id and fall back on every other field.
+        raise OSError(f"{path} could not be read just now; try again")
+
+
+def render_show_toml(meta: ShowMeta, show_id: str) -> str:
+    """The ``show.toml`` text for *meta* under *show_id*, without writing it."""
     lines: list[str] = []
     # Written first: it is the show's identity, and a human opening the file
     # should see it before the fields they are allowed to edit.
-    if meta.id:
-        lines.append(f'id = "{_toml_string(meta.id)}"')
+    lines.append(f'id = "{_toml_string(show_id)}"')
     lines.append(f'name = "{_toml_string(meta.name)}"')
     if meta.rss_url:
         lines.append(f'rss_url = "{_toml_string(meta.rss_url)}"')
@@ -297,13 +439,4 @@ def save_show_meta(show_folder: Path, meta: ShowMeta) -> Path:
         lines.append("")
         lines.append("[pipeline]")
         lines.extend(pipe_lines)
-
-    from podcodex.core._utils import atomic_write
-
-    body = "\n".join(lines) + "\n"
-    atomic_write(
-        path,
-        lambda p: p.write_text(body, encoding="utf-8"),
-        suffix=".toml",
-    )
-    return path
+    return "\n".join(lines) + "\n"

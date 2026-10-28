@@ -105,7 +105,11 @@ def migrate_index_to_show_ids(store) -> int:
         if not mine and pw_key is None:
             continue
 
-        sid = ensure_show_id(folder)
+        try:
+            sid = ensure_show_id(folder)
+        except OSError as exc:  # unwritable, or a show.toml that no longer parses
+            logger.warning(f"show-id migration: skipping {folder}: {exc}")
+            continue
 
         for name in mine:
             store.set_collection_identity(name, show_id=sid, show=label)

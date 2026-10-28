@@ -23,7 +23,7 @@
 #   make dev     # start FastAPI + Vite + Tauri (hot-reload)
 #   make build   # production .dmg (macOS) or .msi (Windows) bundle
 
-.PHONY: setup setup-python setup-frontend setup-pyinstaller dev dev-api dev-frontend dev-tauri dev-sidecar build bundle bundle-gpu bundle-server bundle-server-gpu package-gpu bundle-natives bundle-sign bundle-sign-only clean test bump types icons help
+.PHONY: setup setup-python setup-frontend setup-pyinstaller dev dev-api dev-frontend dev-tauri dev-sidecar build bundle bundle-gpu bundle-server bundle-server-gpu package-gpu bundle-sign bundle-sign-only clean test bump types icons help
 
 # ── Setup ────────────────────────────────────────────────
 
@@ -86,10 +86,7 @@ package-gpu:  ## Split the GPU --onedir build into server-core, torch-runtime an
 
 bundle-gpu: bundle-server-gpu package-gpu  ## Build GPU sidecar and package release archives + manifest
 
-bundle-natives:  ## Download yt-dlp static binary for the host (ffmpeg uses system install)
-	.venv/bin/python scripts/fetch_native_binaries.py
-
-bundle: bundle-server bundle-natives  ## Full standalone .dmg / .msi (frontend + CPU sidecar + Tauri)
+bundle: bundle-server  ## Full standalone .dmg / .msi (frontend + CPU sidecar + Tauri)
 	cd frontend && npm run build
 	cd src-tauri && . $$HOME/.cargo/env && cargo tauri build
 

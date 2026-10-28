@@ -375,11 +375,6 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
         cmd.env("PATH", extra);
     }
 
-    if let Some(ytdlp) = locate_sidecar("yt-dlp") {
-        log::info!("Bundled yt-dlp: {:?}", ytdlp);
-        cmd.env("YT_DLP_BINARY", ytdlp);
-    }
-
     // User-set custom ffmpeg path from config.json. The sidecar's
     // _wire_native_binaries() prepends this dir to PATH so whisperx /
     // faster-whisper resolve bare "ffmpeg" to the override.
@@ -637,29 +632,6 @@ fn augmented_path() -> Option<String> {
         new_path.push_str(&current);
     }
     Some(new_path)
-}
-
-/// Find a Tauri externalBin sidecar by short name. Bundled .app: bare
-/// basename. ``cargo tauri dev``: ``<name>-<triple>``.
-fn locate_sidecar(short_name: &str) -> Option<PathBuf> {
-    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-
-    if let Some(path) = exe_in_dir(&exe_dir, short_name) {
-        return Some(path);
-    }
-
-    let prefix = format!("{short_name}-");
-    for entry in std::fs::read_dir(&exe_dir).ok()?.flatten() {
-        let fname = entry.file_name();
-        let fname = fname.to_string_lossy();
-        if fname.starts_with(&prefix) {
-            let path = entry.path();
-            if path.is_file() {
-                return Some(path);
-            }
-        }
-    }
-    None
 }
 
 /// Poll the backend's /api/health endpoint, then reveal the main window.

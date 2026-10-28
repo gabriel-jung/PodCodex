@@ -807,12 +807,16 @@ def get_pipeline_db(show_folder: Path | str) -> PipelineDB:
 
 
 def close_pipeline_db(show_folder: Path | str) -> None:
-    """Close and remove a cached PipelineDB instance."""
-    show_folder = Path(show_folder)
+    """Close and remove the cached PipelineDB instances for *show_folder*.
+
+    Matched by resolved path, not by key: the cache is keyed on however the
+    caller spelled the folder (a symlink, ``/var`` vs ``/private/var``), and
+    a connection left open keeps reading a folder that was moved away.
+    """
+    target = Path(show_folder).resolve()
     with _dbs_lock:
-        db = _dbs.pop(show_folder, None)
-        if db:
-            db.close()
+        for key in [k for k in _dbs if k == Path(show_folder) or k.resolve() == target]:
+            _dbs.pop(key).close()
 
 
 def mark_step(show_dir: Path, stem: str, **fields: object) -> None:

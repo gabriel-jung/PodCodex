@@ -1,14 +1,12 @@
 """Create placeholder sidecars so ``cargo tauri dev`` can compile.
 
-Tauri requires every externalBin file *and* every declared resource path to
-exist at build/dev time, even when the backend is started separately
+Tauri requires every declared resource path to exist at build/dev time, even when the backend is started separately
 (``PODCODEX_SKIP_BACKEND_SPAWN=1``). Rebuilding the ~1 GB PyInstaller bundle
 on every dev iteration is unworkable, so we drop tiny stubs that Tauri can
 checksum and copy.
 
-Two shapes, because the two sidecars are bundled differently: ``yt-dlp`` is
-an externalBin file (triple-suffixed), while the server is a PyInstaller
---onedir tree bundled as the ``binaries/server/`` resource.
+The server is a PyInstaller --onedir tree bundled as the
+``binaries/server/`` resource, so the stub is a tree too.
 
 The stubs are never actually run — ``PODCODEX_SKIP_BACKEND_SPAWN`` short-
 circuits the spawn path in ``src-tauri/src/lib.rs``, and the frontend talks
@@ -77,9 +75,9 @@ def write_unix_stub(dest: Path) -> None:
 
 
 def write_windows_stub(dest: Path) -> None:
-    """Best-effort stub. Tauri's externalBin on Windows wants real .exe; if it
-    rejects this, the user falls back to a real ``packaging/build_server.py``
-    run. Documented in Makefile."""
+    """Best-effort stub for the server exe inside the resource tree; the
+    stubs are never run. If a Windows build step still objects, run a real
+    ``packaging/build_server.py`` once."""
     dest.write_bytes(b"MZ" + b"\x00" * 60 + b"PE\x00\x00")
 
 
@@ -128,15 +126,11 @@ def main() -> int:
     SIDECAR_DIR.mkdir(parents=True, exist_ok=True)
 
     ensure_stub(server_stub_path(triple), triple)
-    suffix = ".exe" if "windows" in triple else ""
-    ensure_stub(SIDECAR_DIR / f"yt-dlp-{triple}{suffix}", triple)
 
     if "windows" in triple:
         print(
-            "WARN: Windows placeholders may not satisfy Tauri's PE check. "
-            "If `cargo tauri dev` rejects them, run "
-            "`python packaging/build_server.py` and "
-            "`python scripts/fetch_native_binaries.py` once."
+            "WARN: if `cargo tauri dev` rejects the Windows placeholder, run "
+            "`python packaging/build_server.py` once."
         )
     return 0
 

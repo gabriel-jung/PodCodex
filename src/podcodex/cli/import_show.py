@@ -5,7 +5,7 @@ Examples::
     podcodex-import bundle.podcodex                           # full bundle
     podcodex-import bundle.podcodex --shows-dir ~/Podcasts    # explicit target
     podcodex-import bundle.podcodex --on-conflict replace     # bot deploy
-    podcodex-import bundle.podcodex --name "My Renamed Show"  # rename on import
+    podcodex-import bundle.podcodex --name my-show-folder     # folder name on disk
 """
 
 from __future__ import annotations
@@ -14,15 +14,13 @@ import argparse
 import sys
 from pathlib import Path
 
-from loguru import logger
-
 from podcodex.bundle import (
     Mode,
     import_archive,
     preview_archive,
 )
 from podcodex.bundle.conflicts import resolve_policy
-from podcodex.cli.resolve import default_shows_dir
+from podcodex.cli.resolve import default_shows_dir, expected_errors
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -39,7 +37,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     p.add_argument(
         "--name",
-        help="Override the imported folder name. Single-show bundles only.",
+        help="Folder name on disk for the imported show (the display name "
+        "stays the archive's). Single-show bundles only.",
     )
     p.add_argument(
         "--on-conflict",
@@ -77,6 +76,14 @@ def _print_preview_summary(preview) -> None:
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
 
+    from podcodex.bootstrap import bootstrap_for_cli
+
+    bootstrap_for_cli()
+    with expected_errors():
+        _run(args)
+
+
+def _run(args: argparse.Namespace) -> None:
     preview = preview_archive(args.archive)
     _print_preview_summary(preview)
 
@@ -98,14 +105,15 @@ def main(argv: list[str] | None = None) -> None:
         name=args.name,
         on_conflict=policy,
         progress=_print_progress,
+        manifest=preview.manifest,
     )
 
-    logger.info(
+    print(
         f"Imported {len(result.shows_imported)} show(s), "
         f"{len(result.collections_imported)} collection(s)"
     )
     for k, v in result.conflicts_resolved.items():
-        logger.info(f"  conflict {k} → {v}")
+        print(f"  {k}: {v}")
 
 
 if __name__ == "__main__":

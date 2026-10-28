@@ -122,7 +122,7 @@ def test_episode_meta_missing(tmp_path):
 
 
 # ──────────────────────────────────────────────
-# fetch_feed with a local XML file
+# parse_feed_content on a local XML sample
 # ──────────────────────────────────────────────
 
 
@@ -244,6 +244,8 @@ def test_download_audio_never_leaves_a_truncated_file(tmp_path, monkeypatch):
     from podcodex.ingest import rss as rss_mod
 
     class _Resp:
+        headers = {"content-type": "audio/mpeg"}
+
         def raise_for_status(self):
             pass
 
@@ -427,3 +429,224 @@ def test_episode_stem_does_not_collapse_onto_a_same_named_audio_file(tmp_path):
     assert episode_stem(ep, show, existing_stems=frozenset({"my_episode"})) == (
         "my_episode"
     )
+
+
+# ──────────────────────────────────────────────
+# Stored JSON is untrusted (it travels in bundles)
+# ──────────────────────────────────────────────
+
+
+def test_unknown_cache_key_does_not_break_readers(tmp_path):
+    """A cache written by a newer build used to raise TypeError in every reader."""
+    import json
+
+    from podcodex.ingest.rss import load_feed_cache
+
+    entry = {"guid": "g", "title": "T", "pub_date": "", "from_the_future": 1}
+    (tmp_path / ".feed_cache.json").write_text(json.dumps([entry]), encoding="utf-8")
+    cached = load_feed_cache(tmp_path)
+    assert cached is not None and cached[0].guid == "g"
+
+
+def test_episode_number_from_json_cannot_escape_the_show_folder(tmp_path):
+    """episode_stem formats the number into a filename; a crafted string there
+    produced an absolute path outside the show."""
+    from podcodex.ingest.rss import episode_from_dict, episode_stem
+
+    ep = episode_from_dict(
+        {"guid": "g", "title": "T", "pub_date": "", "episode_number": "/tmp/evil"}
+    )
+    assert ep.episode_number is None
+    stem = episode_stem(ep, tmp_path)
+    assert (tmp_path / stem).resolve().is_relative_to(tmp_path.resolve())
+    assert (
+        episode_from_dict(
+            {"guid": "g", "title": "T", "pub_date": "", "episode_number": "12"}
+        ).episode_number
+        == 12
+    )
+
+
+def test_episode_stem_shapes(tmp_path):
+    """The stem contract every on-disk episode depends on."""
+    from podcodex.ingest.rss import episode_stem
+
+    numbered = RSSEpisode(guid="g", title="My Ep", pub_date="", episode_number=3)
+    assert episode_stem(numbered) == "3_my_ep"
+    rss = RSSEpisode(guid="https://x/ep", title="My Ep", pub_date="")
+    stem = episode_stem(rss)
+    assert stem.startswith("my_ep_") and len(stem.rsplit("_", 1)[1]) == 8
+    yt = RSSEpisode(guid="ab_cdefghij", title="My Ep", pub_date="")
+    assert episode_stem(yt) == "my_ep_ab_cdefghij"
+    # A retitled episode keeps the stem already on disk for its guid.
+    (tmp_path / stem).mkdir()
+    retitled = RSSEpisode(guid="https://x/ep", title="Renamed", pub_date="")
+    assert episode_stem(retitled, tmp_path) == stem
+
+
+def _stream_double(content_type: str, body: bytes):
+    class _Resp:
+        headers = {"content-type": content_type}
+
+        def raise_for_status(self):
+            pass
+
+        def iter_bytes(self, chunk_size=0):
+            yield body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    return lambda *a, **k: _Resp()
+
+
+def test_download_audio_refuses_a_web_page(tmp_path, monkeypatch):
+    """A captive portal answers 200 with HTML; that is not the episode."""
+    import httpx
+
+    from podcodex.ingest import rss as rss_mod
+
+    monkeypatch.setattr(httpx, "stream", _stream_double("text/html", b"<html>"))
+    ep = RSSEpisode(guid="g", title="T", pub_date="", audio_url="https://x/a.mp3")
+    path, error = rss_mod.download_audio(ep, tmp_path)
+    assert path is None and error.startswith("not audio")
+    assert not list(tmp_path.glob("*.mp3*"))
+
+
+def test_download_audio_reports_a_disk_error(tmp_path, monkeypatch):
+    """A full disk returns a reason instead of aborting the whole batch."""
+    import builtins
+
+    import httpx
+
+    from podcodex.ingest import rss as rss_mod
+
+    monkeypatch.setattr(httpx, "stream", _stream_double("audio/mpeg", b"data"))
+    real_open = builtins.open
+
+    def _open(file, mode="r", *a, **k):
+        if str(file).endswith(".part") and "w" in mode:
+            raise OSError(28, "No space left on device")
+        return real_open(file, mode, *a, **k)
+
+    monkeypatch.setattr(builtins, "open", _open)
+    ep = RSSEpisode(guid="g", title="T", pub_date="", audio_url="https://x/a.mp3")
+    path, error = rss_mod.download_audio(ep, tmp_path)
+    assert path is None and error.startswith("disk error")
+    assert not list(tmp_path.glob("*.part"))
+
+
+def test_subtitle_language_cannot_name_a_path(tmp_path):
+    """The language code becomes part of the cached VTT filename."""
+    from podcodex.ingest.youtube import cache_youtube_subtitles
+
+    with pytest.raises(ValueError):
+        cache_youtube_subtitles("abcdefghijk", tmp_path, "stem", lang="../../x")
+
+
+def test_one_malformed_cache_entry_costs_only_that_entry(tmp_path):
+    import json
+
+    from podcodex.ingest.rss import load_feed_cache
+
+    good = {"guid": "g", "title": "T", "pub_date": ""}
+    (tmp_path / ".feed_cache.json").write_text(
+        json.dumps([good, {"guid": "no-title"}]), encoding="utf-8"
+    )
+    assert [e.guid for e in load_feed_cache(tmp_path)] == ["g"]
+
+
+def test_shareable_url_drops_query_and_login_and_never_raises():
+    """Guessing secret keys by name leaked token-hash, X-Amz-Signature and the
+    like; the whole query goes."""
+    from podcodex.ingest.rss import shareable_url
+
+    assert shareable_url("https://u:p@h/f.xml?id=3&token-hash=S") == "https://h/f.xml"
+    assert shareable_url("https://s3/a.mp3?X-Amz-Signature=Z") == "https://s3/a.mp3"
+    assert (
+        shareable_url("http://[::1]:8000/feed.xml?k=1") == "http://[::1]:8000/feed.xml"
+    )
+    assert "token" not in shareable_url("https://exa\uff0fmple.com/f?token=S")
+
+
+def test_subtitle_language_is_checked_only_where_it_names_a_file():
+    """A request carries the show's free-text language whatever the step, so
+    only a subtitle import may refuse it, and up front rather than per episode."""
+    from fastapi import HTTPException
+
+    from podcodex.api.routes.batch import BatchRequest
+    from podcodex.api.routes._helpers import require_subtitle_lang
+    from podcodex.api.routes.youtube import YouTubeSubsRequest
+
+    assert (
+        BatchRequest(show_folder="s", audio_paths=["a"], sub_lang="français").sub_lang
+        == "français"
+    )
+    assert YouTubeSubsRequest(video_ids=["x"], lang="brazilian portuguese")
+    require_subtitle_lang("pt-BR")
+    for bad in ("en/../x", "en\n", "français"):
+        with pytest.raises(HTTPException):
+            require_subtitle_lang(bad)
+
+
+def test_stored_json_with_wrong_types_is_skipped_not_fatal(tmp_path):
+    """A unicode digit or a null title used to crash every reader of the show."""
+    import json
+
+    from podcodex.ingest.rss import load_feed_cache
+
+    entries = [
+        {"guid": "a", "title": "A", "pub_date": "", "episode_number": "²"},
+        {"guid": "b", "title": None, "pub_date": ""},
+        {
+            "guid": "c",
+            "title": "C",
+            "pub_date": "",
+            "duration": "long",
+            "removed": "yes",
+        },
+    ]
+    (tmp_path / ".feed_cache.json").write_text(json.dumps(entries), encoding="utf-8")
+    cached = load_feed_cache(tmp_path)
+    assert [e.guid for e in cached] == ["a", "c"]
+    assert cached[0].episode_number is None
+    assert (cached[1].duration, cached[1].removed) == (0.0, False)
+
+
+def test_audio_served_as_text_html_is_still_downloaded(tmp_path, monkeypatch):
+    """Small hosts send real MP3s as text/html; only markup is refused."""
+    import httpx
+
+    from podcodex.ingest import rss as rss_mod
+
+    monkeypatch.setattr(httpx, "stream", _stream_double("text/html", b"ID3\x04data"))
+    ep = RSSEpisode(guid="g", title="T", pub_date="", audio_url="https://x/a.mp3")
+    path, error = rss_mod.download_audio(ep, tmp_path)
+    assert error is None and path.read_bytes() == b"ID3\x04data"
+
+
+def test_feed_cache_readers_get_their_own_objects(tmp_path):
+    """merge_with_cache mutates entries; an unsaved change must not reach the
+    next reader through the memo."""
+    import os
+    import time
+
+    from podcodex.ingest.rss import load_feed_cache, save_feed_cache
+
+    save_feed_cache(tmp_path, [RSSEpisode(guid="g", title="T", pub_date="")])
+    past = time.time() - 60
+    os.utime(tmp_path / ".feed_cache.json", (past, past))
+    for _ in range(2):
+        load_feed_cache(tmp_path)[0].removed = True
+        assert load_feed_cache(tmp_path)[0].removed is False
+
+
+def test_redact_urls_handles_ipv6_and_bad_netlocs():
+    from podcodex.ingest.rss import redact_urls
+
+    assert "SECRET" not in redact_urls("see http://[::1]:8000/f?token=SECRET")
+    assert "SECRET" not in redact_urls("Follow [https://h/f?token=SECRET] now")
+    assert "token=S" not in redact_urls("u https://exa\uff0fmple.com/f?token=S")

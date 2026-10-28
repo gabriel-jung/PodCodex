@@ -734,6 +734,7 @@ export interface ExportShowRequest {
   output_path: string;
   with_audio?: boolean;
   index_only?: boolean;
+  include_feed_credentials?: boolean;
 }
 
 export interface ExportIndexRequest {
