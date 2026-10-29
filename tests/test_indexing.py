@@ -11,7 +11,9 @@ import pytest
 # ──────────────────────────────────────────────
 
 
-def _vectorize(store, text, source, *, overwrite=False, vectors=None):
+def _vectorize(
+    store, text, source, *, overwrite=False, vectors=None, source_hash="", ref="auto"
+):
     """Index one chunk of episode E1 with a stub embedder; return the count."""
     from podcodex.rag.indexing import vectorize_episode
 
@@ -28,6 +30,12 @@ def _vectorize(store, text, source, *, overwrite=False, vectors=None):
         "end": 1.0,
     }
     transcript = {"meta": {"show": "S", "episode": "E1", "source": source}}
+    if source_hash:
+        # As the chunker carries it: on the transcript meta and every chunk.
+        transcript["meta"]["source_hash"] = source_hash
+        chunk["source_hash"] = source_hash
+        transcript["meta"]["source_ref"] = ref
+        chunk["source_ref"] = ref
     with patch("podcodex.rag.indexing.get_embedder", return_value=embedder):
         _, n = vectorize_episode(
             transcript,
@@ -77,6 +85,36 @@ def test_overwrite_reindexes_even_the_same_source(tmp_path):
 
     assert _vectorize(store, "second", "transcript", overwrite=True) == 1
     assert _stored(store) == [("second", "transcript")]
+
+
+def test_an_edited_source_replaces_the_stored_rows(tmp_path):
+    """Same step, new content: skipping it as cached left search serving the
+    text from before the edit."""
+    from podcodex.rag.index_store import IndexStore
+
+    store = IndexStore(tmp_path / "index")
+    _vectorize(store, "first", "corrected", source_hash="sha256:a")
+    assert _vectorize(store, "again", "corrected", source_hash="sha256:a") == 0
+
+    assert _vectorize(store, "edited", "corrected", source_hash="sha256:b") == 1
+    assert _stored(store) == [("edited", "corrected")]
+    col = store.resolve_collection("s_1", "e5-small", "semantic")
+    record = {"hash": "sha256:b", "ref": "auto", "step": "corrected", "version": ""}
+    assert store.episode_source_record(col, "E1") == record
+    assert store.episode_source_records(col) == {"E1": record}
+
+
+def test_chunks_from_before_the_hash_are_recut_once(tmp_path):
+    from podcodex.rag.index_store import IndexStore
+
+    store = IndexStore(tmp_path / "index")
+    _vectorize(store, "legacy", "corrected")
+    col = store.resolve_collection("s_1", "e5-small", "semantic")
+    assert store.episode_source_record(col, "E1") is None
+    assert store.episode_source_records(col) == {}
+
+    assert _vectorize(store, "recut", "corrected", source_hash="sha256:a") == 1
+    assert _vectorize(store, "recut", "corrected", source_hash="sha256:a") == 0
 
 
 # ──────────────────────────────────────────────
@@ -225,3 +263,20 @@ def test_an_overwrite_that_yields_no_chunks_removes_the_stale_ones(tmp_path):
             overwrite=True,
         )
     assert not store.episode_is_indexed(col, "E1")
+
+
+def test_the_same_content_chosen_another_way_is_recorded_again(tmp_path):
+    """A pin now followed (or the reverse) kept the old record: the episode
+    then never read as outdated, or a batch replaced the user's pin."""
+    from podcodex.rag.index_store import IndexStore
+
+    store = IndexStore(tmp_path / "index")
+    _vectorize(store, "pinned", "transcript", source_hash="sha256:a", ref="pinned")
+    assert (
+        _vectorize(store, "same", "transcript", source_hash="sha256:a", ref="pinned")
+        == 0
+    )
+
+    assert _vectorize(store, "followed", "transcript", source_hash="sha256:a") == 1
+    col = store.resolve_collection("s_1", "e5-small", "semantic")
+    assert store.episode_source_record(col, "E1")["ref"] == "auto"

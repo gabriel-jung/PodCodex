@@ -125,6 +125,9 @@ class EpisodeStatusOut(BaseModel):
     transcribed: bool = False
     corrected: bool = False
     indexed: bool = False
+    # Indexed from a source version that has since changed (an edit, a newer
+    # correct run): search still serves the old text until a re-index.
+    index_outdated: bool = False
     synthesized: bool = False
     has_subtitles: bool = False
     translations: list[str] = []

@@ -103,6 +103,44 @@ def test_note_episode_indexed_updates_cache(tmp_path, monkeypatch):
     assert key not in folder_mod._INDEXED_STEMS_CACHE
 
 
+def test_note_episode_indexed_refreshes_that_episodes_source_record(
+    tmp_path, monkeypatch
+):
+    """An index write bumps every version: without the refresh each status
+    poll of an index batch rescanned every collection's first chunks."""
+    from podcodex.ingest import folder as folder_mod
+
+    fresh = {"hash": "sha256:new", "ref": "auto", "step": "corrected"}
+
+    class FakeStore:
+        def collection_version(self, col):
+            return 8
+
+        def episode_source_record(self, col, stem):
+            return fresh if stem == "ep01" else None
+
+    monkeypatch.setattr("podcodex.rag.index_store.get_index_store", lambda: FakeStore())
+    key = folder_mod._stems_cache_key(tmp_path)
+    before = (("show_bge", "t1", 7),)
+    old = {"hash": "sha256:old", "ref": "auto", "step": "corrected"}
+    monkeypatch.setattr(folder_mod, "_INDEXED_STEMS_CACHE", {key: (before, {"ep01"})})
+    monkeypatch.setattr(
+        folder_mod,
+        "_SOURCE_RECORDS_CACHE",
+        {key: (before, {"ep01": [old], "ep02": [old]})},
+    )
+
+    folder_mod.note_episode_indexed(tmp_path, "ep01")
+    versions, records = folder_mod._SOURCE_RECORDS_CACHE[key]
+    assert versions == (("show_bge", "t1", 8),)
+    assert records == {"ep01": [fresh], "ep02": [old]}
+
+    # Out of step with the stem set before the write: dropped, rebuilt once.
+    folder_mod._SOURCE_RECORDS_CACHE[key] = ((("show_bge", "t1", 1),), {})
+    folder_mod.note_episode_indexed(tmp_path, "ep01")
+    assert key not in folder_mod._SOURCE_RECORDS_CACHE
+
+
 def test_a_recreated_collection_rescans_at_the_same_version(tmp_path, monkeypatch):
     """A recreated table counts up from 1 again: at the old version number
     the key must still differ, or the dropped table's episodes are served."""

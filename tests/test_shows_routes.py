@@ -226,9 +226,11 @@ def test_shows_list_counts_go_through_the_reconcile(tmp_path, monkeypatch):
         close_pipeline_db(show)
 
 
-def test_shows_list_does_not_open_the_index_and_survives_a_failed_reconcile(
+def test_shows_list_counts_this_installs_index_and_survives_a_failed_reconcile(
     tmp_path, monkeypatch
 ):
+    """pipeline.db sits in the show folder, which two installs can share while
+    each has its own index: the stored flag reported the other machine's."""
     import podcodex.core.episode_status as status_mod
     from podcodex.api.routes import shows as shows_routes
     from podcodex.core.app_config import AppConfig
@@ -236,23 +238,38 @@ def test_shows_list_does_not_open_the_index_and_survives_a_failed_reconcile(
     from tests.fixtures.api_client import make_client
 
     show = tmp_path / "show"
-    (show / "ep1" / "transcript").mkdir(parents=True)
-    (show / "ep1" / "transcript" / "20260101T000000000000Z_raw.json").write_text("[]")
+    for stem in ("ep1", "ep2"):
+        (show / stem / "transcript").mkdir(parents=True)
+        (show / stem / "transcript" / "20260101T000000000000Z_raw.json").write_text(
+            "[]"
+        )
     client = make_client(
         tmp_path, monkeypatch, config=AppConfig(show_folders=[str(show)])
     )
-    get_pipeline_db(show).mark("ep1", transcribed=True)
-    monkeypatch.setattr(
-        status_mod, "lance_indexed_stems", lambda _p: pytest.fail("opened the index")
-    )
+    db = get_pipeline_db(show)
+    # Written by "another install": both indexed there, only ep2 here.
+    db.mark("ep1", transcribed=True, indexed=True)
+    db.mark("ep2", transcribed=True, indexed=True)
+    monkeypatch.setattr(status_mod, "lance_indexed_stems", lambda _p: {"ep2"})
     try:
-        assert client.get("/api/shows/").json()[0]["transcribed_count"] == 1
+        card = client.get("/api/shows/").json()[0]
+        assert card["indexed_count"] == 1
+        assert card["transcribed_count"] == 2
+        # Overlaid, never written back: the other install keeps its flags.
+        assert {r["stem"]: r["indexed"] for r in db.all_episodes()} == {
+            "ep1": 1,
+            "ep2": 1,
+        }
+
+        # An unreadable index is "unknown", so the stored flags stand.
+        monkeypatch.setattr(status_mod, "lance_indexed_stems", lambda _p: None)
+        assert client.get("/api/shows/").json()[0]["indexed_count"] == 2
 
         def boom(*_a, **_k):
             raise OSError("share unmounted")
 
         monkeypatch.setattr(shows_routes, "reconcile_show_status", boom)
-        assert client.get("/api/shows/").json()[0]["transcribed_count"] == 1
+        assert client.get("/api/shows/").json()[0]["transcribed_count"] == 2
     finally:
         close_pipeline_db(show)
 

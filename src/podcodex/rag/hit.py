@@ -71,6 +71,13 @@ class Hit(BaseModel):
     artwork_url: str = ""
     audio_url: str = ""
     youtube_id: str = ""
+    # content_hash of the source version the chunk was cut from ("" before
+    # it was recorded); see chunker._meta_fields.
+    source_hash: str = ""
+    # How that source was chosen: auto / step / pinned (index_job._source_ref).
+    source_ref: str = ""
+    # Id of that source version.
+    source_version: str = ""
     # Chunker only writes timed=False (subtitle imports without timing);
     # absence means timed. Consumers always read with a True default.
     timed: bool = True

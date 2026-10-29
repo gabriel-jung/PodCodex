@@ -66,7 +66,7 @@ export function episodeNeedsStep(ep: Episode, step: PipelineInputStep): boolean 
     case "transcribe": return ep.transcribe_status !== "done";
     case "correct":    return ep.correct_status !== "done";
     case "translate":  return ep.translate_status !== "done";
-    case "index":      return !ep.indexed;
+    case "index":      return !ep.indexed || ep.index_outdated;
     default:           return true;
   }
 }
@@ -84,14 +84,12 @@ export type StepFilterStep =
 /** Per-step state an episode can be in. */
 export type StepFilterState = "missing" | "done" | "raw" | "edited" | "outdated";
 
-/** Steps with no review concept: content either exists or it doesn't. */
-const TERMINAL_STEPS: readonly StepFilterStep[] = ["index", "synthesize"];
-
-/** States offered for a step. Terminal steps have no raw/edited/outdated. */
+/** States offered for a step. Index and synthesize have no review concept
+ *  (no raw/edited); the index can still lag behind an edited source. */
 export function statesForStep(step: StepFilterStep): readonly StepFilterState[] {
-  return TERMINAL_STEPS.includes(step)
-    ? (["missing", "done"] as const)
-    : (["missing", "done", "raw", "edited", "outdated"] as const);
+  if (step === "synthesize") return ["missing", "done"] as const;
+  if (step === "index") return ["missing", "done", "outdated"] as const;
+  return ["missing", "done", "raw", "edited", "outdated"] as const;
 }
 
 /** Resolve a step to (present, edited, outdated) for one episode.
@@ -129,7 +127,9 @@ function resolveStep(
       return { present, edited, outdated: ep.translate_status === "outdated" };
     }
     case "index":
-      return { present: ep.indexed, edited: false, outdated: false };
+      // Cut from a source version that has since changed: search still
+      // serves the old text until a re-index.
+      return { present: ep.indexed, edited: false, outdated: ep.index_outdated };
     case "synthesize":
       return { present: ep.synthesized, edited: false, outdated: false };
   }

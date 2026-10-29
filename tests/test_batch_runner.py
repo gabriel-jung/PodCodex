@@ -186,15 +186,18 @@ def test_each_episode_runs_on_the_version_picked_for_it(tmp_path, monkeypatch):
     monkeypatch.setattr(batch_mod, "_batch_index", index)
     audio = str(_episode(tmp_path, "a"))
     virtual = virtual_audio_path(tmp_path / "b")
-    req = _req(tmp_path, [audio, virtual], index=True)
-    req.source_version_ids = {audio: "v-a", virtual: "v-b"}
+    picks = {audio: "v-a", virtual: "v-b"}
+    for correct in (True, False):
+        req = _req(tmp_path, [audio, virtual], correct=correct, index=not correct)
+        req.source_version_ids = picks
+        batch_mod._run_batch(_Progress(), req)
 
-    batch_mod._run_batch(_Progress(), req)
-
+    # The index takes the pick in an index batch; in one that also corrects,
+    # the pick is spent on correct (see test_the_source_pick_reaches_...).
     assert seen == {
         ("correct", audio): "v-a",
-        ("index", audio): "v-a",
         ("correct", virtual): "v-b",
+        ("index", audio): "v-a",
         ("index", virtual): "v-b",
     }
 
@@ -232,7 +235,8 @@ def test_an_up_to_date_episode_spawns_no_child(monkeypatch):
         runner, "run_in_subprocess", lambda **_k: pytest.fail("spawned a child")
     )
     monkeypatch.setattr(tjob, "transcript_is_current", lambda *_a: True)
-    monkeypatch.setattr(ijob, "already_indexed", lambda *_a: True)
+    monkeypatch.setattr(ijob, "already_indexed", lambda *_a, **_k: True)
+    monkeypatch.setattr(ijob, "stale_index_combos", lambda *_a, **_k: [])
     req = SimpleNamespace(
         force=False,
         model_size="large-v3",
@@ -403,3 +407,188 @@ def test_each_batch_episode_gets_its_own_title_and_description(tmp_path):
         batch_mod._episode_context(bare.parent, "My show", {})
         == "My show\n\nEpisode: bare"
     )
+
+
+def _index_req():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        force=False,
+        show_name="S",
+        show_folder="/s",
+        index_model_keys=["bge-m3"],
+        index_chunkings=["semantic"],
+    )
+
+
+def test_index_step_also_refreshes_other_stale_collections(monkeypatch):
+    """The episode reads as outdated while any collection is stale; a batch
+    that only looked at its own pair skipped it forever."""
+    import podcodex.api.subprocess_runner as runner
+    from podcodex.api.routes import batch
+    from podcodex.ingest import folder
+    from podcodex.rag import index_job as ijob
+
+    runs: list[dict] = []
+    monkeypatch.setattr(ijob, "already_indexed", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        ijob, "stale_index_combos", lambda *_a: [("e5-small", "semantic")]
+    )
+    monkeypatch.setattr(
+        ijob, "batch_index_source", lambda *_a: ("french", None, "step")
+    )
+    monkeypatch.setattr(
+        runner,
+        "run_in_subprocess",
+        lambda **k: runs.append(k["kwargs"]) or {"indexed": True},
+    )
+    monkeypatch.setattr(folder, "note_episode_indexed", lambda *_a: None)
+    args = (
+        "/s/ep.mp3",
+        "ep",
+        None,
+        _index_req(),
+        lambda: False,
+        lambda *_a: None,
+        0,
+        0.0,
+    )
+
+    assert batch._batch_index(*args) is True
+    assert [(r["model_keys"], r["source"], r["source_ref"]) for r in runs] == [
+        (["e5-small"], "french", "step")
+    ]
+
+
+@pytest.mark.parametrize("canonical, ref", [("v7", "auto"), ("v9", "pinned")])
+def test_a_batch_source_pick_is_a_pin_unless_it_is_canonical(
+    tmp_path, monkeypatch, canonical, ref
+):
+    """Picking the canonical version follows it (later edits outdate the
+    index); picking another one is a pin, or the index read as outdated
+    the moment the batch finished and a re-run never cleared it."""
+    import podcodex.core.versions as versions
+    import podcodex.api.subprocess_runner as runner
+    from podcodex.api.routes import batch
+    from podcodex.ingest import folder
+    from podcodex.rag import index_job as ijob
+
+    runs: list[dict] = []
+    monkeypatch.setattr(ijob, "already_indexed", lambda *_a, **_k: False)
+    monkeypatch.setattr(ijob, "stale_index_combos", lambda *_a: [])
+    monkeypatch.setattr(
+        runner,
+        "run_in_subprocess",
+        lambda **k: runs.append(k["kwargs"]) or {"indexed": True},
+    )
+    monkeypatch.setattr(folder, "note_episode_indexed", lambda *_a: None)
+    args = (
+        str(tmp_path / "s" / "ep.mp3"),
+        "ep",
+        None,
+        _index_req(),
+        lambda: False,
+        lambda *_a: None,
+        0,
+        0.0,
+    )
+
+    monkeypatch.setattr(
+        versions, "resolve_canonical_ref", lambda _b: ("corrected", canonical)
+    )
+    assert batch._batch_index(*args, version_id="v7") is True
+    assert (runs[0]["version_id"], runs[0]["source_ref"]) == ("v7", ref)
+
+
+def test_a_failing_extra_collection_does_not_fail_the_episode(monkeypatch):
+    """A stale collection the batch did not ask for may need an embedder that
+    will not load here; the requested run still counts."""
+    import podcodex.api.subprocess_runner as runner
+    from podcodex.api.routes import batch
+    from podcodex.ingest import folder
+    from podcodex.rag import index_job as ijob
+
+    noted: list[str] = []
+    monkeypatch.setattr(ijob, "already_indexed", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        ijob, "stale_index_combos", lambda *_a: [("pplx-4B", "semantic")]
+    )
+    monkeypatch.setattr(ijob, "batch_index_source", lambda *_a: ("auto", None, "auto"))
+
+    def run(**k):
+        if k["kwargs"]["model_keys"] == ["pplx-4B"]:
+            raise RuntimeError("CUDA out of memory")
+        return {"indexed": True}
+
+    monkeypatch.setattr(runner, "run_in_subprocess", run)
+    monkeypatch.setattr(
+        folder, "note_episode_indexed", lambda _f, stem: noted.append(stem)
+    )
+    args = (
+        "/s/ep.mp3",
+        "ep",
+        None,
+        _index_req(),
+        lambda: False,
+        lambda *_a: None,
+        0,
+        0.0,
+    )
+
+    assert batch._batch_index(*args) is True
+    assert noted == ["ep"]
+
+
+def test_a_failing_requested_run_still_fails_the_episode(monkeypatch):
+    import podcodex.api.subprocess_runner as runner
+    from podcodex.api.routes import batch
+    from podcodex.rag import index_job as ijob
+
+    monkeypatch.setattr(ijob, "already_indexed", lambda *_a, **_k: False)
+    monkeypatch.setattr(ijob, "stale_index_combos", lambda *_a: [])
+    monkeypatch.setattr(ijob, "batch_index_source", lambda *_a: ("auto", None, "auto"))
+
+    def run(**_k):
+        raise RuntimeError("embedder failed")
+
+    monkeypatch.setattr(runner, "run_in_subprocess", run)
+    args = (
+        "/s/ep.mp3",
+        "ep",
+        None,
+        _index_req(),
+        lambda: False,
+        lambda *_a: None,
+        0,
+        0.0,
+    )
+    with pytest.raises(RuntimeError):
+        batch._batch_index(*args)
+
+
+@pytest.mark.parametrize("correct, pick", [(True, None), (False, "v1")])
+def test_the_source_pick_reaches_the_index_only_in_an_index_batch(
+    tmp_path, calls, monkeypatch, correct, pick
+):
+    """Correct takes only a transcript: in a batch that also corrects, the
+    shared pick made the index embed the raw transcript as a pin, just after
+    the same batch corrected it."""
+    seen: list = []
+
+    def index(_audio, *_a, version_id=None, **_kw):
+        seen.append(version_id)
+        return True
+
+    monkeypatch.setattr(batch_mod, "_batch_index", index)
+    ep = _episode(tmp_path, "a")
+    batch_mod._run_batch(
+        _Progress(),
+        _req(
+            tmp_path,
+            [ep],
+            correct=correct,
+            index=True,
+            source_version_ids={str(ep): "v1"},
+        ),
+    )
+    assert seen == [pick]

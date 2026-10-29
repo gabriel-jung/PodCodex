@@ -172,11 +172,10 @@ def list_shows() -> list[ShowSummary]:
             try:
                 # The same file reconcile the show page runs, so the card's
                 # counts agree with it; its corrected rows are what gets
-                # counted. The index is not opened per show (stored indexed
-                # flags are kept).
-                rows = list(
-                    reconcile_show_status(child, check_index=False).status_map.values()
-                )
+                # counted. Indexed counts come from this install's index
+                # (cached per collection version), not the stored flags,
+                # which another install sharing the folder may have written.
+                rows = list(reconcile_show_status(child).status_map.values())
             except Exception as exc:
                 # A failed reconcile keeps the stored counts.
                 logger.warning("status reconcile failed for {}: {}", child, exc)

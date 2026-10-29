@@ -59,6 +59,14 @@ def _meta_fields(transcript: dict) -> tuple[str, str, str, dict]:
         extras["episode_number"] = meta["episode_number"]
     if meta.get("broadcast_number") is not None:
         extras["broadcast_number"] = meta["broadcast_number"]
+    # content_hash of the source version these chunks were cut from: the
+    # index's own record of what it holds, compared against the episode's
+    # current source to detect an index left behind by an edit.
+    if meta.get("source_hash"):
+        extras["source_hash"] = meta["source_hash"]
+        extras["source_ref"] = meta.get("source_ref") or "auto"
+        if meta.get("source_version"):
+            extras["source_version"] = meta["source_version"]
     rss_description = meta.get("rss_description", "")
     if rss_description:
         cleaned = clean_description(rss_description)

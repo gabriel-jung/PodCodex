@@ -17,6 +17,7 @@ interface Entry {
   needsReview: boolean;
   partial: boolean;
   verified: boolean;
+  outdated: boolean;
   title: string;
 }
 
@@ -35,6 +36,7 @@ function entry(
     needsReview: status === "review",
     partial,
     verified,
+    outdated: false,
     title: partial
       ? `${verb} · some batches were rejected by the LLM`
       : (title ?? (status === "ready" ? verb : `${verb} · awaiting review`)),
@@ -58,6 +60,7 @@ function EntrySpan({ entry }: { entry: Entry }) {
       {entry.partial && (
         <span className="text-destructive"> (partially failed)</span>
       )}
+      {entry.outdated && <span className="opacity-70"> (outdated)</span>}
     </span>
   );
 }
@@ -87,7 +90,20 @@ function verifiedEntry(ep: Episode): Entry {
     needsReview: false,
     partial: false,
     verified: true,
+    outdated: false,
     title: `verified version · ${ep.verified!.step} (v${shortVersionId(ep.verified!.version_id)})`,
+  };
+}
+
+// The index records which source version it was cut from; after an edit,
+// search keeps serving the old text until the episode is re-indexed.
+function indexEntry(ep: Episode): Entry | null {
+  const base = entry(plainStatus(!!ep.indexed), "indexed", "index");
+  if (!base || !ep.index_outdated) return base;
+  return {
+    ...base,
+    outdated: true,
+    title: "indexed · the transcript changed since, re-index to search the current text",
   };
 }
 
@@ -108,7 +124,7 @@ export function StatusChips({ ep }: { ep: Episode }) {
     ...sourceEntries,
     translationsEntry(ep),
     entry(plainStatus(!!ep.synthesized), "synthesized", "synth"),
-    entry(plainStatus(!!ep.indexed), "indexed", "index"),
+    indexEntry(ep),
   ].filter((x): x is Entry => x !== null);
 
   if (entries.length === 0) return null;

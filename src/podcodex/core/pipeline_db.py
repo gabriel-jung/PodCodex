@@ -404,27 +404,6 @@ class PipelineDB:
             for r in rows
         }
 
-    def mark_indexed_bulk(self, updates: dict[str, bool]) -> None:
-        """Set the ``indexed`` flag for many stems in a single transaction.
-
-        Used by the per-show LanceDB reconciliation path where dozens to
-        hundreds of rows may need correcting at once; one commit per row
-        would block the FastAPI event loop on the SQLite write lock.
-        """
-        if not updates:
-            return
-        now = time.time()
-        rows = [(stem, int(v), now, int(v), now) for stem, v in updates.items()]
-        with self._lock, self._conn:
-            self._conn.executemany(
-                """
-                INSERT INTO episodes (stem, indexed, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(stem) DO UPDATE SET indexed = ?, updated_at = ?
-                """,
-                rows,
-            )
-
     def mark_bulk(self, updates: dict[str, dict[str, object]]) -> None:
         """Apply plain column updates to many stems in one transaction.
 

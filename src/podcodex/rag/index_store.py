@@ -1570,6 +1570,64 @@ class IndexStore:
         """
         return self._distinct(collection, "episode")
 
+    @staticmethod
+    def _source_record(row: dict) -> dict | None:
+        try:
+            meta = json.loads(row.get("meta") or "{}")
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(meta, dict) or not meta.get("source_hash"):
+            return None
+        return {
+            "hash": str(meta["source_hash"]),
+            "ref": str(meta.get("source_ref") or "auto"),
+            "step": str(row.get("source") or ""),
+            "version": str(meta.get("source_version") or ""),
+        }
+
+    def episode_source_record(self, collection: str, episode: str) -> dict | None:
+        """``{hash, ref, step, version}`` recorded for one episode's chunks.
+
+        ``hash`` is the content hash of the source version they were cut from,
+        ``version`` its id, ``ref`` how it was chosen (auto / step / pinned),
+        ``step`` the step it belongs to. None for chunks indexed before this
+        was recorded.
+        """
+        if not self.collection_exists(collection):
+            return None
+        rows = (
+            self._table(collection)
+            .search()
+            .where(f"episode = '{_escape(episode)}' AND chunk_index = 0")
+            .select(["source", "meta"])
+            .limit(1)
+            .to_list()
+        )
+        return self._source_record(rows[0]) if rows else None
+
+    def episode_source_records(self, collection: str) -> dict[str, dict]:
+        """:meth:`episode_source_record` for every episode that has one.
+
+        Read from each episode's first chunk only (every chunk of a run carries
+        the same value), so this scans one small row per episode.
+        """
+        if not self.collection_exists(collection):
+            return {}
+        rows = (
+            self._table(collection)
+            .search()
+            .where("chunk_index = 0")
+            .select(["episode", "source", "meta"])
+            .limit(1_000_000)
+            .to_list()
+        )
+        out: dict[str, dict] = {}
+        for row in rows:
+            record = self._source_record(row)
+            if record:
+                out[str(row["episode"])] = record
+        return out
+
     def collection_version(self, collection: str) -> int:
         """Dataset version of a collection's table, or 0 if it doesn't exist.
 
@@ -2366,9 +2424,11 @@ class IndexStore:
         return self._distinct(collection, "source")
 
     def collection_summary(self, collection: str) -> dict:
-        """Single-scan ``{episodes, chunks, sources}`` for ``/api/search/stats``."""
+        """Single-scan ``{episodes, chunks, sources, episode_names}`` for
+        ``/api/search/stats``; ``episode_names`` lets a caller count distinct
+        episodes across collections."""
         if not self.collection_exists(collection):
-            return {"episodes": 0, "chunks": 0, "sources": []}
+            return {"episodes": 0, "chunks": 0, "sources": [], "episode_names": []}
         t = self._table(collection)
         rows = t.search().select(["episode", "source"]).limit(1_000_000).to_list()
         episodes = {r["episode"] for r in rows if r.get("episode")}
@@ -2377,6 +2437,7 @@ class IndexStore:
             "episodes": len(episodes),
             "chunks": len(rows),
             "sources": sources,
+            "episode_names": sorted(episodes),
         }
 
     def list_speakers(self, collection: str) -> list[str]:

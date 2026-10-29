@@ -55,6 +55,7 @@ def run(
         chunk_size=chunk_size,
         threshold=threshold,
         overwrite=overwrite,
+        source_ref=_source_ref(source, version_id),
     )
     if upserted == 0:
         raise ValueError(
@@ -77,8 +78,16 @@ def run_for_batch(
     chunkings: list[str],
     force: bool,
     version_id: str | None = None,
+    source: str = "auto",
+    source_ref: str | None = None,
 ) -> dict[str, Any]:
     """Batch-mode index entry. Returns ``{upserted, indexed, skipped}``.
+
+    *source* is ``auto`` (the canonical seglist) unless the episode's index
+    was built from a step the user picked, which a batch re-index keeps
+    (see :func:`batch_index_source`). *source_ref* overrides how the run is
+    recorded: a version the batch picked for the whole pipeline is not a pin
+    of the index (``auto``), one kept from an earlier pin is (``pinned``).
 
     The parent (``api/routes/batch.py``) has already skipped episodes that
     are fully indexed unless ``force``, so this does not ask again.
@@ -91,7 +100,7 @@ def run_for_batch(
     p = AudioPaths.from_audio(audio_path)
     progress_cb(0.0, "Indexing...")
     try:
-        consumed = load_source(audio_path, None, version_id)
+        consumed = load_source(audio_path, None, version_id, step=source)
     except NoTranscriptError:
         # No transcript of any kind yet: nothing to index in this batch. Any
         # other error (a corrupt file, a missing version) fails the episode.
@@ -110,6 +119,7 @@ def run_for_batch(
         chunk_size=CHUNK_SIZE,
         threshold=CHUNK_THRESHOLD,
         overwrite=force,
+        source_ref=source_ref or _source_ref(source, version_id),
     )
     return {"upserted": upserted, "indexed": upserted > 0, "skipped": False}
 
@@ -129,6 +139,7 @@ def _index_episode(
     chunk_size: int,
     threshold: float,
     overwrite: bool,
+    source_ref: str = "auto",
 ) -> tuple[int, str]:
     """The index sequence both entries share: build, vectorize, compact, mark.
 
@@ -143,6 +154,7 @@ def _index_episode(
     from podcodex.core.pipeline_db import mark_step
     from podcodex.core.provenance import build_provenance
     from podcodex.core.source import build_index_transcript
+    from podcodex.core.versions import version_content_hash
     from podcodex.ingest.show_registry import show_id_for_folder
     from podcodex.rag.index_store import get_index_store
     from podcodex.rag.indexing import vectorize_batch
@@ -157,6 +169,15 @@ def _index_episode(
     )
     if not transcript.get("segments"):
         return 0, ""
+    # Recorded on every chunk of this install's index, so a later edit of
+    # the source (a new content hash) reads as an outdated index, and a
+    # re-run re-chunks instead of skipping the episode as cached. The ref
+    # says what the hash is compared against later (see _source_ref).
+    source_hash = version_content_hash(p.base, consumed.step, consumed.version_id)
+    if source_hash:
+        transcript["meta"]["source_hash"] = source_hash
+        transcript["meta"]["source_ref"] = source_ref
+        transcript["meta"]["source_version"] = consumed.version_id
     source_label = transcript["meta"].get("source", "auto")
     local = get_index_store()
     progress_cb(0.05, "Starting vectorization...")
@@ -212,20 +233,43 @@ def _index_episode(
     return upserted, source_label
 
 
+def _source_ref(source: str | None, version_id: str | None) -> str:
+    """How the indexed source was chosen, which decides what counts as stale.
+
+    ``auto``: the episode's canonical seglist, compared against the current
+    one. ``step``: a step the user picked (a translation, the raw
+    transcript), compared against that step's current default version.
+    ``pinned``: an exact version, which no later edit makes outdated.
+    """
+    if version_id:
+        return "pinned"
+    return "auto" if source in (None, "", "auto") else "step"
+
+
 def already_indexed(
     audio_path: str,
     stem: str,
     show_name: str,
     model_keys: list[str],
     chunkings: list[str],
+    version_id: str | None = None,
 ) -> bool:
-    """True when every wanted (model, chunking) already holds this episode.
+    """True when every wanted (model, chunking) already holds this episode,
+    cut from the source this run would index.
 
     Index reads only, no embedder: the batch runner asks it in the parent
     before spawning a child that would only answer "skipped". Reads the id
     without minting; the job itself mints when it writes.
+
+    With *version_id* (a source picked for this batch) the chunks must come
+    from that version. Without one, chunks of the canonical seglist are
+    current while its hash is unchanged, chunks of a picked step while that
+    step's default version is, and a pinned version always is (an unpinned
+    batch never replaces it). Chunks recording nothing predate the record
+    and count as current. Same rule as the status overlay's index_outdated.
     """
     from podcodex.core._utils import AudioPaths
+    from podcodex.core.versions import version_meta_by_id
     from podcodex.ingest.show_registry import show_id_for_folder
     from podcodex.rag.index_store import get_index_store
 
@@ -233,16 +277,107 @@ def already_indexed(
     if not wanted:
         return False
     local = get_index_store()
+    p = AudioPaths.from_audio(audio_path)
     # From this folder's own show.toml, with no fallback to a lookup by name,
     # and strict: a folder with no id cannot own a same-named show's table,
     # which used to make this skip an episode that was never indexed.
-    show_id = show_id_for_folder(AudioPaths.from_audio(audio_path).show_dir)
-    return all(
-        (
-            col := local.resolve_collection(
+    show_id = show_id_for_folder(p.show_dir)
+    records = []
+    for m, c in wanted:
+        col = local.resolve_collection(show_id, m, c, show_label=show_name, strict=True)
+        if not col or not local.episode_is_indexed(col, stem):
+            return False
+        records.append(local.episode_source_record(col, stem))
+    if version_id:
+        meta = version_meta_by_id(p.base, version_id)
+        target = meta.get("content_hash") if meta else None
+        return all(r is None or not target or r["hash"] == target for r in records)
+    return not any(_record_is_stale(p.base, r) for r in records)
+
+
+def _record_is_stale(base, record: dict | None) -> bool:
+    """One collection's chunks of an episode are behind their source.
+
+    The rule the status overlay's ``index_outdated`` applies: canonical
+    (``auto``) chunks against the canonical seglist, a picked step's chunks
+    against that step's default version, pinned chunks never. No record
+    (chunks from before it existed) or nothing to compare against: current.
+    """
+    from podcodex.core.versions import current_source_hash
+
+    if not record or record["ref"] == "pinned":
+        return False
+    now = current_source_hash(base, record["step"], record["ref"])
+    return bool(now) and record["hash"] != now
+
+
+def stale_index_combos(
+    audio_path: str, stem: str, show_name: str
+) -> list[tuple[str, str]]:
+    """``(model, chunker)`` of every collection holding stale chunks of *stem*.
+
+    Across all the show's collections, not only the ones a batch asks for:
+    the status overlay flags the episode while any of them is stale, so the
+    batch re-indexes all of them, or the flag could never be cleared by it.
+    """
+    from podcodex.core._utils import AudioPaths
+    from podcodex.ingest.show_registry import show_id_for_folder
+    from podcodex.rag.index_store import get_index_store
+
+    local = get_index_store()
+    p = AudioPaths.from_audio(audio_path)
+    show_id = show_id_for_folder(p.show_dir)
+    info = local.get_all_collection_info()
+    combos = []
+    for col in local.collections_for_show(
+        show_id, show_label=show_name, strict=True, info=info
+    ):
+        meta = info.get(col) or {}
+        if meta.get("model") and meta.get("chunker"):
+            if _record_is_stale(p.base, local.episode_source_record(col, stem)):
+                combos.append((meta["model"], meta["chunker"]))
+    return combos
+
+
+def batch_index_source(
+    audio_path: str,
+    stem: str,
+    show_name: str,
+    model_keys: list[str],
+    chunkings: list[str],
+) -> tuple[str, str | None, str]:
+    """``(source, version_id, source_ref)`` an unpinned batch indexes from.
+
+    The canonical seglist (``"auto", None, "auto"``), unless the episode's
+    index was built from something the user picked: a step (kept as that
+    step) or a pinned version (kept, while that version still exists).
+    Re-indexing either from the canonical source, which a missing collection,
+    a stale one or ``force`` triggers, would silently replace the choice.
+    """
+    from podcodex.core._utils import AudioPaths
+    from podcodex.core.versions import version_meta_by_id, version_path
+    from podcodex.ingest.show_registry import show_id_for_folder
+    from podcodex.rag.index_store import get_index_store
+
+    local = get_index_store()
+    p = AudioPaths.from_audio(audio_path)
+    show_id = show_id_for_folder(p.show_dir)
+    for m in model_keys:
+        for c in chunkings:
+            col = local.resolve_collection(
                 show_id, m, c, show_label=show_name, strict=True
             )
-        )
-        and local.episode_is_indexed(col, stem)
-        for m, c in wanted
-    )
+            record = local.episode_source_record(col, stem) if col else None
+            if not record:
+                continue
+            if record["ref"] == "pinned" and record.get("version"):
+                vid = record["version"]
+                meta = version_meta_by_id(p.base, vid)
+                live = bool(meta) and version_path(p.base, meta["step"], vid).exists()
+                # A deleted pin falls back to the canonical source rather
+                # than failing the episode on "Source version not found".
+                if live:
+                    return "auto", vid, "pinned"
+            elif record["ref"] == "step" and record["step"]:
+                return record["step"], None, "step"
+    return "auto", None, "auto"

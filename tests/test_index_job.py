@@ -25,13 +25,20 @@ def seams(monkeypatch, tmp_path):
     import podcodex.rag.index_store as index_store
     import podcodex.rag.indexing as indexing
 
-    rec = SimpleNamespace(marked=[], vectorized=[], compacted=0, chunks=3, raise_=None)
+    rec = SimpleNamespace(
+        marked=[], vectorized=[], transcripts=[], compacted=0, chunks=3, raise_=None
+    )
     segments = [{"text": "hi", "start": 0.0, "end": 1.0, "speaker": "A"}]
 
     monkeypatch.setattr(
         source,
         "load_source",
-        lambda *_a, **_k: SimpleNamespace(segments=segments, step="corrected"),
+        lambda *_a, **_k: source.SourceVersion(segments, "corrected", "v1"),
+    )
+    import podcodex.core.versions as versions
+
+    monkeypatch.setattr(
+        versions, "version_content_hash", lambda _b, _s, vid: f"sha256:{vid}"
     )
     monkeypatch.setattr(
         source,
@@ -52,6 +59,7 @@ def seams(monkeypatch, tmp_path):
 
     def _vectorize(*_a, on_progress=None, **kw):
         rec.vectorized.append(kw)
+        rec.transcripts.append(_a[0])
         if on_progress:
             on_progress(0, 1, "BGE-M3 / semantic")
         if rec.raise_ is not None:
@@ -175,3 +183,186 @@ def test_batch_fails_an_episode_whose_transcript_is_unreadable(seams, monkeypatc
     with pytest.raises(ValueError):
         _batch(audio)
     assert rec.marked == []
+
+
+def test_the_index_records_the_source_versions_content_hash(seams):
+    """The hash is the index's own record of what it holds: an edit of the
+    source changes it, which is how an outdated index is detected."""
+    rec, audio = seams
+    _run(audio)  # the panel, with a step picked
+    _batch(audio)  # a batch, canonical source
+    assert [t["meta"]["source_hash"] for t in rec.transcripts] == ["sha256:v1"] * 2
+    assert [t["meta"]["source_ref"] for t in rec.transcripts] == ["step", "auto"]
+    assert [t["meta"]["source_version"] for t in rec.transcripts] == ["v1", "v1"]
+
+
+@pytest.mark.parametrize(
+    "source, version_id, ref",
+    [
+        ("auto", None, "auto"),
+        ("", None, "auto"),
+        ("french", None, "step"),
+        ("auto", "v1", "pinned"),
+        ("corrected", "v1", "pinned"),
+    ],
+)
+def test_source_ref_names_how_the_source_was_chosen(source, version_id, ref):
+    assert index_job._source_ref(source, version_id) == ref
+
+
+@pytest.mark.parametrize(
+    "record, version_id, skipped",
+    [
+        ({"hash": "sha256:a", "ref": "auto", "step": "corrected"}, None, True),
+        # Edited since: the canonical source moved on, re-index.
+        ({"hash": "sha256:old", "ref": "auto", "step": "corrected"}, None, False),
+        # A step or version the user picked is kept by an unpinned batch.
+        ({"hash": "sha256:fr", "ref": "step", "step": "french"}, None, True),
+        # The picked step was edited since: re-index (from that step).
+        ({"hash": "sha256:fr-old", "ref": "step", "step": "french"}, None, False),
+        ({"hash": "sha256:old", "ref": "pinned", "step": "transcript"}, None, True),
+        # Chunks from before the record: current.
+        (None, None, True),
+        # A batch pin wants exactly that version.
+        ({"hash": "sha256:a", "ref": "auto", "step": "corrected"}, "v-pin", False),
+        ({"hash": "sha256:pin", "ref": "pinned", "step": "corrected"}, "v-pin", True),
+    ],
+)
+def test_the_batch_skip_check_follows_how_the_episode_was_indexed(
+    tmp_path, monkeypatch, record, version_id, skipped
+):
+    import podcodex.core.versions as versions
+    import podcodex.ingest.show_registry as registry
+    import podcodex.rag.index_store as index_store
+
+    class _Store:
+        def resolve_collection(self, *_a, **_k):
+            return "col"
+
+        def episode_is_indexed(self, _col, _stem):
+            return True
+
+        def episode_source_record(self, _col, _stem):
+            return record
+
+    monkeypatch.setattr(index_store, "get_index_store", lambda: _Store())
+    monkeypatch.setattr(registry, "show_id_for_folder", lambda *_a, **_k: "s_1")
+    monkeypatch.setattr(
+        versions,
+        "current_source_hash",
+        lambda _b, _s, ref: {"auto": "sha256:a", "step": "sha256:fr"}.get(ref),
+    )
+    monkeypatch.setattr(
+        versions,
+        "version_meta_by_id",
+        lambda _b, vid: {"content_hash": "sha256:pin"} if vid == "v-pin" else None,
+    )
+    audio = tmp_path / "Show" / "ep1.mp3"
+    assert (
+        index_job.already_indexed(
+            str(audio), "ep1", "Show", ["bge-m3"], ["semantic"], version_id=version_id
+        )
+        is skipped
+    )
+
+
+@pytest.mark.parametrize(
+    "record, source",
+    [
+        (
+            {"hash": "h", "ref": "step", "step": "french", "version": "v"},
+            ("french", None, "step"),
+        ),
+        (
+            {"hash": "h", "ref": "auto", "step": "corrected", "version": "v"},
+            ("auto", None, "auto"),
+        ),
+        (
+            {"hash": "h", "ref": "pinned", "step": "transcript", "version": "v-pin"},
+            ("auto", "v-pin", "pinned"),
+        ),
+        # The pinned version was deleted since: canonical, not a failed run.
+        (
+            {"hash": "h", "ref": "pinned", "step": "transcript", "version": "v-gone"},
+            ("auto", None, "auto"),
+        ),
+        (None, ("auto", None, "auto")),
+    ],
+)
+def test_an_unpinned_batch_keeps_what_the_user_picked(
+    tmp_path, monkeypatch, record, source
+):
+    """A missing collection or force makes the batch run; re-indexing from the
+    canonical source then silently replaced a picked step or pinned version."""
+    import podcodex.ingest.show_registry as registry
+    import podcodex.rag.index_store as index_store
+
+    class _Store:
+        def resolve_collection(self, *_a, **_k):
+            return "col"
+
+        def episode_source_record(self, _col, _stem):
+            return record
+
+    import podcodex.core.versions as versions
+
+    monkeypatch.setattr(index_store, "get_index_store", lambda: _Store())
+    monkeypatch.setattr(registry, "show_id_for_folder", lambda *_a, **_k: "s_1")
+    pinned = tmp_path / "pinned.json"
+    pinned.write_text("[]")
+    monkeypatch.setattr(
+        versions,
+        "version_meta_by_id",
+        lambda _b, vid: {"step": "transcript"} if vid in ("v-pin", "v-gone") else None,
+    )
+    monkeypatch.setattr(
+        versions,
+        "version_path",
+        lambda _b, _s, vid: pinned if vid == "v-pin" else tmp_path / "gone.json",
+    )
+    audio = str(tmp_path / "Show" / "ep1.mp3")
+    assert (
+        index_job.batch_index_source(audio, "ep1", "Show", ["bge-m3"], ["semantic"])
+        == source
+    )
+
+
+def test_stale_index_combos_lists_only_the_stale_collections(tmp_path, monkeypatch):
+    import podcodex.core.versions as versions
+    import podcodex.ingest.show_registry as registry
+    import podcodex.rag.index_store as index_store
+
+    records = {
+        "s__bge-m3__semantic": {"hash": "sha256:a", "ref": "auto", "step": "corrected"},
+        "s__e5-small__semantic": {
+            "hash": "sha256:old",
+            "ref": "auto",
+            "step": "corrected",
+        },
+        "s__e5-small__speaker": {
+            "hash": "sha256:x",
+            "ref": "pinned",
+            "step": "transcript",
+        },
+    }
+
+    class _Store:
+        def get_all_collection_info(self):
+            return {
+                name: {"model": name.split("__")[1], "chunker": name.split("__")[2]}
+                for name in records
+            }
+
+        def collections_for_show(self, *_a, **_k):
+            return list(records)
+
+        def episode_source_record(self, col, _stem):
+            return records[col]
+
+    monkeypatch.setattr(index_store, "get_index_store", lambda: _Store())
+    monkeypatch.setattr(registry, "show_id_for_folder", lambda *_a, **_k: "s_1")
+    monkeypatch.setattr(versions, "current_source_hash", lambda *_a: "sha256:a")
+    audio = str(tmp_path / "Show" / "ep1.mp3")
+    assert index_job.stale_index_combos(audio, "ep1", "Show") == [
+        ("e5-small", "semantic")
+    ]

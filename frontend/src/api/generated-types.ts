@@ -96,6 +96,7 @@ export interface EpisodeStatusOut {
   transcribed: boolean;
   corrected: boolean;
   indexed: boolean;
+  index_outdated: boolean;
   synthesized: boolean;
   has_subtitles: boolean;
   translations: string[];
@@ -117,6 +118,7 @@ export interface UnifiedEpisodeOut {
   transcribed: boolean;
   corrected: boolean;
   indexed: boolean;
+  index_outdated: boolean;
   synthesized: boolean;
   has_subtitles: boolean;
   translations: string[];

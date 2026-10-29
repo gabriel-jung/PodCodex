@@ -326,8 +326,8 @@ def test_imported_indexed_flags_follow_this_index(
     tmp_path, isolated_index, with_collection
 ):
     """The archived pipeline.db says which episodes the source had indexed;
-    the shows list reads those flags as stored, so the import must settle
-    them against the collections that actually arrived."""
+    the status must follow the collections that actually arrived."""
+    from podcodex.core.episode_status import reconcile_show_status
     from podcodex.core.pipeline_db import get_pipeline_db
 
     show = _make_show(tmp_path / "test_show")
@@ -341,7 +341,7 @@ def test_imported_indexed_flags_follow_this_index(
     target = tmp_path / "imported_shows"
     import_archive(archive, shows_dir=target, on_conflict=ConflictPolicy.RENAME)
 
-    row = get_pipeline_db(target / "test_show").get_episode("ep1")
+    row = reconcile_show_status(target / "test_show").status_map["ep1"]
     assert bool(row["indexed"]) is with_collection
 
 
@@ -362,7 +362,9 @@ def test_index_only_import_marks_the_local_show_indexed(
 
     import_archive(archive)
 
-    assert get_pipeline_db(show).get_episode("ep1")["indexed"]
+    from podcodex.core.episode_status import reconcile_show_status
+
+    assert reconcile_show_status(show).status_map["ep1"]["indexed"]
 
 
 def test_import_index_only_roundtrip(tmp_path, isolated_index):

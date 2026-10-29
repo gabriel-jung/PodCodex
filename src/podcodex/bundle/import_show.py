@@ -376,15 +376,15 @@ def _settle_show_identities(
 
 
 def _refresh_indexed_flags(folders: list[Path]) -> None:
-    """Settle the indexed flags of the shows an import touched.
+    """Settle the status of the shows an import touched.
 
-    The shows list reads pipeline.db flags as stored. A full import brings the
-    source machine's flags, claiming every episode it had indexed whether or
-    not the collections came along; an index-only import adds collections to
-    a local show whose flags still say not indexed. Either way the list is
-    wrong until the show is opened. The caches go first: under REPLACE the
-    folder path and collection names are unchanged, and a recreated table can
-    match the cached fingerprint.
+    Indexed flags are read from this install's index, not from pipeline.db: a
+    full import brings the source machine's stored flags, and an index-only
+    import adds collections a cached indexed set does not know yet. Dropping
+    the caches is what makes the next read see the imported collections:
+    under REPLACE the folder path and collection names are unchanged, and a
+    recreated table can match the cached fingerprint. The reconcile then
+    settles the other flags of the imported rows.
     """
     from podcodex.core.episode_status import reconcile_show_status
     from podcodex.ingest.folder import forget_indexed_stems, invalidate_scan_cache

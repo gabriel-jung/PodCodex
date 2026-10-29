@@ -100,8 +100,12 @@ def vectorize_episode(
 
     if local.episode_is_indexed(col, episode) and not overwrite:
         new_source = transcript.get("meta", {}).get("source", "")
+        new_hash = transcript.get("meta", {}).get("source_hash", "")
+        new_ref = transcript.get("meta", {}).get("source_ref", "")
         stored = local.load_chunks_no_embeddings(col, episode)
         stored_source = stored[0].source if stored else ""
+        stored_hash = stored[0].source_hash if stored else ""
+        stored_ref = stored[0].source_ref if stored else ""
 
         if stored_source and new_source and stored_source != new_source:
             logger.info(
@@ -109,6 +113,14 @@ def vectorize_episode(
                 f"{stored_source} → {new_source} ({col})"
             )
             # save_chunks replaces this episode's rows, stale ones included.
+        elif new_hash and (
+            new_hash != stored_hash or (new_ref and new_ref != stored_ref)
+        ):
+            # An edit of the same step, or chunks from before the hash was
+            # recorded: re-cut them, or the index keeps serving the old text.
+            # Same content chosen another way (a pin now followed, or the
+            # reverse) re-cuts too: the record decides staleness later.
+            logger.info(f"[UPGRADE] '{episode}' source changed ({col})")
         else:
             local_count = local.episode_chunk_count(col, episode)
             logger.info(f"[SKIP] '{episode}' cached ({col}, {local_count} chunks)")

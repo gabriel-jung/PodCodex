@@ -113,9 +113,9 @@ def reconcile_show_status(path: Path, *, check_index: bool = True) -> Reconciled
 
     Bootstraps an empty DB from a scan, adds rows for episodes that appeared
     since, and reconciles the step flags, translations lists, indexed flags
-    and verified pointers. ``check_index=False`` (the shows list, one call per
-    show) skips the LanceDB read and keeps the stored indexed flags, the same
-    as an unreadable index does.
+    and verified pointers. The indexed flags come from this install's index
+    (overlaid on the rows, never written back); ``check_index=False`` skips
+    that read and keeps the stored flags, the same as an unreadable index.
     """
     # None when the index could not be read (or was not asked): "unknown"
     # must not demote the stored flags the way "nothing indexed" would.
@@ -169,14 +169,15 @@ def reconcile_show_status(path: Path, *, check_index: bool = True) -> Reconciled
             status_map = {row["stem"]: row for row in db.all_episodes()}
 
     if lance_indexed is not None:
-        indexed_updates: dict[str, bool] = {}
+        # Overlaid, not written back. pipeline.db lives in the show folder,
+        # which several installs can share (a synced drive, a dual-boot
+        # disk), while each install has its own index: persisting this made
+        # every install rewrite the others' flags on each read, and a reader
+        # that trusts the stored flag reported another machine's index. The
+        # stored flag is only the fallback for an unreadable index.
         for stem, row in status_map.items():
-            truth = stem in lance_indexed
-            if bool(row.get("indexed", False)) != truth:
-                indexed_updates[stem] = truth
-                row["indexed"] = truth
-        if indexed_updates:
-            db.mark_indexed_bulk(indexed_updates)
+            row["indexed"] = stem in lance_indexed
+        _overlay_index_outdated(path, status_map)
     # Stems worth reading llm_failures.json for: the file showed up in the
     # listing, or the walk was incomplete so the listing can't be trusted.
     llm_failure_stems = incomplete | {
@@ -248,6 +249,42 @@ def reconcile_show_status(path: Path, *, check_index: bool = True) -> Reconciled
         episode_dirs=episode_dirs,
         llm_failure_stems=llm_failure_stems,
     )
+
+
+def _overlay_index_outdated(path: Path, status_map: dict[str, dict]) -> None:
+    """Flag indexed episodes whose source changed since this index was built.
+
+    The index records the content hash of the version it was cut from and how
+    that version was chosen. An index of the canonical seglist is outdated
+    once the canonical version's hash changes (an edit, a newer correct run);
+    one of a picked step (a translation) once that step's default version
+    changes; a pinned version never is. Unknown on either side (chunks from
+    before the record existed, nothing to compare against) is not flagged.
+    """
+    from podcodex.core._utils import episode_base
+    from podcodex.core.versions import canonical_content_hashes, current_source_hash
+    from podcodex.ingest.folder import lance_source_records
+
+    for row in status_map.values():
+        row["index_outdated"] = False
+    recorded = lance_source_records(path)
+    if not recorded:
+        return
+    stems = [s for s in recorded if status_map.get(s, {}).get("indexed")]
+    canonical = canonical_content_hashes(
+        path, [s for s in stems if any(r["ref"] == "auto" for r in recorded[s])]
+    )
+    for stem in stems:
+        for record in recorded[stem]:
+            if record["ref"] == "auto":
+                now = canonical.get(stem)
+            else:
+                now = current_source_hash(
+                    episode_base(path, stem), record["step"], record["ref"]
+                )
+            if now and record["hash"] != now:
+                status_map[stem]["index_outdated"] = True
+                break
 
 
 def _episode_languages(ep_files: list[str], stem: str) -> list[str]:
@@ -331,6 +368,7 @@ def build_status_out(
         "transcribed": st.get("transcribed", False),
         "corrected": st.get("corrected", False),
         "indexed": st.get("indexed", False),
+        "index_outdated": st.get("index_outdated", False),
         "synthesized": st.get("synthesized", False),
         "has_subtitles": batch_ready_subs,
         "translations": cleaned_translations,

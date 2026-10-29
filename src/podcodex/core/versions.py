@@ -715,6 +715,60 @@ def resolve_canonical_refs(
     }
 
 
+def version_content_hash(base: Path, step: str, version_id: str) -> str | None:
+    """``content_hash`` of one version row, or None when it has no row."""
+    for meta in _get_db(base).list_versions(base.name, step):
+        if meta["id"] == version_id:
+            return meta.get("content_hash")
+    return None
+
+
+def canonical_content_hash(base: Path) -> str | None:
+    """``content_hash`` of the canonical seglist, what indexing reads by default."""
+    ref = resolve_canonical_ref(base)
+    return version_content_hash(base, *ref) if ref else None
+
+
+def current_source_hash(base: Path, step: str, ref: str) -> str | None:
+    """The hash an index recorded as *ref* / *step* should still match.
+
+    ``auto`` follows the canonical seglist, ``step`` that step's current
+    default version, and ``pinned`` names a fixed version, so there is
+    nothing newer to compare against (None, like an unknown).
+    """
+    if ref == "pinned":
+        return None
+    if ref == "step" and step:
+        meta = default_source_version(base, step)
+        return meta.get("content_hash") if meta else None
+    return canonical_content_hash(base)
+
+
+def canonical_content_hashes(show_dir: Path, stems: list[str]) -> dict[str, str | None]:
+    """Bulk :func:`canonical_content_hash`, from the same two bulk queries as
+    :func:`resolve_canonical_refs`."""
+    from podcodex.core._utils import episode_base
+
+    db = get_pipeline_db(show_dir)
+    verified = db.verified_pointers()
+    by_step = db.versions_for_steps(["corrected", "transcript"])
+    out: dict[str, str | None] = {}
+    for stem in stems:
+        ref = _canonical_ref_from(
+            episode_base(show_dir, stem),
+            verified.get(stem),
+            lambda step, stem=stem: by_step.get((stem, step)) or [],
+        )
+        out[stem] = None
+        if ref:
+            step, vid = ref
+            for meta in by_step.get((stem, step)) or []:
+                if meta["id"] == vid:
+                    out[stem] = meta.get("content_hash")
+                    break
+    return out
+
+
 def load_canonical_segments(base: Path) -> list[dict] | None:
     """Load an episode's canonical seglist (see :func:`resolve_canonical_ref`).
 
@@ -731,13 +785,19 @@ def load_canonical_segments(base: Path) -> list[dict] | None:
         return None
 
 
+def version_meta_by_id(base: Path, version_id: str) -> dict | None:
+    """The version row *version_id* resolves to, as :func:`load_version_by_id`
+    resolves it (ids from before sub-second stamps repeat across steps)."""
+    return _get_db(base).get_version(version_id, stem=base.name)
+
+
 def load_version_by_id(base: Path, version_id: str) -> tuple[list[dict], str] | None:
     """Resolve a version_id to ``(segments, step)``, or None if unknown.
 
     Centralises the lookup pattern used by index + LLM step entry points
     (single-episode and batch).
     """
-    meta = _get_db(base).get_version(version_id, stem=base.name)
+    meta = version_meta_by_id(base, version_id)
     if not meta:
         return None
     try:

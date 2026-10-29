@@ -704,3 +704,85 @@ def test_episode_file_scan_rewalks_recent_changes(tmp_path):
     os.utime(versions, (recorded, recorded))  # simulate a same-tick write
 
     assert "ep/transcript/v2.json" in _scan_episode_files(show, {})[0]["ep"]
+
+
+def test_an_index_cut_from_an_older_source_reads_as_outdated(tmp_path, monkeypatch):
+    """Search kept serving the text from before an edit with nothing saying
+    the episode needed a re-index."""
+    from podcodex.core import episode_status as status_mod
+    from podcodex.core.pipeline_db import close_pipeline_db
+    from podcodex.core.versions import compute_hash, save_version
+    from podcodex.ingest import folder
+
+    show = tmp_path / "show"
+    (show / "ep1").mkdir(parents=True)
+    base = show / "ep1" / "ep1"
+    prov = {"step": "transcript", "type": "raw", "model": "m", "params": {}}
+    segs = [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "before"}]
+    save_version(base, "transcript", segs, prov)
+    indexed_hash = compute_hash(segs)
+
+    record = {"hash": indexed_hash, "ref": "auto", "step": "transcript"}
+    recorded: dict = {"ep1": [record]}
+    monkeypatch.setattr(status_mod, "lance_indexed_stems", lambda _p: {"ep1"})
+    monkeypatch.setattr(folder, "lance_source_records", lambda _p: recorded)
+    try:
+
+        def outdated() -> bool:
+            return status_mod.load_status_context(show).status_map["ep1"][
+                "index_outdated"
+            ]
+
+        assert outdated() is False
+
+        # Saving the same content again ("Mark reviewed") is not a change.
+        save_version(base, "transcript", segs, {**prov, "type": "validated"})
+        assert outdated() is False
+
+        edited = [{**segs[0], "text": "after"}]
+        save_version(base, "transcript", edited, {**prov, "type": "validated"})
+        assert outdated() is True
+
+        # A pinned version is what the user asked for: no edit outdates it.
+        record["ref"] = "pinned"
+        assert outdated() is False
+
+        # Chunks from before the hash was recorded: unknown, not outdated.
+        recorded.clear()
+        assert outdated() is False
+    finally:
+        close_pipeline_db(show)
+
+
+def test_an_index_of_a_picked_step_follows_that_step(tmp_path, monkeypatch):
+    """Indexed from a translation: comparing against the canonical transcript
+    read it as outdated forever, and every batch re-indexed it."""
+    from podcodex.core import episode_status as status_mod
+    from podcodex.core.pipeline_db import close_pipeline_db
+    from podcodex.core.versions import compute_hash, save_version
+    from podcodex.ingest import folder
+
+    show = tmp_path / "show"
+    (show / "ep1").mkdir(parents=True)
+    base = show / "ep1" / "ep1"
+    seg = {"speaker": "A", "start": 0.0, "end": 1.0, "text": "hello"}
+    save_version(base, "transcript", [seg], {"step": "transcript", "type": "raw"})
+    fr = [{**seg, "text": "bonjour"}]
+    save_version(base, "french", fr, {"step": "french", "type": "raw"})
+
+    record = {"hash": compute_hash(fr), "ref": "step", "step": "french"}
+    monkeypatch.setattr(status_mod, "lance_indexed_stems", lambda _p: {"ep1"})
+    monkeypatch.setattr(folder, "lance_source_records", lambda _p: {"ep1": [record]})
+    try:
+
+        def outdated() -> bool:
+            return status_mod.load_status_context(show).status_map["ep1"][
+                "index_outdated"
+            ]
+
+        assert outdated() is False
+        edited = [{**seg, "text": "salut"}]
+        save_version(base, "french", edited, {"step": "french", "type": "validated"})
+        assert outdated() is True
+    finally:
+        close_pipeline_db(show)

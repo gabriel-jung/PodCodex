@@ -217,6 +217,39 @@ def note_episode_indexed(show_folder: Path | str, stem: str) -> None:
     stems = set(cached[1])
     stems.add(stem)
     _INDEXED_STEMS_CACHE[key] = (versions, stems)
+    _note_source_records(key, cached[0], versions, store, stem)
+
+
+def _note_source_records(key, old_versions, versions, store, stem: str) -> None:
+    """Refresh one episode's entry in ``_SOURCE_RECORDS_CACHE`` after its write.
+
+    Same reason as the stem set: the write bumped every version, and the next
+    status poll would otherwise rescan each collection's first chunks, once
+    per episode of an index batch. Only when the cache matched the state
+    before this write; otherwise it is dropped and rebuilt once.
+    """
+    cached = _SOURCE_RECORDS_CACHE.get(key)
+    if cached is None:
+        return
+    if cached[0] != old_versions:
+        _SOURCE_RECORDS_CACHE.pop(key, None)
+        return
+    try:
+        fresh = [
+            record
+            for name, _created, _version in versions
+            if (record := store.episode_source_record(name, stem))
+        ]
+    except Exception as exc:
+        _SOURCE_RECORDS_CACHE.pop(key, None)
+        logger.warning("source-record refresh failed for {}: {!r}", key, exc)
+        return
+    records = dict(cached[1])
+    if fresh:
+        records[stem] = fresh
+    else:
+        records.pop(stem, None)
+    _SOURCE_RECORDS_CACHE[key] = (versions, records)
 
 
 def forget_indexed_stems(show_folder: Path | str) -> None:
@@ -227,6 +260,54 @@ def forget_indexed_stems(show_folder: Path | str) -> None:
     same creation stamp as the one it replaces.
     """
     _INDEXED_STEMS_CACHE.pop(_stems_cache_key(show_folder), None)
+    _SOURCE_RECORDS_CACHE.pop(_stems_cache_key(show_folder), None)
+
+
+# Recorded source records by show folder, keyed like _INDEXED_STEMS_CACHE and
+# kept warm the same way after an index write (_note_source_records), which
+# re-reads the written episode's records instead of carrying the old ones.
+_SOURCE_RECORDS_CACHE: dict[
+    str, tuple[tuple[tuple[str, str, int], ...], dict[str, list[dict]]]
+] = {}
+
+
+def lance_source_records(show_folder: Path) -> dict[str, list[dict]] | None:
+    """``{stem: [{hash, ref, step}, ...]}`` recorded in this install's index.
+
+    One record per collection the episode is indexed in (they differ when one
+    collection was re-indexed after an edit and another was not). Episodes
+    indexed before records existed are absent. None when the index could not
+    be read, like :func:`lance_indexed_stems`.
+    """
+    try:
+        from podcodex.ingest.show import load_show_meta
+        from podcodex.rag.index_store import get_index_store
+    except Exception:
+        return None
+
+    meta = load_show_meta(show_folder)
+    show_name = (meta.name if meta else None) or show_folder.name
+    try:
+        store = get_index_store()
+        cols = store.collections_for_show(
+            meta.id if meta else "", show_label=show_name, strict=True
+        )
+        versions = _versions_fingerprint(store, cols)
+        key = _stems_cache_key(show_folder)
+        cached = _SOURCE_RECORDS_CACHE.get(key)
+        if cached is not None and cached[0] == versions:
+            return {k: list(v) for k, v in cached[1].items()}
+        records: dict[str, list[dict]] = {}
+        for col in cols:
+            for stem, record in store.episode_source_records(col).items():
+                records.setdefault(stem, []).append(record)
+        _SOURCE_RECORDS_CACHE[key] = (versions, records)
+        return {k: list(v) for k, v in records.items()}
+    except Exception as exc:
+        logger.warning(
+            "lance source-record lookup failed for {!r}: {!r}", show_name, exc
+        )
+        return None
 
 
 def dir_holds_episode(names: set[str] | frozenset[str]) -> bool:
