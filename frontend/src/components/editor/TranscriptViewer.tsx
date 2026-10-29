@@ -315,6 +315,13 @@ export default function TranscriptViewer({
           const renamed = pendingRenames[seg.speaker];
           return renamed && renamed !== seg.speaker ? { ...seg, speaker: renamed } : seg;
         });
+      // Removing the only speaker leaves nothing; the server refuses that
+      // save (it would publish an empty version), so explain it here instead.
+      if (finalSegments.length === 0) {
+        throw new Error(
+          "Nothing left to save: every segment would be removed. Delete the version instead.",
+        );
+      }
       writes.push(saveSegments(finalSegments));
       if (hasPendingStripChanges && saveSpeakerMap) {
         const mapping: Record<string, string> = {};

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 import shutil
 import zipfile
 from pathlib import Path
@@ -29,6 +28,7 @@ _EXCLUDE_NAMES = frozenset(
     }
 )
 _EXCLUDE_DIRS = frozenset({".versions"})
+_COMPRESSED_AUDIO = AUDIO_EXTENSIONS - {".wav"}
 
 
 def _declared_speakers(audio_path: str, output_dir: str | None) -> set[str]:
@@ -98,14 +98,17 @@ def _load_segments(
 
 
 def _attachment_headers(
-    audio_path: str, ext: str, output_dir: str | None = None
+    audio_path: str, ext: str, output_dir: str | None = None, source: str = ""
 ) -> dict[str, str]:
     # Force a download instead of inline rendering: the Tauri webview ignores
     # the <a download> attribute on same-origin text responses.
     from urllib.parse import quote
 
     stem = Path(audio_path).stem or (Path(output_dir).name if output_dir else "")
-    name = f"{stem or 'export'}.{ext}"
+    # Same names the panels suggest (`<stem>_corrected`, `<stem>_<lang>`), so
+    # a transcript, its correction and a translation never overwrite each other.
+    suffix = f"_{source}" if source and source != "transcript" else ""
+    name = f"{stem or 'export'}{suffix}.{ext}"
     # Headers are Latin-1: an ASCII fallback plus the RFC 5987 UTF-8 form, or
     # a stem with accents or CJK characters fails the response with a 500.
     ascii_name = name.encode("ascii", "replace").decode("ascii").replace('"', "_")
@@ -132,7 +135,7 @@ def export_text(
     return PlainTextResponse(
         text,
         media_type="text/plain; charset=utf-8",
-        headers=_attachment_headers(audio_path, "txt", output_dir),
+        headers=_attachment_headers(audio_path, "txt", output_dir, source),
     )
 
 
@@ -149,7 +152,7 @@ def export_srt(
     return PlainTextResponse(
         srt,
         media_type="application/x-subrip; charset=utf-8",
-        headers=_attachment_headers(audio_path, "srt", output_dir),
+        headers=_attachment_headers(audio_path, "srt", output_dir, source),
     )
 
 
@@ -166,7 +169,7 @@ def export_vtt(
     return PlainTextResponse(
         vtt,
         media_type="text/vtt; charset=utf-8",
-        headers=_attachment_headers(audio_path, "vtt", output_dir),
+        headers=_attachment_headers(audio_path, "vtt", output_dir, source),
     )
 
 
@@ -177,7 +180,9 @@ def _write_episode_zip(audio_path: str, output_dir: str | None, target) -> None:
     episode_dir = Path(p.base).parent
     if not episode_dir.exists():
         raise HTTPException(404, "Episode directory not found")
-    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
+    # Level 1: an episode is mostly WAV (TTS segments, voice samples), where
+    # the default level spent minutes for a few percent over the fastest one.
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
         for f in sorted(episode_dir.rglob("*")):
             if not f.is_file():
                 continue
@@ -186,7 +191,13 @@ def _write_episode_zip(audio_path: str, output_dir: str | None, target) -> None:
             if any(d in f.parts for d in _EXCLUDE_DIRS):
                 continue
             arcname = f.relative_to(episode_dir.parent)
-            zf.write(f, arcname)
+            # Already-compressed audio gains nothing from deflate.
+            compress = (
+                zipfile.ZIP_STORED
+                if f.suffix.lower() in _COMPRESSED_AUDIO
+                else zipfile.ZIP_DEFLATED
+            )
+            zf.write(f, arcname, compress_type=compress)
 
 
 @router.get("/zip")
@@ -194,12 +205,33 @@ def export_zip(
     audio_path: str = Query(""),
     output_dir: str | None = Query(None),
 ):
-    """Export the entire episode output directory as a ZIP archive."""
-    buf = io.BytesIO()
-    _write_episode_zip(audio_path, output_dir, buf)
-    buf.seek(0)
+    """Export the entire episode output directory as a ZIP archive.
+
+    Built in a temp file, not in memory: an episode with synthesis output
+    runs to hundreds of MB. ``TemporaryFile`` is removed by the OS when its
+    handle closes (unlinked at once on POSIX, delete-on-close on Windows),
+    so an aborted download or a crash cannot leave it behind, which a
+    post-send cleanup task did.
+    """
+    import tempfile
+
+    tmp = tempfile.TemporaryFile()
+    try:
+        _write_episode_zip(audio_path, output_dir, tmp)
+        tmp.seek(0)
+    except BaseException:
+        tmp.close()
+        raise
+
+    def chunks():
+        try:
+            while block := tmp.read(1024 * 1024):
+                yield block
+        finally:
+            tmp.close()
+
     return StreamingResponse(
-        buf,
+        chunks(),
         media_type="application/zip",
         headers=_attachment_headers(audio_path, "zip", output_dir),
     )

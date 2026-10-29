@@ -325,3 +325,76 @@ def test_a_translation_exports_with_the_current_speaker_names(
         )
         assert r.status_code == 200, r.text
         assert "Ann" in r.text and "SPEAKER_00" not in r.text
+
+
+def test_export_filenames_name_the_source(client, tmp_path):
+    """A transcript, its correction and a translation downloaded under one
+    name, each overwriting the last."""
+    from podcodex.core._utils import AudioPaths
+    from podcodex.core.app_config import AppConfig, save_config
+
+    show = tmp_path / "show"
+    show.mkdir()
+    audio = show / "ep.mp3"
+    audio.write_bytes(b"")
+    save_config(AppConfig(show_folders=[str(show)]))
+    base = AudioPaths.from_audio(str(audio)).base
+    seg = [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "x"}]
+    for step in ("transcript", "corrected", "french"):
+        save_version(base, step, seg, {"step": step})
+
+    names = {}
+    for source in ("transcript", "corrected", "french"):
+        r = client.get(
+            "/api/export/srt", params={"audio_path": str(audio), "source": source}
+        )
+        assert r.status_code == 200, r.text
+        names[source] = (
+            r.headers["content-disposition"].split('filename="')[1].split('"')[0]
+        )
+    assert names == {
+        "transcript": "ep.srt",
+        "corrected": "ep_corrected.srt",
+        "french": "ep_french.srt",
+    }
+
+
+def test_episode_zip_stores_compressed_audio_and_cleans_up(
+    client, tmp_path, monkeypatch
+):
+    import io
+    import tempfile
+    import zipfile
+
+    from podcodex.core._utils import AudioPaths
+    from podcodex.core.app_config import AppConfig, save_config
+
+    show = tmp_path / "show"
+    show.mkdir()
+    audio = show / "ep.mp3"
+    audio.write_bytes(b"")
+    save_config(AppConfig(show_folders=[str(show)]))
+    base = AudioPaths.from_audio(str(audio)).base
+    save_version(
+        base,
+        "transcript",
+        [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "x"}],
+        {"step": "transcript"},
+    )
+    (base.parent / "voice_samples").mkdir()
+    (base.parent / "voice_samples" / "A_00.wav").write_bytes(b"\0" * 4096)
+    (base.parent / "clip.mp3").write_bytes(b"ID3" + b"\1" * 4096)
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    r = client.get("/api/export/zip", params={"audio_path": str(audio)})
+    assert r.status_code == 200, r.text
+
+    zf = zipfile.ZipFile(io.BytesIO(r.content))
+    infos = {i.filename: i for i in zf.infolist()}
+    assert infos["ep/clip.mp3"].compress_type == zipfile.ZIP_STORED
+    assert infos["ep/voice_samples/A_00.wav"].compress_type == zipfile.ZIP_DEFLATED
+    assert any(name.startswith("ep/transcript/") for name in infos)
+    # Built in a temp file, removed once the response was sent.
+    assert list(scratch.iterdir()) == []

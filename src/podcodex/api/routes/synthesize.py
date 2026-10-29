@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from podcodex.api.routes._helpers import (
     require_audio_or_output,
@@ -55,6 +55,14 @@ class VoiceSelection(BaseModel):
     start: float
     end: float
     text: str = ""
+
+    @model_validator(mode="after")
+    def span_is_positive(self) -> VoiceSelection:
+        """An empty or reversed span extracted a broken clip (negative
+        duration) and reported success."""
+        if self.start < 0 or self.end <= self.start:
+            raise ValueError("A voice sample needs 0 <= start < end")
+        return self
 
 
 class ExtractSelectedRequest(BaseModel):

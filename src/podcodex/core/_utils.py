@@ -365,6 +365,8 @@ def normalize_pub_date(raw) -> str | None:
 
 
 _HMS_RE = re.compile(r"^(?:(\d+)h)?(\d+)m(\d{1,2})$")
+# "69:46" / "1:09:46": the clock form people (and LLM clients) type.
+_COLON_RE = re.compile(r"^(?:(\d+):)?(\d+):(\d{2})$")
 
 
 def format_hms(seconds: float) -> str:
@@ -392,9 +394,10 @@ def format_hms(seconds: float) -> str:
 def parse_time(value: str | int | float) -> float:
     """Parse a timestamp into float seconds.
 
-    Accepts raw seconds (``4186`` / ``4186.0`` / ``"4186"``) and the clock
-    forms ``"1h09m46"`` / ``"69m46"`` / ``"9m38"``. Raises ``ValueError`` if
-    a minutes-within-hour or seconds field is >= 60.
+    Accepts raw seconds (``4186`` / ``4186.0`` / ``"4186"``), the clock
+    forms ``"1h09m46"`` / ``"69m46"`` / ``"9m38"``, and their colon spelling
+    ``"1:09:46"`` / ``"69:46"``. Raises ``ValueError`` if a minutes-within-hour
+    or seconds field is >= 60.
     """
     if isinstance(value, (int, float)):
         return float(value)
@@ -403,7 +406,7 @@ def parse_time(value: str | int | float) -> float:
         return float(text)
     except ValueError:
         pass
-    m = _HMS_RE.match(text)
+    m = _HMS_RE.match(text) or _COLON_RE.match(text)
     if not m:
         raise ValueError(f"unrecognized time format: {value!r}")
     hours = int(m.group(1)) if m.group(1) else 0
@@ -495,6 +498,29 @@ def _default_file_mode() -> int:
     return 0o666 & ~mask
 
 
+def _create_temp_file(directory: Path, prefix: str, suffix: str) -> Path:
+    """Create an empty 0600 temp file in *directory* and return its path.
+
+    Not ``tempfile.mkstemp``: on Windows it takes a PermissionError for a
+    name collision whenever ``os.access`` calls the directory writable, which
+    there means only "not read-only", and retries up to ``TMP_MAX`` (about two
+    billion) times. An unwritable folder spun a core indefinitely instead of
+    failing. Only a real collision retries here.
+    """
+    import secrets
+
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    for _ in range(100):
+        candidate = directory / f"{prefix}{secrets.token_hex(4)}{suffix}"
+        try:
+            fd = os.open(candidate, flags, 0o600)
+        except FileExistsError:
+            continue
+        os.close(fd)
+        return candidate
+    raise FileExistsError(f"No free temp file name in {directory}")
+
+
 def atomic_write(
     path: Path,
     writer_fn,
@@ -521,16 +547,10 @@ def atomic_write(
         exclusive: publish only if *path* does not exist yet (hard link
                    instead of replace); raises FileExistsError otherwise.
     """
-    import tempfile
-
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(path.parent), prefix=f"{TEMP_PREFIX}{tag}", suffix=suffix
-    )
-    os.close(fd)
-    tmp_path = Path(tmp_name)
+    tmp_path = _create_temp_file(path.parent, f"{TEMP_PREFIX}{tag}", suffix)
     try:
-        # mkstemp creates the file 0600, and os.replace publishes that mode:
+        # The temp file is created 0600, and os.replace publishes that mode:
         # every episode file would become owner-only, unreadable from a
         # Samba share or a container running as another user. Keep the mode
         # the file already has (0600 secrets stay 0600), else the umask

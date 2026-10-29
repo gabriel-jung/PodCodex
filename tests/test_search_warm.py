@@ -45,6 +45,13 @@ class _FakeStore:
             "model": "e5-small",
             "chunker": "semantic",
         },
+        # An older collection from before ids: keyed by its label only.
+        "beta__e5-small__speaker": {
+            "show": "beta",
+            "show_id": "",
+            "model": "e5-small",
+            "chunker": "speaker",
+        },
     }
 
     def get_all_collection_info(self) -> dict:
@@ -55,7 +62,11 @@ class _FakeStore:
         return [n for n, i in self._INFO.items() if not slug or i["show"] == slug]
 
     def collections_for_show(self, show_id: str, show_label: str = "") -> list[str]:
-        return [n for n, i in self._INFO.items() if i["show_id"] == show_id]
+        return [
+            n
+            for n, i in self._INFO.items()
+            if i["show_id"] == show_id or (not i["show_id"] and i["show"] == "beta")
+        ]
 
     def label_for_show_id(self, show_id: str) -> str:
         return "beta"
@@ -64,7 +75,7 @@ class _FakeStore:
         return self._INFO.get(collection)
 
     def collection_summary(self, collection: str) -> dict:
-        return {"episodes": 1, "chunks": 10, "sources": []}
+        return {"episodes": 1, "chunks": 10, "sources": [], "episode_names": ["ep1"]}
 
 
 @pytest.fixture
@@ -87,6 +98,17 @@ def test_fetching_stats_warms_that_show(client, warmed) -> None:
 
     assert response.status_code == 200
     assert warmed == ["beta_1234abcd"]
+
+
+def test_stats_count_an_episode_once_across_chunkings(client, warmed) -> None:
+    """The same episode under two chunkings read as two indexed episodes,
+    also when one of the collections predates show ids."""
+    body = client.get("/api/search/stats", params={"show_id": "beta_1234abcd"}).json()
+    _join_warm_threads()
+
+    assert len(body["collections"]) == 2
+    assert body["total_episodes"] == 1
+    assert body["total_chunks"] == 20
 
 
 def test_fetching_search_config_warms_nothing(client, warmed) -> None:

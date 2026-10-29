@@ -100,7 +100,7 @@ export interface OllamaCheckResponse {
   installed: boolean;
   /** Daemon responded to `list()` at `host`. */
   reachable: boolean;
-  /** Resolved host (honors `OLLAMA_HOST`, default `http://localhost:11434`). */
+  /** Resolved host (honors `OLLAMA_HOST`, default `http://127.0.0.1:11434`). */
   host: string;
   /** Pulled model names, sorted. Empty when unreachable or none pulled. */
   models: string[];

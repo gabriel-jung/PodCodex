@@ -400,3 +400,17 @@ def test_submit_task_does_not_hand_one_language_to_another(monkeypatch):
         release.set()
         _run_to_completion(manager, manager.get(french.task_id))
         manager._executor.shutdown(wait=True)
+
+
+def test_a_result_can_close_with_its_own_summary(tm):
+    """An LLM run whose batches were all rejected used to end as "Done"."""
+    plain = tm.submit("index", "/a.mp3", lambda _cb: {"count": 1})
+    summary = tm.submit(
+        "translate",
+        "/b.mp3",
+        lambda _cb: {"count": 1, "message": "Done, 1 of 1 rejected"},
+    )
+    _run_to_completion(tm, plain)
+    _run_to_completion(tm, summary)
+    assert plain.message == "Done"
+    assert summary.message == "Done, 1 of 1 rejected"

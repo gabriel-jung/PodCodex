@@ -23,7 +23,10 @@ from podcodex.core._utils import (
 )
 
 
-DEFAULT_OLLAMA_HOST = "http://localhost:11434"
+# Ollama binds IPv4 loopback. "localhost" can resolve to ::1 first, and where
+# that connect hangs rather than being refused (Windows reaching an Ollama in
+# WSL), every call paid ~10s before falling back to IPv4.
+DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
 # Knobs for the schema-constrained correction call. See `run_ollama`.
 OLLAMA_READ_TIMEOUT_S = 600.0
 OLLAMA_CONNECT_TIMEOUT_S = 10.0

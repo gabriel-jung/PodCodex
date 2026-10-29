@@ -1084,6 +1084,22 @@ def list_episodes(show_folder: str) -> list[dict]:
 # ── Unified episodes (local + RSS merged) ───
 
 
+def _transcribed_duration(provenance: dict) -> float:
+    """Audio length the transcription recorded, for episodes no feed describes.
+
+    A local import has no feed metadata, so its duration read 0; whisper's
+    run already measured the audio and keeps it in the transcript provenance.
+    """
+    prov = provenance.get("transcript") if isinstance(provenance, dict) else None
+    params = prov.get("params") if isinstance(prov, dict) else None
+    meta = params.get("meta") if isinstance(params, dict) else None
+    value = meta.get("duration") if isinstance(meta, dict) else None
+    try:
+        return float(value) if value else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
 @router.get(
     "/{show_folder:path}/unified",
     response_model=list[UnifiedEpisodeOut],
@@ -1123,25 +1139,26 @@ def unified_episodes(show_folder: str) -> list[dict]:
         removed: bool = False,
         feed_order: int | None = None,
     ) -> dict:
+        status = build_status_out(
+            stem=stem,
+            audio_path=audio_path,
+            output_dir=output_dir,
+            st=st,
+            ep_files=ep_files,
+            ctx=ctx,
+        )
         return {
             "id": ep_id,
             "title": title,
             "pub_date": pub_date,
             "description": description,
             "audio_url": audio_url,
-            "duration": duration,
+            "duration": duration or _transcribed_duration(status["provenance"]),
             "episode_number": episode_number,
             "artwork_url": artwork_url,
             "removed": removed,
             "feed_order": feed_order,
-            **build_status_out(
-                stem=stem,
-                audio_path=audio_path,
-                output_dir=output_dir,
-                st=st,
-                ep_files=ep_files,
-                ctx=ctx,
-            ),
+            **status,
         }
 
     # Pass the set of stems already on disk so episode_stem can match a

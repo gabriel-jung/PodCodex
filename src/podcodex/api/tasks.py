@@ -403,7 +403,12 @@ class TaskManager:
                     _invalidate_scan_for(audio_path)
                     info.status = "completed"
                     info.progress = 1.0
-                    info.message = "Done"
+                    # A result may close with its own summary (an LLM run
+                    # with rejected batches) instead of the plain "Done".
+                    summary = (
+                        result.get("message") if isinstance(result, dict) else None
+                    )
+                    info.message = summary if isinstance(summary, str) else "Done"
                     info.result = result
             except TaskCancelled as exc:
                 # A cancel point, not a failure. Also settles a task that

@@ -628,6 +628,34 @@ def test_stdio_main_runs_the_live_reload_lifespan(monkeypatch):
     monkeypatch.delattr(low, "_podcodex_session_capture_installed")
 
 
+def test_windows_transport_reads_a_private_stdin_and_native_fds_are_detached():
+    """On Windows a pending transport read on fd 0 blocked native code that
+    touched fd 0 (the embedder's scipy import), so ``search`` hung until the
+    client sent another message. The transport must read a duplicate."""
+    import subprocess
+    import sys
+
+    script = (
+        "import os, sys\n"
+        "from podcodex.mcp import server\n"
+        "sys.platform = 'win32'\n"
+        "server._isolate_transport_stdio()\n"
+        "assert os.read(0, 10) == b'', 'fd 0 must be NUL'\n"
+        "os.write(1, b'native\\n')\n"
+        "sys.stdout.write(sys.stdin.readline().upper())\n"
+        "sys.stdout.flush()\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        input=b"jsonrpc line\n",
+        capture_output=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr.decode()
+    assert proc.stdout == b"JSONRPC LINE\n"
+    assert b"native" in proc.stderr
+
+
 def test_a_legacy_narrator_label_is_kept_like_speaker_stats_keeps_it():
     """A documentary's "Narrator" can be a person; blanking it on some
     surfaces and not others left the client unable to cite them."""

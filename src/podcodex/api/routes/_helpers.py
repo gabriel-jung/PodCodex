@@ -222,6 +222,48 @@ def require_audio_or_output(audio_path: str | None, output_dir: str | None) -> N
         raise HTTPException(status_code=422, detail="audio_path or output_dir required")
 
 
+def llm_run_outcome(
+    audio_path: str | None, output_dir: str | None, step: str, version_id: str
+) -> dict:
+    """Rejected-batch summary of the LLM run that saved *version_id*.
+
+    A rejected batch keeps its source text, so a run whose every batch was
+    rejected saved an unchanged copy; reporting it as plain "Done" read as
+    success. Returns ``{}`` when nothing was rejected, else ``rejected`` and
+    the task's closing ``message``. The section counts only when it is
+    stamped with this run's version, so an older run's record never shows.
+    """
+    from podcodex.core.llm_failures import get_step
+
+    section = get_step(audio_path, output_dir, step) or {}
+    rejected = int(section.get("rejected") or 0)
+    if not rejected or section.get("version_id") != version_id:
+        return {}
+    total = int(section.get("total_batches") or rejected)
+    return {
+        "rejected": rejected,
+        "message": (
+            f"Done, {rejected} of {total} batches rejected by the LLM "
+            "(their source text was kept)"
+        ),
+    }
+
+
+def require_segments(segments: list) -> None:
+    """Raise 422 for an empty segment list on an editor save.
+
+    Saving one would publish an empty version as the step's latest, and the
+    episode would then read as done with nothing in it. The editor can build
+    one by removing the only speaker; deleting a version is the way to undo
+    a step.
+    """
+    if not segments:
+        raise HTTPException(
+            status_code=422,
+            detail="Refusing to save an empty transcript. Delete the version instead.",
+        )
+
+
 def resolve_inside_show_root(path: str) -> Path:
     """Defend ``?path=`` query params against arbitrary-file read/delete by
     requiring the resolved path to live under a registered show folder.

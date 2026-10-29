@@ -704,7 +704,7 @@ def get_context(
             only the center chunk.
         at_time: Center the window on the chunk covering this timestamp
             instead of a ``chunk_index``. Accepts seconds (``4186``) or
-            the clock forms ``"1h09m46"`` / ``"69m46"``. A time in a gap
+            the clock forms ``"1h09m46"`` / ``"69m46"`` / ``"1:09:46"``. A time in a gap
             or past the transcript snaps to the nearest chunk.
 
     Returns:
@@ -765,6 +765,31 @@ def speaker_stats(show: str | None = None) -> list[dict]:
     return get_index_store().speaker_stats_multi([c.name for c in collections])
 
 
+def _isolate_transport_stdio() -> None:
+    """Give the JSON-RPC transport private copies of stdin/stdout (Windows).
+
+    The stdio transport keeps a blocking read pending on fd 0, and the C
+    runtime holds that descriptor's lock for the whole read. Native code
+    that touches fd 0 meanwhile (the Fortran runtime under scipy, loaded by
+    the embedder's import chain) blocks until the next message arrives,
+    and a client waiting on the reply sends none: ``search`` hung forever.
+    The transport reads its own duplicate instead, fd 0 becomes NUL, and
+    fd 1 goes to stderr so stray native writes cannot corrupt the protocol.
+    Must run before ``mcp.run()``, which wraps ``sys.stdin``/``sys.stdout``.
+    """
+    import sys
+
+    if sys.platform != "win32":
+        return
+    in_fd, out_fd = os.dup(0), os.dup(1)
+    null_fd = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(null_fd, 0)
+    os.close(null_fd)
+    os.dup2(2, 1)
+    sys.stdin = open(in_fd, encoding="utf-8", errors="replace")
+    sys.stdout = open(out_fd, "w", encoding="utf-8")
+
+
 def main(argv: list[str] | None = None, *, bootstrap: bool = True) -> None:
     """Run the MCP server over stdio.
 
@@ -799,6 +824,7 @@ def main(argv: list[str] | None = None, *, bootstrap: bool = True) -> None:
 
         bootstrap_for_mcp_stdio()
     install_live_reload(mcp)
+    _isolate_transport_stdio()
     logger.info("podcodex-mcp starting (stdio)")
     # Embedder loads lazily on first tool call — Claude Desktop's
     # initialize handshake has a 60s timeout that we'd otherwise blow on

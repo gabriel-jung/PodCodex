@@ -93,8 +93,8 @@ DEFAULT_MODEL = "bge-m3"
 # ──────────────────────────────────────────────
 
 CHUNKING_STRATEGIES: dict[str, str] = {
-    "semantic": "Semantic similarity (Chonkie) — recommended default",
-    "speaker": "One chunk per speaker turn — fast, no extra deps",
+    "semantic": "Semantic similarity (Chonkie), recommended default",
+    "speaker": "One chunk per speaker turn: fast, no extra deps",
 }
 
 DEFAULT_CHUNKING = "semantic"

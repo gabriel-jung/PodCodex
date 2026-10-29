@@ -16,7 +16,9 @@ from podcodex.api.routes._helpers import (
     llm_prov_params,
     load_best_source,
     reconcile_batches,
+    llm_run_outcome,
     require_audio_or_output,
+    require_segments,
     submit_task,
 )
 from podcodex.core.llm_failures import clear_step_for, get_step, stamp_run_version
@@ -67,6 +69,7 @@ def save_translated_segments(
     from podcodex.core.translate import save_translation
 
     require_audio_or_output(audio_path, output_dir)
+    require_segments(segments)
     lang_norm = normalize_lang(lang)
     seg_dicts = [s.model_dump() for s in segments]
     provenance = build_edit_provenance(lang_norm, audio_path, output_dir)
@@ -102,7 +105,7 @@ def start_translate(req: TranslateRequest) -> TaskResponse:
             req_data.audio_path, req_data.output_dir, req_data.source_version_id
         )
         progress_cb(0.1, "Starting translation...")
-        translated, _version_id = translate_and_save(
+        translated, version_id = translate_and_save(
             source,
             llm,
             audio_path=req_data.audio_path,
@@ -115,7 +118,16 @@ def start_translate(req: TranslateRequest) -> TaskResponse:
             key_name=req_data.key_name,
             on_batch=batch_progress(progress_cb),
         )
-        return {"count": len(translated), "lang": req_data.target_lang}
+        return {
+            "count": len(translated),
+            "lang": req_data.target_lang,
+            **llm_run_outcome(
+                req_data.audio_path,
+                req_data.output_dir,
+                normalize_lang(req_data.target_lang),
+                version_id,
+            ),
+        }
 
     return submit_task(
         "translate",

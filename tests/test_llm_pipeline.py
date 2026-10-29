@@ -358,6 +358,13 @@ def test_host_normalisation_matches_the_ollama_client(host):
     assert llm._normalize_ollama_host(host) == _parse_host(host)
 
 
+def test_default_host_is_ipv4_loopback(monkeypatch):
+    """``localhost`` may resolve to ::1 first; where that connect hangs (an
+    Ollama in WSL seen from Windows) every call waited ~10s."""
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    assert llm.ollama_host() == "http://127.0.0.1:11434"
+
+
 def test_an_untagged_model_counts_as_latest():
     assert llm._ollama_model_key("llama3.1") == "llama3.1:latest"
     assert llm._ollama_model_key("qwen3:4b") == "qwen3:4b"

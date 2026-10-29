@@ -11,6 +11,7 @@ from podcodex.api.routes._helpers import (
     build_edit_provenance,
     build_provenance,
     require_audio_or_output,
+    require_segments,
     submit_subprocess_task,
     transcribe_prov_params,
 )
@@ -72,6 +73,7 @@ def save_segments(
     from podcodex.core.transcribe import save_transcript
 
     require_audio_or_output(audio_path, output_dir)
+    require_segments(segments)
     seg_dicts = [s.model_dump() for s in segments]
     provenance = build_edit_provenance("transcript", audio_path, output_dir)
     save_transcript(

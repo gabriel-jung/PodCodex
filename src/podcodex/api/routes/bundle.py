@@ -25,6 +25,7 @@ from podcodex.bundle import (
     import_archive,
     preview_archive,
 )
+from podcodex.api.routes._helpers import require_registered_show
 from podcodex.bundle.conflicts import resolve_policy
 from podcodex.rag.index_origin import IndexOwnershipError
 
@@ -32,7 +33,7 @@ router = APIRouter()
 
 
 class ExportShowRequest(BaseModel):
-    show_folder: str  # absolute or registered path
+    show_folder: str  # a registered show folder
     output_path: str
     with_audio: bool = False
     index_only: bool = False
@@ -42,7 +43,7 @@ class ExportShowRequest(BaseModel):
 
 
 class ExportIndexRequest(BaseModel):
-    show_folders: list[str]  # absolute paths
+    show_folders: list[str]  # registered show folders
     output_path: str
 
 
@@ -59,9 +60,12 @@ class ImportRequest(BaseModel):
 
 @router.post("/export-show", response_model=ExportResult)
 def post_export_show(req: ExportShowRequest) -> ExportResult:
+    # Registered shows only: exporting mints a show id, which writes
+    # show.toml into the folder, and archives the whole tree.
+    show_folder = require_registered_show(req.show_folder)
     try:
         return export_show(
-            Path(req.show_folder),
+            show_folder,
             Path(req.output_path),
             with_audio=req.with_audio,
             index_only=req.index_only,
@@ -75,9 +79,10 @@ def post_export_show(req: ExportShowRequest) -> ExportResult:
 
 @router.post("/export-index", response_model=ExportResult)
 def post_export_index(req: ExportIndexRequest) -> ExportResult:
+    show_folders = [require_registered_show(p) for p in req.show_folders]
     try:
         return export_index(
-            [Path(p) for p in req.show_folders],
+            show_folders,
             Path(req.output_path),
         )
     except FileNotFoundError as exc:

@@ -377,3 +377,45 @@ def test_upload_sample_rejects_path_speaker(client, tmp_path):
         files={"file": ("a.wav", b"RIFF", "audio/wav")},
     )
     assert r.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "route, extra",
+    [
+        ("/api/transcribe/segments", {}),
+        ("/api/correct/segments", {}),
+        ("/api/translate/segments", {"lang": "French"}),
+    ],
+)
+def test_empty_segment_save_is_refused(client, tmp_path, route, extra):
+    """Removing the only speaker in the editor sent []: it became the step's
+    latest version and the episode read as done with nothing in it."""
+    audio, out = audio_and_output_dir(tmp_path)
+    r = client.put(route, params={"audio_path": audio, **extra}, json=[])
+    assert r.status_code == 422
+    assert not any(Path(out).rglob("*.json"))
+
+
+def test_non_empty_segment_save_still_lands(client, tmp_path):
+    audio, out = audio_and_output_dir(tmp_path)
+    seg = {"speaker": "A", "text": "hello", "start": 0.0, "end": 1.0}
+    r = client.put("/api/transcribe/segments", params={"audio_path": audio}, json=[seg])
+    assert r.status_code == 200, r.text
+    got = client.get("/api/transcribe/segments", params={"audio_path": audio}).json()
+    assert [s["text"] for s in got] == ["hello"]
+
+
+@pytest.mark.parametrize("start, end", [(50.0, 10.0), (5.0, 5.0), (-1.0, 2.0)])
+def test_voice_sample_extraction_refuses_an_empty_or_reversed_span(
+    client, tmp_path, start, end
+):
+    """A reversed span used to extract a clip with a negative duration."""
+    audio, _ = audio_and_output_dir(tmp_path)
+    r = client.post(
+        "/api/synthesize/extract-selected",
+        json={
+            "audio_path": audio,
+            "selections": [{"speaker": "A", "start": start, "end": end}],
+        },
+    )
+    assert r.status_code == 422

@@ -472,8 +472,18 @@ def index_stats(show_id: str = "") -> dict:
     collections = collections_for_show_id(show_id, store=local)
 
     stats: list[dict] = []
-    total_episodes = 0
+    # Distinct (show, episode): one episode indexed under two models or
+    # chunkings is still one episode, and two shows can share a stem.
+    episodes: set[tuple[str, str]] = set()
     total_chunks = 0
+    # A show's older collection can predate ids (keyed by label) while a
+    # newer one carries the id: map labels to ids so both count as one show.
+    all_info = local.get_all_collection_info()
+    id_for_label = {
+        i.get("show"): i.get("show_id")
+        for i in all_info.values()
+        if i.get("show") and i.get("show_id")
+    }
     for col in collections:
         info = local.get_collection_info(col)
         summary = local.collection_summary(col)
@@ -487,10 +497,14 @@ def index_stats(show_id: str = "") -> dict:
                 "sources": summary["sources"],
             }
         )
-        total_episodes += summary["episodes"]
+        show_key = col
+        if info:
+            label = info.get("show")
+            show_key = info.get("show_id") or id_for_label.get(label) or label or col
+        episodes.update((show_key, ep) for ep in summary["episode_names"])
         total_chunks += summary["chunks"]
     return {
         "collections": stats,
-        "total_episodes": total_episodes,
+        "total_episodes": len(episodes),
         "total_chunks": total_chunks,
     }

@@ -12,13 +12,14 @@ and return a list of chunk dicts ready for embedding and storage.
 
 from __future__ import annotations
 
+import re
 from bisect import bisect_right
 from typing import NamedTuple
 
 from loguru import logger
 
 from podcodex.ingest.rss import clean_description
-from podcodex.core._utils import normalize_pub_date
+from podcodex.core._utils import merge_consecutive_segments, normalize_pub_date
 
 
 # ──────────────────────────────────────────────
@@ -26,6 +27,14 @@ from podcodex.core._utils import normalize_pub_date
 # ──────────────────────────────────────────────
 
 _SEP = " "
+# Segments are utterances, not speaker turns: whisper splits one person's
+# turn into many short segments, so a length filter on raw segments threw
+# away real speech ("My name is Wes.", a URL read aloud). Only text with no
+# word character at all is noise; length is judged on merged turns.
+_WORD = re.compile(r"\w")
+# Upper bound on a merged speaker turn, so one long monologue stays a
+# reasonably sized chunk for the embedders with short context windows.
+_SPEAKER_TURN_MAX_S = 60.0
 _SENTENCE_TERMINATORS = (".", "!", "?", "…")
 _MIN_PUNCTUATION_DENSITY = 0.15  # avg terminators per turn
 
@@ -277,12 +286,18 @@ def _split_oversized(raw_chunks, full_text: str, max_tokens: int, target_tokens:
 # ──────────────────────────────────────────────
 
 
+def _has_words(text: str) -> bool:
+    return bool(_WORD.search(text))
+
+
 def speaker_chunks(transcript: dict, min_chars: int = 30) -> list[dict]:
     """
     Return one chunk per speaker turn, filtering out noise.
 
-    Segments are already speaker-merged by the pipeline, so this only
-    applies noise filtering (min_chars) and attaches show/episode metadata.
+    Consecutive segments of one speaker are merged into a turn first (up to
+    ``_SPEAKER_TURN_MAX_S``, never across a long silence), and ``min_chars``
+    applies to the merged turn, so a short sentence inside a longer turn is
+    kept. An untimed transcript is not merged: nothing would bound the turn.
 
     Args:
         transcript : transcript dict with ``meta`` and ``segments`` keys
@@ -292,8 +307,21 @@ def speaker_chunks(transcript: dict, min_chars: int = 30) -> list[dict]:
         List of {show, episode, source, start, end, speaker, text}
     """
     show, episode, source, extras = _meta_fields(transcript)
+    worded = [
+        seg
+        for seg in transcript.get("segments", [])
+        if _has_words(str(seg.get("text", "")))
+    ]
+    # The duration cap needs timings: untimed imports store 0/0 or nothing,
+    # and merging those would make one chunk of a single-speaker episode.
+    timed = any(float(seg.get("end") or 0) > 0 for seg in worded)
+    turns = (
+        merge_consecutive_segments(worded, max_duration=_SPEAKER_TURN_MAX_S)
+        if timed
+        else worded
+    )
     chunks = []
-    for seg in transcript.get("segments", []):
+    for seg in turns:
         text = seg.get("text", "").strip()
         if len(text) < min_chars:
             continue
@@ -337,7 +365,7 @@ def semantic_chunks(
     transcript: dict,
     chunk_size: int = 256,
     threshold: float = 0.5,
-    min_chars: int = 30,
+    min_chars: int = 0,
     pad_unpunctuated: bool = True,
 ) -> list[dict]:
     """
@@ -352,7 +380,9 @@ def semantic_chunks(
         transcript : transcript dict with ``meta`` and ``segments`` keys
         chunk_size : max tokens per chunk (default 256)
         threshold  : semantic similarity threshold for splitting (default 0.5)
-        min_chars  : minimum chars to keep a segment before chunking (default 30)
+        min_chars  : minimum chars to keep a segment before chunking (default
+            0: segments are concatenated, so a short one is still content;
+            segments with no word character are always dropped)
         pad_unpunctuated : when True (default), auto-detect whether the
             transcript already carries punctuation and skip padding when
             it does. Unpunctuated transcripts (YouTube auto-captions) get
@@ -378,7 +408,7 @@ def semantic_chunks(
     segments = [
         {**seg, "text": text}
         for seg in transcript.get("segments", [])
-        if len(text := seg.get("text", "").strip()) >= min_chars
+        if len(text := seg.get("text", "").strip()) >= min_chars and _has_words(text)
     ]
     if not segments:
         logger.warning(f"semantic_chunks: no segments after filtering for '{episode}'")

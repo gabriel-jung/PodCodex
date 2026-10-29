@@ -42,6 +42,19 @@ def test_parse_time_rejects_out_of_range_fields():
         parse_time("1h09m60")
     with pytest.raises(ValueError):
         parse_time("1h60m00")
+    with pytest.raises(ValueError):
+        parse_time("1:09:60")
+    with pytest.raises(ValueError):
+        parse_time("1:60:00")
+
+
+def test_parse_time_colon_forms():
+    """MCP clients pass "1:05"; get_context answered "unrecognized time"."""
+    assert parse_time("1:05") == 65.0
+    assert parse_time("69:46") == 4186.0
+    assert parse_time("1:09:46") == 4186.0
+    with pytest.raises(ValueError):
+        parse_time("1:5")
 
 
 def test_the_placeholder_and_an_empty_label_name_nobody():
@@ -96,3 +109,43 @@ def test_bad_path_component_allows_an_ordinary_colon(name):
     from podcodex.core._utils import bad_path_component
 
     assert not bad_path_component(name)
+
+
+def test_atomic_write_fails_fast_on_an_unwritable_folder(tmp_path, monkeypatch):
+    """tempfile.mkstemp on Windows retried a PermissionError up to TMP_MAX
+    (~2 billion) times, spinning a core forever on a read-only folder."""
+    import os
+
+    from podcodex.core import _utils
+
+    calls = []
+
+    def deny(path, flags, mode=0o777):
+        calls.append(path)
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(_utils.os, "open", deny)
+    with pytest.raises(PermissionError):
+        _utils.atomic_write(tmp_path / "show.toml", lambda p: p.write_text("x"))
+    assert len(calls) == 1
+    monkeypatch.undo()
+    assert not os.listdir(tmp_path)
+
+
+def test_atomic_write_retries_only_a_name_collision(tmp_path, monkeypatch):
+    from podcodex.core import _utils
+
+    real_open = _utils.os.open
+    collisions = iter([True, True])
+
+    def collide_twice(path, flags, mode=0o777):
+        if next(collisions, False):
+            raise FileExistsError(path)
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(_utils.os, "open", collide_twice)
+    target = tmp_path / "out.json"
+    _utils.atomic_write(target, lambda p: p.write_text("ok"), durable=False)
+    monkeypatch.undo()
+    assert target.read_text() == "ok"
+    assert [p.name for p in tmp_path.iterdir()] == ["out.json"]

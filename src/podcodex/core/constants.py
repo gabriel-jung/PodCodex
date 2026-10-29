@@ -17,12 +17,12 @@ from typing import Literal
 # Values = short descriptions shown in the UI dropdown.
 
 WHISPER_MODELS: dict[str, str] = {
-    "large-v3": "Best quality — ~5 GB VRAM (+ batch overhead)",
-    "large-v3-turbo": "Near-best quality, 3× faster — ~4 GB VRAM",
-    "medium": "Good quality/speed trade-off — ~3 GB VRAM",
-    "small": "Faster, slightly less accurate — ~2 GB VRAM",
-    "base": "Very fast, lower accuracy — ~1 GB VRAM",
-    "tiny": "Fastest, lowest accuracy — ~1 GB VRAM",
+    "large-v3": "Best quality, ~5 GB VRAM (+ batch overhead)",
+    "large-v3-turbo": "Near-best quality, 3× faster, ~4 GB VRAM",
+    "medium": "Good quality/speed trade-off, ~3 GB VRAM",
+    "small": "Faster, slightly less accurate, ~2 GB VRAM",
+    "base": "Very fast, lower accuracy, ~1 GB VRAM",
+    "tiny": "Fastest, lowest accuracy, ~1 GB VRAM",
 }
 
 # Minimum free VRAM (MB) needed to load each model.
@@ -50,8 +50,8 @@ DIARIZATION_MODEL = "pyannote/speaker-diarization-community-1"
 # requires a more powerful GPU.
 
 TTS_MODEL_SIZES: dict[str, str] = {
-    "1.7B": "Higher quality voice cloning — needs ~8 GB GPU memory",
-    "0.6B": "Faster generation — needs ~4 GB GPU memory",
+    "1.7B": "Higher quality voice cloning, needs ~8 GB GPU memory",
+    "0.6B": "Faster generation, needs ~4 GB GPU memory",
 }
 
 TTS_VRAM_MB: dict[str, int] = {

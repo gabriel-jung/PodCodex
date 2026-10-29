@@ -16,7 +16,9 @@ from podcodex.api.routes._helpers import (
     format_prompt_batches,
     llm_prov_params,
     reconcile_batches,
+    llm_run_outcome,
     require_audio_or_output,
+    require_segments,
     submit_task,
 )
 from podcodex.core.llm_failures import clear_step_for, get_step, stamp_run_version
@@ -62,6 +64,7 @@ def save_corrected_segments(
     from podcodex.core.correct import save_corrected
 
     require_audio_or_output(audio_path, output_dir)
+    require_segments(segments)
     seg_dicts = [s.model_dump() for s in segments]
     provenance = build_edit_provenance("corrected", audio_path, output_dir)
     save_corrected(audio_path, seg_dicts, output_dir=output_dir, provenance=provenance)
@@ -94,7 +97,7 @@ def start_correct(req: LLMRequest) -> TaskResponse:
             step="transcript",
         )
         progress_cb(0.1, "Starting correction...")
-        corrected, _version_id = correct_and_save(
+        corrected, version_id = correct_and_save(
             source,
             llm,
             audio_path=req_data.audio_path,
@@ -106,7 +109,12 @@ def start_correct(req: LLMRequest) -> TaskResponse:
             key_name=req_data.key_name,
             on_batch=batch_progress(progress_cb),
         )
-        return {"count": len(corrected)}
+        return {
+            "count": len(corrected),
+            **llm_run_outcome(
+                req_data.audio_path, req_data.output_dir, "corrected", version_id
+            ),
+        }
 
     return submit_task("correct", req.audio_path, run_correct, req)
 

@@ -311,3 +311,39 @@ def test_move_unregistered_show_forbidden(client, tmp_path):
     r = client.post(f"/api/shows/{victim}/move", json={"new_path": str(dest)})
     assert r.status_code == 403
     assert victim.exists()
+
+
+def test_a_local_episode_takes_its_duration_from_the_transcription(
+    tmp_path, monkeypatch
+):
+    """No feed describes a local import, so its duration read 0."""
+    from urllib.parse import quote
+
+    from podcodex.core._utils import AudioPaths
+    from podcodex.core.pipeline_db import close_pipeline_db, mark_step
+    from podcodex.core.versions import save_version
+    from tests.fixtures.api_client import library_client, registered_show
+
+    client = library_client(tmp_path, monkeypatch)
+    show = registered_show(client, tmp_path / "Local", name="Local")
+    audio = show / "talk.mp3"
+    audio.write_bytes(b"")
+    prov = {
+        "step": "transcript",
+        "type": "raw",
+        "model": "m",
+        "params": {"meta": {"duration": 88.4}},
+    }
+    save_version(
+        AudioPaths.from_audio(str(audio)).base,
+        "transcript",
+        [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "x"}],
+        prov,
+    )
+    # What a transcription run records on the episode row.
+    mark_step(show, "talk", transcribed=True, provenance={"transcript": prov})
+    try:
+        eps = client.get(f"/api/shows/{quote(str(show), safe='')}/unified").json()
+        assert [e["duration"] for e in eps if e["stem"] == "talk"] == [88.4]
+    finally:
+        close_pipeline_db(show)

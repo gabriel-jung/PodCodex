@@ -334,3 +334,79 @@ def test_an_oversized_chunk_is_split_on_words_with_faithful_offsets():
         assert part.text == full[part.start_index : part.end_index].strip()
         assert not part.text.startswith(" ") and "word" in part.text
     assert " ".join(p.text for p in parts) == full
+
+
+# ──────────────────────────────────────────────
+# Short segments are speech, not noise
+# ──────────────────────────────────────────────
+
+_INTRO = {
+    "meta": {"show": "S", "episode": "E"},
+    "segments": [
+        {
+            "start": 0.0,
+            "end": 3.9,
+            "speaker": "Chris",
+            "text": "Hello, friends, and welcome back.",
+        },
+        {"start": 4.0, "end": 4.6, "speaker": "Chris", "text": "My name is Chris."},
+        {"start": 4.7, "end": 5.5, "speaker": "Wes", "text": "My name is Wes."},
+        {"start": 5.6, "end": 6.3, "speaker": "Chris", "text": "Hello, gentlemen."},
+        {"start": 6.4, "end": 6.6, "speaker": "Chris", "text": "..."},
+    ],
+}
+
+
+def test_speaker_chunks_merge_a_turn_before_judging_its_length():
+    """Whisper splits one turn into short segments; filtering each segment
+    on length dropped about 40% of a talk show's segments from the index."""
+    texts = [c["text"] for c in speaker_chunks(_INTRO)]
+    assert "Hello, friends, and welcome back. My name is Chris." in texts
+    assert all("..." not in t for t in texts)
+
+
+def test_speaker_chunks_do_not_merge_across_a_long_silence():
+    t = {
+        "meta": {},
+        "segments": [
+            {
+                "start": 0.0,
+                "end": 2.0,
+                "speaker": "A",
+                "text": "First part of a long thought here.",
+            },
+            {
+                "start": 90.0,
+                "end": 92.0,
+                "speaker": "A",
+                "text": "Much later, a separate thought.",
+            },
+        ],
+    }
+    assert len(speaker_chunks(t)) == 2
+
+
+def test_semantic_chunks_keep_short_segments_and_drop_wordless_ones():
+    ctx, mock_mod = mock_chonkie()
+    instance = mock_mod.SemanticChunker.return_value
+    instance.chunk.return_value = []
+    with ctx:
+        semantic_chunks(_INTRO)
+    called_text = instance.chunk.call_args[0][0]
+    assert "My name is Wes." in called_text
+    assert "Hello, gentlemen." in called_text
+    assert "..." not in called_text
+
+
+def test_speaker_chunks_do_not_merge_an_untimed_transcript():
+    """Untimed imports carry 0/0 times, so the duration cap never fired and a
+    single-speaker episode became one chunk."""
+    line = "A sentence long enough to be kept on its own merit."
+    t = {
+        "meta": {},
+        "segments": [
+            {"start": 0.0, "end": 0.0, "speaker": "NoDiarization", "text": line}
+            for _ in range(5)
+        ],
+    }
+    assert len(speaker_chunks(t)) == 5
