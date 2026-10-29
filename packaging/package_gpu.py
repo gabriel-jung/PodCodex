@@ -4,12 +4,12 @@ Takes ``packaging/dist/podcodex-server-gpu/`` (produced by
 ``build_server.py --gpu``) and splits it into parts that change at
 different rates, so an app update downloads only what changed:
 
-  1. ``server-core.tar.gz``            : PodCodex and its pure-Python
+  1. ``server-core.tar.xz``            : PodCodex and its pure-Python
                                          dependencies. Changes every release.
-  2. ``torch-runtime-<tag>.tar.gz``    : torch's own binaries
+  2. ``torch-runtime-<tag>.tar.xz``    : torch's own binaries
                                          (``torch/lib``: torch_cuda, torch_cpu,
                                          ...). Changes with the torch version.
-  3. ``cuda-libs-<tag>.tar.gz``        : NVIDIA runtime libraries (cuDNN,
+  3. ``cuda-libs-<tag>.tar.xz``        : NVIDIA runtime libraries (cuDNN,
                                          cuBLAS, ...). Changes with the CUDA
                                          toolkit.
   4. ``cuda-libs.json``                : manifest listing the parts with their
@@ -38,6 +38,7 @@ import hashlib
 import json
 import sys
 import tarfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -63,6 +64,23 @@ NVIDIA_LIB_PREFIXES = (
     "nccl",
     "caffe2_nvrtc",
 )
+
+# NVIDIA libraries the Windows wheel ships that nothing in PodCodex loads,
+# left out of the download (about 300 MB unpacked). On the 0.3.0 build no
+# bundled binary imports them or names them for a runtime load, and torch on
+# Windows loads whichever DLLs torch/lib holds, so a missing one is skipped.
+# referenced_left_out re-checks the first half on every build. Windows
+# only: on Linux torch links libcurand directly and preloads the rest.
+#   cusolverMg: the multi-GPU cuSOLVER; torch links the plain one.
+#   curand: the host library; torch's generators are its own, and the
+#           curand device code is compiled into the kernels that use it.
+#   nvrtc*.alt: a second NVRTC build; caffe2_nvrtc loads the regular one.
+#   cufftw: the FFTW-compatible wrapper over cuFFT.
+UNUSED_NVIDIA_PREFIXES = ("cusolvermg", "curand", "cufftw")
+
+# Release archives: xz packs the CUDA binaries tighter than gzip, and the
+# stdlib reads and writes it. The installer detects the compression.
+ARCHIVE_SUFFIX = ".tar.xz"
 
 # Files to keep in the server core even if their paths or names match
 # NVIDIA prefixes — these are small Python stubs, not the heavy runtime libs.
@@ -112,6 +130,41 @@ def is_nvidia_file(rel_path: str) -> bool:
     return False
 
 
+def is_unused_nvidia_file(rel_path: str) -> bool:
+    """True for a Windows NVIDIA DLL nothing loads (see UNUSED_NVIDIA_PREFIXES)."""
+    name = rel_path.lower().replace("\\", "/").rsplit("/", 1)[-1]
+    if not name.endswith(".dll"):
+        return False
+    if name.startswith("nvrtc") and name.endswith(".alt.dll"):
+        return True
+    return is_nvidia_file(rel_path) and name.startswith(UNUSED_NVIDIA_PREFIXES)
+
+
+def referenced_left_out(
+    left_out: list[tuple[str, Path]], kept: list[tuple[str, Path]]
+) -> set[str]:
+    """Names of the left-out libraries a kept binary refers to.
+
+    A DLL's import table stores the names of the DLLs it links as plain
+    strings, and a runtime LoadLibrary takes one as ASCII or UTF-16, so a
+    byte search over every bundled .dll/.pyd catches both. Runs on every
+    build: a torch or CTranslate2 update that starts loading one of them
+    would otherwise ship a GPU backend that fails at ``import torch``.
+    """
+    names = {src.name.lower().removesuffix(".dll") for _, src in left_out}
+    found: set[str] = set()
+    for _rel, src in kept:
+        if not src.name.lower().endswith((".dll", ".pyd")):
+            continue
+        data = src.read_bytes().lower()
+        found |= {
+            name
+            for name in names - found
+            if name.encode() in data or name.encode("utf-16-le") in data
+        }
+    return found
+
+
 def is_torch_runtime_file(rel_path: str) -> bool:
     """True for torch's own binaries (not NVIDIA's), under ``torch/lib/``."""
     rel_lower = "/" + rel_path.lower().replace("\\", "/")
@@ -129,8 +182,9 @@ def sha256_file(path: Path) -> str:
 def content_tag(files: list[tuple[str, Path]]) -> str:
     """Hash of a part's relative paths and file contents (12 hex chars).
 
-    From the files, not the archive: gzip output is not reproducible, and an
-    unchanged part must keep its tag so installs reuse it.
+    From the files, not the archive: compressed tar output is not
+    reproducible (member mtimes, compressor versions), and an unchanged part
+    must keep its tag so installs reuse it.
     """
     h = hashlib.sha256()
     for rel, src in sorted(files, key=lambda f: f[0].replace("\\", "/")):
@@ -140,12 +194,18 @@ def content_tag(files: list[tuple[str, Path]]) -> str:
 
 
 def write_archive(archive_path: Path, files: list[tuple[str, Path]]) -> None:
-    """Write *files* into a gzipped tar, stored relative to the archive root
-    so extraction into the install dir reunites the onedir tree."""
+    """Write *files* into an xz tar, stored relative to the archive root so
+    extraction into the install dir reunites the onedir tree."""
     archive_path.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(archive_path, "w:gz") as tar:
+    with tarfile.open(archive_path, "w:xz") as tar:
         for rel, src in files:
             tar.add(src, arcname=rel)
+
+
+def _print_files(files: list[tuple[str, Path]]) -> None:
+    sized = sorted(((src.stat().st_size, rel) for rel, src in files), reverse=True)
+    for size, rel in sized:
+        print(f"  {size / 1024**2:8.1f} MB  {rel}")
 
 
 def _build_id() -> str:
@@ -185,11 +245,14 @@ def package(onedir_path: Path, output_dir: Path, torch_compat: str) -> dict:
         "torch-runtime": [],
         "cuda-libs": [],
     }
+    left_out: list[tuple[str, Path]] = []
     for item in sorted(onedir_path.rglob("*")):
         if item.is_dir():
             continue
         rel = str(item.relative_to(onedir_path))
-        if is_nvidia_file(rel):
+        if is_unused_nvidia_file(rel):
+            left_out.append((rel, item))
+        elif is_nvidia_file(rel):
             buckets["cuda-libs"].append((rel, item))
         elif is_torch_runtime_file(rel):
             buckets["torch-runtime"].append((rel, item))
@@ -208,24 +271,64 @@ def package(onedir_path: Path, output_dir: Path, torch_compat: str) -> dict:
     app_version = _app_version()
     print(f"Input:        {onedir_path}")
     print(f"Output:       {output_dir}")
+    # A left-out library some kept binary refers to goes back in: a bigger
+    # download beats a backend that fails at import, or a blocked release.
+    referenced = referenced_left_out(
+        left_out, [f for files in buckets.values() for f in files]
+    )
+    for rel, src in left_out:
+        if src.name.lower().removesuffix(".dll") in referenced:
+            print(
+                f"Warning: {rel} is referenced by a bundled binary, kept. "
+                "Its UNUSED_NVIDIA_PREFIXES entry is out of date."
+            )
+            buckets["cuda-libs"].append((rel, src))
+    left_out = [f for f in left_out if f not in buckets["cuda-libs"]]
+    if left_out:
+        print("\nLeft out, unused (see UNUSED_NVIDIA_PREFIXES):")
+        _print_files(left_out)
 
-    by_name: dict[str, dict] = {}
+    archives: dict[str, tuple[str, Path]] = {}
     for name, files in buckets.items():
         # The server core's tag is the app version: the launcher and the
         # installer both key it on ``--version``, not on content.
         tag = app_version if name == "server-core" else content_tag(files)
         archive = output_dir / (
-            "server-core.tar.gz" if name == "server-core" else f"{name}-{tag}.tar.gz"
+            f"server-core{ARCHIVE_SUFFIX}"
+            if name == "server-core"
+            else f"{name}-{tag}{ARCHIVE_SUFFIX}"
         )
         size = sum(src.stat().st_size for _, src in files)
-        print(
-            f"\nWriting {archive.name} ({len(files)} files, {size / 1024**2:.1f} MB) ..."
-        )
-        write_archive(archive, files)
+        print(f"\n{archive.name} ({len(files)} files, {size / 1024**2:.1f} MB)")
+        if name != "server-core":
+            # A few dozen libraries, listed so the next trim starts from data.
+            _print_files(files)
+        archives[name] = (tag, archive)
+
+    # xz in the stdlib is single-threaded (about 19 minutes for the three
+    # parts in a row), so each part compresses in its own thread, which runs
+    # in parallel since the lzma compressor releases the GIL: the largest
+    # part sets the time.
+    print("\nCompressing ...")
+    try:
+        with ThreadPoolExecutor(max_workers=len(archives)) as pool:
+            for future in [
+                pool.submit(write_archive, archive, buckets[name])
+                for name, (_tag, archive) in archives.items()
+            ]:
+                future.result()
+    except BaseException:
+        # The pool waited for the other parts; none of them may be uploaded
+        # beside a missing or truncated one.
+        for _tag, archive in archives.values():
+            archive.unlink(missing_ok=True)
+        raise
+
+    by_name: dict[str, dict] = {}
+    for name, (tag, archive) in archives.items():
         sha = sha256_file(archive)
         (output_dir / f"{archive.name}.sha256").write_text(f"{sha}  {archive.name}\n")
-        print(f"  size:    {archive.stat().st_size / 1024**2:.1f} MB")
-        print(f"  tag:     {tag}")
+        print(f"  {archive.name}: {archive.stat().st_size / 1024**2:.1f} MB, tag {tag}")
         by_name[name] = {
             "name": name,
             "tag": tag,
@@ -237,9 +340,10 @@ def package(onedir_path: Path, output_dir: Path, torch_compat: str) -> dict:
     # launcher only runs a GPU sidecar of its own version, so the installer
     # refuses a manifest stamped for another release. Every archive's sha256
     # travels here, the server core's included, since it becomes the executed
-    # sidecar. The flat fields mirror the two-archive schema, so an older
-    # installer that falls back to this manifest reaches its "made for another
-    # release" refusal instead of a missing-field error.
+    # sidecar. The flat fields mirror the two-archive schema for installers
+    # that read it (0.3.0 betas before parts); 0.2.x installers can't install
+    # this release anyway (they fetch server-core.tar.gz and read gzip only,
+    # and their launcher refuses another version's server core).
     manifest = {
         "schema": 2,
         "server_version": app_version,

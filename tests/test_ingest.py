@@ -89,10 +89,11 @@ def test_note_episode_indexed_updates_cache(tmp_path, monkeypatch):
     assert folder_mod._INDEXED_STEMS_CACHE == {}
 
     key = folder_mod._stems_cache_key(tmp_path)
-    folder_mod._INDEXED_STEMS_CACHE[key] = ((("show_bge", "t1", 3),), {"ep00"})
+    folder_mod._INDEXED_STEMS_CACHE[key] = ((("show_bge", "t1", 3),), {"ep00"}, None)
     folder_mod.note_episode_indexed(tmp_path, "ep01")
-    versions, stems = folder_mod._INDEXED_STEMS_CACHE[key]
+    versions, stems, records = folder_mod._INDEXED_STEMS_CACHE[key]
     assert stems == {"ep00", "ep01"}
+    assert records is None
     assert versions == (("show_bge", "t1", 7),)
 
     # The collection was dropped and recreated (its version starts over): the
@@ -123,22 +124,68 @@ def test_note_episode_indexed_refreshes_that_episodes_source_record(
     key = folder_mod._stems_cache_key(tmp_path)
     before = (("show_bge", "t1", 7),)
     old = {"hash": "sha256:old", "ref": "auto", "step": "corrected"}
-    monkeypatch.setattr(folder_mod, "_INDEXED_STEMS_CACHE", {key: (before, {"ep01"})})
     monkeypatch.setattr(
         folder_mod,
-        "_SOURCE_RECORDS_CACHE",
-        {key: (before, {"ep01": [old], "ep02": [old]})},
+        "_INDEXED_STEMS_CACHE",
+        {key: (before, {"ep01", "ep02"}, {"ep01": [old], "ep02": [old]})},
     )
 
     folder_mod.note_episode_indexed(tmp_path, "ep01")
-    versions, records = folder_mod._SOURCE_RECORDS_CACHE[key]
+    versions, _stems, records = folder_mod._INDEXED_STEMS_CACHE[key]
     assert versions == (("show_bge", "t1", 8),)
     assert records == {"ep01": [fresh], "ep02": [old]}
 
-    # Out of step with the stem set before the write: dropped, rebuilt once.
-    folder_mod._SOURCE_RECORDS_CACHE[key] = ((("show_bge", "t1", 1),), {})
-    folder_mod.note_episode_indexed(tmp_path, "ep01")
-    assert key not in folder_mod._SOURCE_RECORDS_CACHE
+
+def test_stems_and_source_records_share_one_scan(tmp_path, monkeypatch):
+    """The records ride on the stems' cache entry: asking for both reads the
+    collection list once and the records only when first asked for."""
+    from podcodex.ingest import folder as folder_mod
+    from podcodex.ingest.show import ShowMeta, save_show_meta
+
+    save_show_meta(tmp_path, ShowMeta(name="MyShow"))
+    record = {"hash": "sha256:a", "ref": "auto", "step": "corrected"}
+    calls = {"episodes": 0, "records": 0}
+
+    class FakeStore:
+        def collections_for_show(self, *_a, **_kw):
+            return ["show_bge", "show_old"]
+
+        def get_all_collection_info(self):
+            return {
+                "show_bge": {
+                    "created_at": "t1",
+                    "model": "bge-m3",
+                    "chunker": "semantic",
+                },
+                "show_old": {
+                    "created_at": "t1",
+                    "model": "retired",
+                    "chunker": "semantic",
+                },
+            }
+
+        def collection_version(self, col):
+            return 3
+
+        def list_episodes(self, col):
+            calls["episodes"] += 1
+            return ["ep01"]
+
+        def episode_source_records(self, col):
+            # A model this install does not know: its stale chunks could
+            # never be refreshed, so they must not flag the episode.
+            assert col == "show_bge"
+            calls["records"] += 1
+            return {"ep01": record}
+
+    monkeypatch.setattr("podcodex.rag.index_store.get_index_store", lambda: FakeStore())
+    monkeypatch.setattr(folder_mod, "_INDEXED_STEMS_CACHE", {})
+    assert folder_mod.lance_indexed_stems(tmp_path) == {"ep01"}
+    assert calls == {"episodes": 2, "records": 0}
+    assert folder_mod.lance_source_records(tmp_path) == {"ep01": [record]}
+    assert folder_mod.lance_source_records(tmp_path) == {"ep01": [record]}
+    assert folder_mod.lance_indexed_stems(tmp_path) == {"ep01"}
+    assert calls == {"episodes": 2, "records": 1}
 
 
 def test_a_recreated_collection_rescans_at_the_same_version(tmp_path, monkeypatch):
@@ -344,3 +391,43 @@ def test_download_youtube_audio_force_replaces_an_existing_file(tmp_path, monkey
     out = yt.download_youtube_audio("vid", tmp_path, "ep", force=True)
     assert len(calls) == 1
     assert out.read_bytes() == b"fresh"
+
+
+def test_a_records_read_does_not_overwrite_a_newer_entry(tmp_path, monkeypatch):
+    """An index write may store a newer entry while a poll scans records:
+    putting the older one back made the next poll rescan every chunk."""
+    from podcodex.ingest import folder as folder_mod
+    from podcodex.ingest.show import ShowMeta, save_show_meta
+
+    save_show_meta(tmp_path, ShowMeta(name="MyShow"))
+    key = folder_mod._stems_cache_key(tmp_path)
+    newer = ((("show_bge", "t1", 4),), {"ep01", "ep02"}, None)
+
+    class FakeStore:
+        def collections_for_show(self, *_a, **_kw):
+            return ["show_bge"]
+
+        def get_all_collection_info(self):
+            return {
+                "show_bge": {
+                    "created_at": "t1",
+                    "model": "bge-m3",
+                    "chunker": "semantic",
+                }
+            }
+
+        def collection_version(self, col):
+            return 3
+
+        def list_episodes(self, col):
+            return ["ep01"]
+
+        def episode_source_records(self, col):
+            folder_mod._INDEXED_STEMS_CACHE[key] = newer  # the write lands
+            return {}
+
+    monkeypatch.setattr("podcodex.rag.index_store.get_index_store", lambda: FakeStore())
+    monkeypatch.setattr(folder_mod, "_INDEXED_STEMS_CACHE", {})
+    assert folder_mod.lance_indexed_stems(tmp_path) == {"ep01"}
+    assert folder_mod.lance_source_records(tmp_path) == {}
+    assert folder_mod._INDEXED_STEMS_CACHE[key] is newer

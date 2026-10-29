@@ -26,6 +26,9 @@ A release of fixes rather than features: every part of the app was reviewed, and
 
 - Exact search finds words it used to miss and highlights them correctly; searching across many shows is about twice as fast.
 - An episode that fails to index is no longer marked as indexed.
+- An index built before an edit or a new correction is flagged as outdated, and a batch index run refreshes it.
+- Indexed counts come from this computer's own index, so installs sharing a show folder no longer overwrite each other's.
+- Short lines ("My name is Wes.") are no longer dropped from the speaker-turn index, and search stats count each episode once.
 - Downloaded models load from disk: search, transcription, speaker detection and voice synthesis no longer wait on Hugging Face when you are offline (speaker detection used to stall about two minutes).
 
 ### Running and stopping tasks
@@ -33,16 +36,21 @@ A release of fixes rather than features: every part of the app was reviewed, and
 - Stop takes effect at the next batch for AI correct and translate, and a task cancelled while queued never starts.
 - Batch runs use the same settings and source version as the episode panels.
 - Failed runs stay visible instead of disappearing from the task bar.
+- AI correct and translate say when they finish with rejected batches, and the editor refuses to save an empty transcript.
+- Exported files are named after their step (`<episode>_corrected`, `<episode>_fr`), so they no longer overwrite each other.
+- Ollama is reached at `127.0.0.1` by default; `localhost` cost about 10 seconds per call on some Windows setups.
 
 ### Discord bot and Claude Desktop
 
 - A show's unlocks are revoked when its password changes. Servers can be limited with `PODCODEX_ALLOWED_GUILDS`, and the models the bot may use with `--models`.
 - New episodes are announced once they are actually posted, with retries on temporary failures.
 - The Claude Desktop integration starts correctly from the installed app, and edits to your MCP prompts reach Claude without a restart.
+- On Windows, a Claude Desktop search no longer hangs forever.
 
 ### GPU backend
 
 - GPU updates install beside the working version and switch only once complete, so a failed or cancelled update keeps the old one. App updates now download only the part that changed.
+- The GPU download is about a third smaller: 1.9 GB instead of 3 GB, from tighter compression and leaving out CUDA libraries PodCodex never loads.
 - After upgrading, reinstall the GPU backend from Settings: the app only runs a GPU backend built for its own version, and uses the CPU until then.
 
 ## [0.2.13] - 2026-08-22

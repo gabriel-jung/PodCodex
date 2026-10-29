@@ -41,6 +41,9 @@ def seams(monkeypatch, tmp_path):
         versions, "version_content_hash", lambda _b, _s, vid: f"sha256:{vid}"
     )
     monkeypatch.setattr(
+        versions, "resolve_canonical_ref", lambda _b: ("corrected", "v1")
+    )
+    monkeypatch.setattr(
         source,
         "build_index_transcript",
         lambda *_a, segments=None, **_k: {
@@ -196,18 +199,50 @@ def test_the_index_records_the_source_versions_content_hash(seams):
     assert [t["meta"]["source_version"] for t in rec.transcripts] == ["v1", "v1"]
 
 
+def test_an_auto_load_that_fell_back_still_records_its_hash(seams, monkeypatch):
+    """The canonical file was unreadable (a sync still copying it) and the
+    load read another version: recording what was read is what flags the
+    index outdated once the canonical file is readable again. Recording
+    nothing made it read as current forever."""
+    import podcodex.core.versions as versions
+
+    rec, audio = seams
+    monkeypatch.setattr(
+        versions, "resolve_canonical_ref", lambda _b: ("corrected", "v2")
+    )
+    _batch(audio)
+    assert rec.transcripts[0]["meta"]["source_hash"] == "sha256:v1"
+
+
 @pytest.mark.parametrize(
     "source, version_id, ref",
     [
         ("auto", None, "auto"),
         ("", None, "auto"),
         ("french", None, "step"),
-        ("auto", "v1", "pinned"),
-        ("corrected", "v1", "pinned"),
+        # Picking the version that is canonical now follows the canonical
+        # seglist: a pin would freeze the index on it through later edits.
+        ("auto", "v1", "auto"),
+        ("corrected", "v1", "auto"),
+        ("auto", "v0", "pinned"),
+        ("corrected", "v0", "pinned"),
+        # The same id under another step (legacy ids repeat): not canonical.
+        ("transcript", "v1", "pinned"),
     ],
 )
-def test_source_ref_names_how_the_source_was_chosen(source, version_id, ref):
-    assert index_job._source_ref(source, version_id) == ref
+def test_source_ref_names_how_the_source_was_chosen(
+    tmp_path, monkeypatch, source, version_id, ref
+):
+    import podcodex.core.versions as versions
+
+    monkeypatch.setattr(
+        versions, "resolve_canonical_ref", lambda _b: ("corrected", "v1")
+    )
+    from podcodex.core.source import SourceVersion
+
+    step = "transcript" if source == "transcript" else "corrected"
+    consumed = SourceVersion([], step, version_id or "v1")
+    assert index_job._source_ref(tmp_path, source, version_id, consumed) == ref
 
 
 @pytest.mark.parametrize(
@@ -226,6 +261,9 @@ def test_source_ref_names_how_the_source_was_chosen(source, version_id, ref):
         # A batch pin wants exactly that version.
         ({"hash": "sha256:a", "ref": "auto", "step": "corrected"}, "v-pin", False),
         ({"hash": "sha256:pin", "ref": "pinned", "step": "corrected"}, "v-pin", True),
+        # Chunks from before the record may come from any version: a pick
+        # re-indexes them.
+        (None, "v-pin", False),
     ],
 )
 def test_the_batch_skip_check_follows_how_the_episode_was_indexed(
@@ -365,4 +403,34 @@ def test_stale_index_combos_lists_only_the_stale_collections(tmp_path, monkeypat
     audio = str(tmp_path / "Show" / "ep1.mp3")
     assert index_job.stale_index_combos(audio, "ep1", "Show") == [
         ("e5-small", "semantic")
+    ]
+
+
+def test_stale_combos_leave_out_models_this_install_does_not_know(
+    tmp_path, monkeypatch
+):
+    import podcodex.ingest.show_registry as registry
+    import podcodex.rag.index_store as index_store
+
+    stale = {"hash": "sha256:old", "ref": "auto", "step": "corrected"}
+
+    class _Store:
+        def get_all_collection_info(self):
+            return {
+                "known": {"model": "bge-m3", "chunker": "semantic"},
+                "gone": {"model": "retired-model", "chunker": "semantic"},
+            }
+
+        def collections_for_show(self, *_a, **_k):
+            return ["known", "gone"]
+
+        def episode_source_record(self, _col, _stem):
+            return stale
+
+    monkeypatch.setattr(index_store, "get_index_store", lambda: _Store())
+    monkeypatch.setattr(registry, "show_id_for_folder", lambda *_a, **_k: "s_1")
+    monkeypatch.setattr(index_job, "_record_is_stale", lambda _b, r: r is stale)
+    audio = str(tmp_path / "Show" / "ep1.mp3")
+    assert index_job.stale_index_combos(audio, "ep1", "Show") == [
+        ("bge-m3", "semantic")
     ]

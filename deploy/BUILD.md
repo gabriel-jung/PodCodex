@@ -20,10 +20,7 @@ yt-dlp ships inside the sidecar as its Python module; there is no separate binar
 
 `make bundle` chains all three. Use the individual `make bundle-*` targets when iterating on a single layer.
 
-> **GPU acceleration:** the bundled installer is CPU-only. NVIDIA users
-> activate an in-app CUDA backend (~2.4 GB download) from the GPU panel
-> in settings. Pascal cards (sm_60-62) need the source-build path
-> (`--extra gpu-pascal`); see [`PASCAL.md`](PASCAL.md).
+> **GPU acceleration:** the bundled installer is CPU-only. On Windows, NVIDIA users activate an in-app CUDA backend (~1.9 GB download) from the GPU panel in settings. Pascal cards (sm_60-62) need the source-build path (`--extra gpu-pascal`); see [`PASCAL.md`](PASCAL.md).
 
 ---
 
@@ -237,6 +234,8 @@ Report build issues at <https://github.com/gabriel-jung/PodCodex/issues>. Includ
 | Actions UI, "Run workflow" | Draft, hidden until published by hand. |
 
 After both platform builds, the `beta-channel` job copies the release's files to a rolling prerelease tagged `beta` when the build is newer than what that release holds (a stable `X.Y.Z` outranks every `X.Y.Z` prerelease). The README's beta links point there (`/releases/download/beta/<alias>`), so they always serve the newest build and never one older than stable. The release notes of `beta` start with `Build: <tag>`, which the job reads to compare versions; don't edit that line by hand.
+
+The Windows job uploads the MSI only after the GPU archives, so an installer is never downloadable before its own GPU build. The flip side: if the GPU build fails, that release has no Windows installer; fix it and tag again.
 
 The release workflow runs no tests. Check that the CI run on the commit you tag is green.
 

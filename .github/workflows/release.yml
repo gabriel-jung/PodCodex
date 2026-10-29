@@ -5,7 +5,7 @@ name: Release
 #   - Windows .msi (built on windows-latest, includes the bundled CPU sidecar)
 #   - PodCodex-macos-arm64.dmg + PodCodex-windows-x64.msi — version-less
 #     aliases so README can link to /releases/latest/download/<alias>
-#   - server-core.tar.gz + cuda-libs-<ver>.tar.gz + cuda-libs.json (Windows GPU
+#   - server-core + torch-runtime-<tag> + cuda-libs-<tag> .tar.xz archives and cuda-libs.json (Windows GPU
 #     archives for in-app download — VoiceBox-style runtime CUDA install)
 #   - the same aliases + GPU archives mirrored onto the rolling "beta"
 #     release when this build is the newest (see the beta-channel job)
@@ -207,12 +207,12 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           fail_on_unmatched_files: true
           files: |
-            packaging/release-assets/server-core.tar.gz
-            packaging/release-assets/server-core.tar.gz.sha256
-            packaging/release-assets/torch-runtime-*.tar.gz
-            packaging/release-assets/torch-runtime-*.tar.gz.sha256
-            packaging/release-assets/cuda-libs-*.tar.gz
-            packaging/release-assets/cuda-libs-*.tar.gz.sha256
+            packaging/release-assets/server-core.tar.xz
+            packaging/release-assets/server-core.tar.xz.sha256
+            packaging/release-assets/torch-runtime-*.tar.xz
+            packaging/release-assets/torch-runtime-*.tar.xz.sha256
+            packaging/release-assets/cuda-libs-*.tar.xz
+            packaging/release-assets/cuda-libs-*.tar.xz.sha256
             packaging/release-assets/cuda-libs.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -331,9 +331,9 @@ jobs:
           mkdir assets
           gh release download "$TAG" --dir assets \
             -p 'PodCodex-macos-arm64.dmg' -p 'PodCodex-windows-x64.msi' \
-            -p 'server-core.tar.gz*' -p 'torch-runtime-*' -p 'cuda-libs*'
+            -p 'server-core.tar.*' -p 'torch-runtime-*' -p 'cuda-libs*'
           ls -la assets
-          for f in PodCodex-macos-arm64.dmg PodCodex-windows-x64.msi cuda-libs.json server-core.tar.gz; do
+          for f in PodCodex-macos-arm64.dmg PodCodex-windows-x64.msi cuda-libs.json server-core.tar.xz; do
             [ -e "assets/$f" ] || { echo "Missing from $TAG: $f" >&2; exit 1; }
           done
 
@@ -349,7 +349,7 @@ jobs:
               --title "PodCodex beta (newest build)" --notes "Build: pending"
           fi
           # Archives first and the GPU manifest after them, so the manifest
-          # never names an archive that isn't up yet. server-core.tar.gz keeps
+          # never names an archive that isn't up yet. server-core.tar.xz keeps
           # its name across builds, so a GPU install started during this
           # upload can fail its digest check once; retrying succeeds.
           find assets -type f ! -name cuda-libs.json -print0 \

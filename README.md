@@ -161,12 +161,12 @@ PodCodex looks for Ollama at `http://127.0.0.1:11434`, Ollama's default port. If
 
 | Hardware                       | GPU support                                                                          |
 |--------------------------------|--------------------------------------------------------------------------------------|
-| NVIDIA RTX 20xx or newer       | Windows installer (in-app CUDA activation, ~2.4 GB), or `--extra gpu` from source    |
+| NVIDIA RTX 20xx or newer       | Windows installer (in-app CUDA activation, ~1.9 GB), or `--extra gpu` from source    |
 | NVIDIA Pascal (GTX 10xx, P40)  | `--extra gpu-pascal` from source only, see [PASCAL.md](deploy/PASCAL.md)             |
 | Apple Silicon                  | CPU only, no GPU/MPS path yet                                                        |
 | Other / no GPU                 | CPU only                                                                             |
 
-The installers ship CPU-only. On Windows, NVIDIA users activate the in-app CUDA backend from **Settings → GPU acceleration**; it downloads a CUDA-enabled torch build (~2.4 GB) on first activation. Force CPU at any time from the same panel.
+The installers ship CPU-only. On Windows, NVIDIA users activate the in-app CUDA backend from **Settings → GPU acceleration**; it downloads a CUDA-enabled torch build (~1.9 GB) on first activation; later updates download only the parts that changed: about 300 MB when a release keeps the same torch and CUDA libraries. Force CPU at any time from the same panel.
 
 ---
 

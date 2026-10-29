@@ -389,8 +389,22 @@ def _batch_llm_step(
     return True
 
 
+# Episodes a collection the batch did not ask for may fail to refresh on
+# before the batch stops trying it.
+_EXTRA_FAILURE_LIMIT = 2
+
+
 def _batch_index(
-    audio_path, stem, p, req, cancelled, ep_progress, i, step_offset, version_id=None
+    audio_path,
+    stem,
+    p,
+    req,
+    cancelled,
+    ep_progress,
+    i,
+    step_offset,
+    version_id=None,
+    failed_extras=None,
 ):
     """Run index step in a spawned subprocess. Returns True if work was done.
 
@@ -399,7 +413,12 @@ def _batch_index(
     the episode reads as outdated while any of them does, so a batch that
     left them would never clear the mark. *version_id* is the batch's own
     source pick for the episode: recorded as ``auto`` when it is the
-    canonical version, else as a pin (see below).
+    canonical version, else as a pin (see ``index_job._source_ref``).
+    *failed_extras* counts, per such other collection, the episodes it failed
+    to re-index in this batch: after ``_EXTRA_FAILURE_LIMIT`` it is skipped
+    for the rest of the batch (an embedder that will not load here fails the
+    same way every time), while one episode's failure (an out-of-memory on a
+    long episode, an unreadable translation) does not stop the others.
     """
     sw = _STEP_WEIGHTS["index"]
     from podcodex.api.subprocess_runner import run_in_subprocess
@@ -410,7 +429,12 @@ def _batch_index(
     )
 
     wanted = {(m, c) for m in req.index_model_keys for c in req.index_chunkings}
-    extra = sorted(set(stale_index_combos(audio_path, stem, req.show_name)) - wanted)
+    failed_extras = failed_extras if failed_extras is not None else {}
+    extra = sorted(
+        combo
+        for combo in set(stale_index_combos(audio_path, stem, req.show_name)) - wanted
+        if failed_extras.get(combo, 0) < _EXTRA_FAILURE_LIMIT
+    )
     # Same as transcribe: skip in the parent rather than spawn to skip.
     main_needed = req.force or not already_indexed(
         audio_path,
@@ -428,22 +452,12 @@ def _batch_index(
     def on_prog(frac: float, msg: str) -> None:
         ep_progress(i, step_offset, sw, frac, msg)
 
-    # The batch's per-episode source pick applies to the index like to every
-    # step. Picking the canonical version is following it (``auto``: later
-    # edits mark the index outdated); picking any other version is a pin,
-    # judged when this step runs, after a correct step of the same batch.
-    pick_ref = "auto"
-    if version_id:
-        from podcodex.core._utils import AudioPaths
-        from podcodex.core.versions import resolve_canonical_ref
-
-        canonical = resolve_canonical_ref(AudioPaths.from_audio(audio_path).base)
-        pick_ref = "auto" if canonical and canonical[1] == version_id else "pinned"
-
     indexed = False
     for model_keys, chunkings, requested in runs:
         if version_id:
-            source, run_version, source_ref = "auto", version_id, pick_ref
+            # The batch's per-episode source pick applies to the index like
+            # to every step; the child records how (index_job._source_ref).
+            source, run_version, source_ref = "auto", version_id, None
         else:
             # Keeps a step or version the user picked for this episode's index.
             source, run_version, source_ref = batch_index_source(
@@ -474,6 +488,8 @@ def _batch_index(
             # A collection the batch did not ask for (an embedder that will
             # not load here, a model this install does not know): reported,
             # but it does not fail the episode the requested run indexed.
+            combo = (model_keys[0], chunkings[0])
+            failed_extras[combo] = failed_extras.get(combo, 0) + 1
             logger.warning(
                 "Could not refresh {} / {} for {}: {}",
                 model_keys[0],
@@ -486,7 +502,7 @@ def _batch_index(
             continue
         if not result.get("indexed"):
             logger.warning(
-                "Index produced 0 chunks for {} — not marking as indexed", stem
+                "Index produced 0 chunks for {}, not marking as indexed", stem
             )
             continue
         indexed = True
@@ -548,6 +564,8 @@ def _run_batch(progress_cb, req: BatchRequest):
         _feed_by_stem(Path(req.show_folder)) if req.correct or req.translate else {}
     )
 
+    # Refresh failures of collections the batch did not ask for (_batch_index).
+    failed_extras: dict[tuple[str, str], int] = {}
     for i, audio_path in enumerate(req.audio_paths):
         if _cancelled():
             progress_cb(i / total, "Cancelled")
@@ -570,6 +588,7 @@ def _run_batch(progress_cb, req: BatchRequest):
             has_audio = Path(audio_path).exists()
             p = AudioPaths.from_audio(audio_path)
             step_offset = 0.0
+            transcribed = False
 
             if req.transcribe and not _cancelled():
                 if req.transcribe_source == "subtitles":
@@ -585,6 +604,7 @@ def _run_batch(progress_cb, req: BatchRequest):
                         pacer=subs_pacer,
                     ):
                         ep_had_work = True
+                        transcribed = True
                 elif not has_audio:
                     logger.debug("Skipping transcribe for {} (no audio file)", stem)
                 elif _batch_transcribe(
@@ -598,7 +618,12 @@ def _run_batch(progress_cb, req: BatchRequest):
                     step_offset,
                 ):
                     ep_had_work = True
+                    transcribed = True
                 step_offset += _STEP_WEIGHTS["transcribe"]
+                if transcribed:
+                    # The pick named a version from before this transcript:
+                    # the later steps follow what the batch just produced.
+                    ep_version_id = None
 
             if req.correct and not _cancelled():
                 if _batch_llm_step(
@@ -637,7 +662,8 @@ def _run_batch(progress_cb, req: BatchRequest):
                 # pick on those steps (correct only takes a transcript): the
                 # index then follows what the pipeline produced. Alone, the
                 # pick is the index step's own (its picker in the modal).
-                index_pick = None if (req.correct or req.translate) else ep_version_id
+                llm_ran = req.correct or (req.translate and req.target_lang)
+                index_pick = None if llm_ran else ep_version_id
                 if _batch_index(
                     audio_path,
                     stem,
@@ -648,6 +674,7 @@ def _run_batch(progress_cb, req: BatchRequest):
                     i,
                     step_offset,
                     version_id=index_pick,
+                    failed_extras=failed_extras,
                 ):
                     ep_had_work = True
 

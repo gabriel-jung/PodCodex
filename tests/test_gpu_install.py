@@ -24,7 +24,8 @@ pytestmark = pytest.mark.skipif(
 
 
 def _tar(path: Path, files: dict[str, tuple[bytes, int]]) -> str:
-    with tarfile.open(path, "w:gz") as tar:
+    # By suffix: releases moved from gzip to xz, and both must install.
+    with tarfile.open(path, "w:xz" if path.name.endswith(".xz") else "w:gz") as tar:
         for name, (data, mode) in files.items():
             info = tarfile.TarInfo(name)
             info.size = len(data)
@@ -73,7 +74,7 @@ def release(tmp_path, monkeypatch):
                 hashlib.sha256(torch).hexdigest()[:8],
             ),
             "cuda-libs": (
-                f"cuda-libs-{hashlib.sha256(cuda).hexdigest()[:8]}.tar.gz",
+                f"cuda-libs-{hashlib.sha256(cuda).hexdigest()[:8]}.tar.xz",
                 {"_internal/torch/lib/libcudnn.so": (cuda, 0o644)},
                 hashlib.sha256(cuda).hexdigest()[:8],
             ),
@@ -503,6 +504,14 @@ def test_gpu_packager_publishes_every_part_hash(tmp_path):
         "_internal/podcodex/app.py": b"code",
         "_internal/torch/lib/torch_cuda.dll": b"torch",
         "_internal/torch/lib/cudnn64_9.dll": b"cudnn",
+        # Shipped by the wheel, loaded by nothing: left out of the download.
+        "_internal/torch/lib/cusolverMg64_11.dll": b"mg",
+        "_internal/torch/lib/curand64_10.dll": b"rand",
+        "_internal/torch/lib/nvrtc64_120_0.alt.dll": b"alt",
+        "_internal/torch/lib/cufftw64_11.dll": b"fftw",
+        "_internal/torch/lib/cusolver64_11.dll": b"solver",
+        "_internal/torch/lib/cufft64_11.dll": b"fft",
+        "_internal/torch/lib/nvrtc64_120_0.dll": b"nvrtc",
     }.items():
         (build / rel).parent.mkdir(parents=True, exist_ok=True)
         (build / rel).write_bytes(data)
@@ -511,8 +520,16 @@ def test_gpu_packager_publishes_every_part_hash(tmp_path):
     parts = {p.name: p for p in _manifest_parts(first)}
     assert set(parts) == {"server-core", "torch-runtime", "cuda-libs"}
     assert first["server_sha256"] == parts["server-core"].sha256
+    assert all(p.archive.endswith(".tar.xz") for p in parts.values())
     with tarfile.open(tmp_path / "out1" / parts["torch-runtime"].archive) as tar:
         assert tar.getnames() == ["_internal/torch/lib/torch_cuda.dll"]
+    with tarfile.open(tmp_path / "out1" / parts["cuda-libs"].archive) as tar:
+        assert sorted(n.rsplit("/", 1)[-1] for n in tar.getnames()) == [
+            "cudnn64_9.dll",
+            "cufft64_11.dll",
+            "cusolver64_11.dll",
+            "nvrtc64_120_0.dll",
+        ]
 
     (build / "_internal/podcodex/app.py").write_bytes(b"new code")
     second = {
@@ -597,3 +614,79 @@ def test_without_an_id_on_either_side_the_version_decides(release, monkeypatch, 
     monkeypatch.setattr(gpu_backend, "_build_id", lambda: "" if theirs else "abc")
     gpu_backend.download_and_install(_cb, manifest_url=build(build_id=theirs))
     assert gpu_backend.installed_manifest() is not None
+
+
+def _package_gpu_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "package_gpu", Path("packaging/package_gpu.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_left_out_library_a_kept_binary_names_is_kept(tmp_path):
+    """A torch or CTranslate2 update that starts loading a left-out library
+    gets it back in the download, not a backend that fails at import."""
+    import tarfile
+
+    package_gpu = _package_gpu_module()
+    build = tmp_path / "onedir"
+    for rel, data in {
+        "podcodex-server-gpu.exe": b"exe",
+        "_internal/torch/lib/torch_cuda.dll": b"..CURAND64_10.DLL..",  # imports it
+        "_internal/torch/lib/cudnn64_9.dll": b"cudnn",
+        "_internal/torch/lib/curand64_10.dll": b"rand",
+    }.items():
+        (build / rel).parent.mkdir(parents=True, exist_ok=True)
+        (build / rel).write_bytes(data)
+
+    def cuda_names(out):
+        manifest = package_gpu.package(build, out, ">=2.7")
+        cuda = next(p for p in manifest["parts"] if p["name"] == "cuda-libs")
+        with tarfile.open(out / cuda["archive"]) as tar:
+            return sorted(n.rsplit("/", 1)[-1] for n in tar.getnames())
+
+    assert cuda_names(tmp_path / "out1") == ["cudnn64_9.dll", "curand64_10.dll"]
+    # UTF-16, as a runtime LoadLibraryW takes the name.
+    (build / "_internal/torch/lib/torch_cuda.dll").write_bytes(
+        "curand64_10.dll".encode("utf-16-le")
+    )
+    assert cuda_names(tmp_path / "out2") == ["cudnn64_9.dll", "curand64_10.dll"]
+    # Nothing refers to it: left out.
+    (build / "_internal/torch/lib/torch_cuda.dll").write_bytes(b"torch")
+    assert cuda_names(tmp_path / "out3") == ["cudnn64_9.dll"]
+
+
+def test_only_windows_libraries_are_left_out():
+    """On Linux torch links libcurand directly."""
+    package_gpu = _package_gpu_module()
+    assert package_gpu.is_unused_nvidia_file("_internal/torch/lib/curand64_10.dll")
+    assert not package_gpu.is_unused_nvidia_file("torch/lib/libcurand.so.10")
+    assert not package_gpu.is_unused_nvidia_file("_internal/torch/lib/cufft64_11.dll")
+
+
+def test_a_failed_compression_leaves_no_archive_behind(tmp_path, monkeypatch):
+    package_gpu = _package_gpu_module()
+    build = tmp_path / "onedir"
+    for rel in (
+        "podcodex-server-gpu.exe",
+        "_internal/torch/lib/torch_cuda.dll",
+        "_internal/torch/lib/cudnn64_9.dll",
+    ):
+        (build / rel).parent.mkdir(parents=True, exist_ok=True)
+        (build / rel).write_bytes(b"x")
+    real = package_gpu.write_archive
+
+    def write(path, files):
+        real(path, files)
+        if path.name.startswith("cuda-libs"):
+            raise OSError("disk full")
+
+    monkeypatch.setattr(package_gpu, "write_archive", write)
+    out = tmp_path / "out"
+    with pytest.raises(OSError, match="disk full"):
+        package_gpu.package(build, out, ">=2.7")
+    assert not list(out.glob("*.tar.*"))

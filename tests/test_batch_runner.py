@@ -460,14 +460,10 @@ def test_index_step_also_refreshes_other_stale_collections(monkeypatch):
     ]
 
 
-@pytest.mark.parametrize("canonical, ref", [("v7", "auto"), ("v9", "pinned")])
-def test_a_batch_source_pick_is_a_pin_unless_it_is_canonical(
-    tmp_path, monkeypatch, canonical, ref
-):
-    """Picking the canonical version follows it (later edits outdate the
-    index); picking another one is a pin, or the index read as outdated
-    the moment the batch finished and a re-run never cleared it."""
-    import podcodex.core.versions as versions
+def test_a_batch_source_pick_reaches_the_index_child(tmp_path, monkeypatch):
+    """The pick is indexed as given; the child records it as following the
+    canonical seglist or as a pin (index_job._source_ref), judged when it
+    runs, the same rule the episode panel goes through."""
     import podcodex.api.subprocess_runner as runner
     from podcodex.api.routes import batch
     from podcodex.ingest import folder
@@ -493,11 +489,8 @@ def test_a_batch_source_pick_is_a_pin_unless_it_is_canonical(
         0.0,
     )
 
-    monkeypatch.setattr(
-        versions, "resolve_canonical_ref", lambda _b: ("corrected", canonical)
-    )
     assert batch._batch_index(*args, version_id="v7") is True
-    assert (runs[0]["version_id"], runs[0]["source_ref"]) == ("v7", ref)
+    assert (runs[0]["version_id"], runs[0]["source_ref"]) == ("v7", None)
 
 
 def test_a_failing_extra_collection_does_not_fail_the_episode(monkeypatch):
@@ -592,3 +585,90 @@ def test_the_source_pick_reaches_the_index_only_in_an_index_batch(
         ),
     )
     assert seen == [pick]
+
+
+@pytest.mark.parametrize(
+    "over, transcribed, pick",
+    [
+        # A fresh transcript replaces the version the pick named.
+        ({"transcribe": True}, True, None),
+        # Transcribe skipped the episode: the pick still names its source.
+        ({"transcribe": True}, False, "v1"),
+        # Translate with no target language does not run, so it spends no pick.
+        ({"translate": True, "target_lang": ""}, False, "v1"),
+    ],
+)
+def test_the_index_pick_follows_what_the_batch_ran(
+    tmp_path, calls, monkeypatch, over, transcribed, pick
+):
+    seen: list = []
+
+    def index(_audio, *_a, version_id=None, **_kw):
+        seen.append(version_id)
+        return True
+
+    monkeypatch.setattr(batch_mod, "_batch_index", index)
+    monkeypatch.setattr(batch_mod, "_batch_transcribe", lambda *_a, **_k: transcribed)
+    ep = _episode(tmp_path, "a")
+    batch_mod._run_batch(
+        _Progress(),
+        _req(
+            tmp_path,
+            [ep],
+            correct=False,
+            index=True,
+            source_version_ids={str(ep): "v1"},
+            **over,
+        ),
+    )
+    assert seen == [pick]
+
+
+def test_a_fresh_transcript_drops_the_pick_for_correct_too(
+    tmp_path, calls, monkeypatch
+):
+    seen: list = []
+
+    def llm(_audio, *_a, version_id=None, **_kw):
+        seen.append(version_id)
+        return True
+
+    monkeypatch.setattr(batch_mod, "_batch_llm_step", llm)
+    ep = _episode(tmp_path, "a")
+    batch_mod._run_batch(
+        _Progress(),
+        _req(tmp_path, [ep], transcribe=True, source_version_ids={str(ep): "v1"}),
+    )
+    assert seen == [None]
+
+
+def test_a_failing_extra_collection_stops_being_tried(monkeypatch):
+    """An embedder that will not load here fails the same way for every
+    episode: retrying it cost a subprocess spawn per episode. One failure is
+    not enough to give up (it can be that episode's own)."""
+    import podcodex.api.subprocess_runner as runner
+    from podcodex.api.routes import batch
+    from podcodex.ingest import folder
+    from podcodex.rag import index_job as ijob
+
+    tried: list = []
+    monkeypatch.setattr(ijob, "already_indexed", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        ijob, "stale_index_combos", lambda *_a: [("pplx-4B", "semantic")]
+    )
+    monkeypatch.setattr(ijob, "batch_index_source", lambda *_a: ("auto", None, "auto"))
+
+    def run(**k):
+        tried.append(k["kwargs"]["model_keys"])
+        if k["kwargs"]["model_keys"] == ["pplx-4B"]:
+            raise RuntimeError("CUDA out of memory")
+        return {"indexed": True}
+
+    monkeypatch.setattr(runner, "run_in_subprocess", run)
+    monkeypatch.setattr(folder, "note_episode_indexed", lambda *_a: None)
+    failed: dict = {}
+    for stem in ("a", "b", "c", "d"):
+        args = (f"/s/{stem}.mp3", stem, None, _index_req(), lambda: False)
+        assert batch._batch_index(*args, lambda *_a: None, 0, 0.0, failed_extras=failed)
+    assert tried.count(["pplx-4B"]) == batch._EXTRA_FAILURE_LIMIT
+    assert failed == {("pplx-4B", "semantic"): batch._EXTRA_FAILURE_LIMIT}

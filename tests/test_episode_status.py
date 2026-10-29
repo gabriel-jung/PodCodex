@@ -786,3 +786,28 @@ def test_an_index_of_a_picked_step_follows_that_step(tmp_path, monkeypatch):
         assert outdated() is True
     finally:
         close_pipeline_db(show)
+
+
+def test_the_shows_list_reconcile_skips_the_outdated_overlay(tmp_path, monkeypatch):
+    """The shows list has no use for index_outdated, and reading it costs a
+    record scan and hash queries per show on the first paint."""
+    from podcodex.core import episode_status as status_mod
+    from podcodex.core.pipeline_db import close_pipeline_db
+    from podcodex.core.versions import save_version
+    from podcodex.ingest import folder
+
+    show = tmp_path / "show"
+    (show / "ep1").mkdir(parents=True)
+    seg = {"speaker": "A", "start": 0.0, "end": 1.0, "text": "hello"}
+    save_version(show / "ep1" / "ep1", "transcript", [seg], {"step": "transcript"})
+
+    def records(_p):
+        raise AssertionError("source records read")
+
+    monkeypatch.setattr(status_mod, "lance_indexed_stems", lambda _p: {"ep1"})
+    monkeypatch.setattr(folder, "lance_source_records", records)
+    try:
+        rows = status_mod.reconcile_show_status(show, outdated=False).status_map
+        assert rows["ep1"]["indexed"] is True
+    finally:
+        close_pipeline_db(show)

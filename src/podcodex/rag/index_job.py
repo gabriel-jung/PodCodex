@@ -55,7 +55,7 @@ def run(
         chunk_size=chunk_size,
         threshold=threshold,
         overwrite=overwrite,
-        source_ref=_source_ref(source, version_id),
+        source_ref=_source_ref(p.base, source, version_id, consumed),
     )
     if upserted == 0:
         raise ValueError(
@@ -119,7 +119,7 @@ def run_for_batch(
         chunk_size=CHUNK_SIZE,
         threshold=CHUNK_THRESHOLD,
         overwrite=force,
-        source_ref=source_ref or _source_ref(source, version_id),
+        source_ref=source_ref or _source_ref(p.base, source, version_id, consumed),
     )
     return {"upserted": upserted, "indexed": upserted > 0, "skipped": False}
 
@@ -233,16 +233,25 @@ def _index_episode(
     return upserted, source_label
 
 
-def _source_ref(source: str | None, version_id: str | None) -> str:
+def _source_ref(base, source: str | None, version_id: str | None, consumed) -> str:
     """How the indexed source was chosen, which decides what counts as stale.
 
     ``auto``: the episode's canonical seglist, compared against the current
     one. ``step``: a step the user picked (a translation, the raw
     transcript), compared against that step's current default version.
     ``pinned``: an exact version, which no later edit makes outdated.
+    Picking the version that is canonical right now is following the
+    canonical seglist, not a pin: the source pickers preselect it, and a pin
+    would freeze the index on it through every later edit. Judged on the
+    loaded version (step and id: ids from before sub-second stamps repeat
+    across steps) once the run has it, so a batch's correct step has landed.
     """
     if version_id:
-        return "pinned"
+        from podcodex.core.versions import resolve_canonical_ref
+
+        canonical = resolve_canonical_ref(base)
+        loaded = (consumed.step, consumed.version_id)
+        return "auto" if canonical == loaded else "pinned"
     return "auto" if source in (None, "", "auto") else "step"
 
 
@@ -262,11 +271,12 @@ def already_indexed(
     without minting; the job itself mints when it writes.
 
     With *version_id* (a source picked for this batch) the chunks must come
-    from that version. Without one, chunks of the canonical seglist are
+    from that version, and chunks recording nothing do not. Without one, chunks of the canonical seglist are
     current while its hash is unchanged, chunks of a picked step while that
     step's default version is, and a pinned version always is (an unpinned
     batch never replaces it). Chunks recording nothing predate the record
-    and count as current. Same rule as the status overlay's index_outdated.
+    and count as current, unless a version was picked. Same rule as the
+    status overlay's index_outdated.
     """
     from podcodex.core._utils import AudioPaths
     from podcodex.core.versions import version_meta_by_id
@@ -291,7 +301,11 @@ def already_indexed(
     if version_id:
         meta = version_meta_by_id(p.base, version_id)
         target = meta.get("content_hash") if meta else None
-        return all(r is None or not target or r["hash"] == target for r in records)
+        # Chunks recording nothing predate the record: they may come from any
+        # version, so they do not satisfy an explicit pick.
+        return all(
+            r is not None and (not target or r["hash"] == target) for r in records
+        )
     return not any(_record_is_stale(p.base, r) for r in records)
 
 
@@ -319,9 +333,12 @@ def stale_index_combos(
     Across all the show's collections, not only the ones a batch asks for:
     the status overlay flags the episode while any of them is stale, so the
     batch re-indexes all of them, or the flag could never be cleared by it.
+    Collections of a model or chunker this install does not know are left
+    out: re-indexing them could only fail.
     """
     from podcodex.core._utils import AudioPaths
     from podcodex.ingest.show_registry import show_id_for_folder
+    from podcodex.rag.defaults import is_known_collection
     from podcodex.rag.index_store import get_index_store
 
     local = get_index_store()
@@ -333,7 +350,7 @@ def stale_index_combos(
         show_id, show_label=show_name, strict=True, info=info
     ):
         meta = info.get(col) or {}
-        if meta.get("model") and meta.get("chunker"):
+        if is_known_collection(meta):
             if _record_is_stale(p.base, local.episode_source_record(col, stem)):
                 combos.append((meta["model"], meta["chunker"]))
     return combos

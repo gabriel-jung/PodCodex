@@ -175,7 +175,9 @@ def list_shows() -> list[ShowSummary]:
                 # counted. Indexed counts come from this install's index
                 # (cached per collection version), not the stored flags,
                 # which another install sharing the folder may have written.
-                rows = list(reconcile_show_status(child).status_map.values())
+                rows = list(
+                    reconcile_show_status(child, outdated=False).status_map.values()
+                )
             except Exception as exc:
                 # A failed reconcile keeps the stored counts.
                 logger.warning("status reconcile failed for {}: {}", child, exc)

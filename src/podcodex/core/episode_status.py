@@ -81,7 +81,7 @@ class Reconciled(NamedTuple):
     llm_failure_stems: set[str]
 
 
-def load_status_context(path: Path, *, check_index: bool = True) -> StatusContext:
+def load_status_context(path: Path) -> StatusContext:
     """Gather everything the status half of an episode payload needs.
 
     Shared by ``/unified`` and ``/status`` so the two can never disagree about
@@ -91,7 +91,7 @@ def load_status_context(path: Path, *, check_index: bool = True) -> StatusContex
     """
     from podcodex.core.app_config import PipelineAppDefaults, load_config
 
-    rec = reconcile_show_status(path, check_index=check_index)
+    rec = reconcile_show_status(path)
     app_defaults = (
         load_config().pipeline_defaults or PipelineAppDefaults()
     ).status_defaults()
@@ -108,18 +108,19 @@ def load_status_context(path: Path, *, check_index: bool = True) -> StatusContex
     )
 
 
-def reconcile_show_status(path: Path, *, check_index: bool = True) -> Reconciled:
+def reconcile_show_status(path: Path, *, outdated: bool = True) -> Reconciled:
     """Bring ``pipeline.db`` in line with the files (and index) of one show.
 
     Bootstraps an empty DB from a scan, adds rows for episodes that appeared
     since, and reconciles the step flags, translations lists, indexed flags
     and verified pointers. The indexed flags come from this install's index
-    (overlaid on the rows, never written back); ``check_index=False`` skips
-    that read and keeps the stored flags, the same as an unreadable index.
+    (overlaid on the rows, never written back), and so does
+    ``index_outdated`` unless *outdated* is False (the shows list, which has
+    no use for it and would pay its record scan and hash queries per show).
     """
-    # None when the index could not be read (or was not asked): "unknown"
-    # must not demote the stored flags the way "nothing indexed" would.
-    lance_indexed = lance_indexed_stems(path) if check_index else None
+    # None when the index could not be read: "unknown" must not demote the
+    # stored flags the way "nothing indexed" would.
+    lance_indexed = lance_indexed_stems(path)
     indexed_seed = lance_indexed if lance_indexed is not None else set()
 
     db = get_pipeline_db(path)
@@ -177,7 +178,8 @@ def reconcile_show_status(path: Path, *, check_index: bool = True) -> Reconciled
         # stored flag is only the fallback for an unreadable index.
         for stem, row in status_map.items():
             row["indexed"] = stem in lance_indexed
-        _overlay_index_outdated(path, status_map)
+        if outdated:
+            _overlay_index_outdated(path, status_map)
     # Stems worth reading llm_failures.json for: the file showed up in the
     # listing, or the walk was incomplete so the listing can't be trusted.
     llm_failure_stems = incomplete | {

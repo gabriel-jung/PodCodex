@@ -95,20 +95,24 @@ def _episode_status(
     }
 
 
-# Indexed-stem sets by show folder (resolved path), guarded by the
-# collections' creation stamps and dataset versions. Not by display name: two shows may share
-# one, and a stem indexed in either used to show up as indexed in both.
-# Listing the episodes means scanning every chunk row (tens of ms on a large
-# show) and the episode list route asks for it on every request, including
-# the 5s status poll.
-_INDEXED_STEMS_CACHE: dict[str, tuple[tuple[tuple[str, str, int], ...], set[str]]] = {}
+# This install's index state by show folder (resolved path): the indexed
+# stems, and the source records once a reader asked for them (None until
+# then), guarded by the collections' creation stamps and dataset versions.
+# Not by display name: two shows may share one, and a stem indexed in either
+# used to show up as indexed in both. Listing the episodes means scanning
+# every chunk row (tens of ms on a large show) and the episode list route
+# asks for it on every request, including the 5s status poll.
+_Fingerprint = tuple[tuple[str, str, int], ...]
+_INDEXED_STEMS_CACHE: dict[
+    str, tuple[_Fingerprint, set[str], dict[str, list[dict]] | None]
+] = {}
 
 
 def _stems_cache_key(show_folder: Path | str) -> str:
     return str(Path(show_folder).resolve())
 
 
-def _versions_fingerprint(store, cols) -> tuple[tuple[str, str, int], ...]:
+def _versions_fingerprint(store, cols) -> _Fingerprint:
     """Cache key for a set of collections: sorted (name, created_at, dataset
     version) triples.
 
@@ -130,16 +134,29 @@ def _versions_fingerprint(store, cols) -> tuple[tuple[str, str, int], ...]:
     )
 
 
-def lance_indexed_stems(show_folder: Path) -> set[str] | None:
-    """Return the set of episode stems that LanceDB has chunks for, for this show.
+def _collect_source_records(store, cols) -> dict[str, list[dict]]:
+    """Source records of the collections this install can re-index (the
+    batch's rule, ``is_known_collection``): a mark it could never clear
+    would stay on forever."""
+    from podcodex.rag.defaults import is_known_collection
 
-    Authoritative source for ``indexed`` status. An empty set means the show
-    has no indexed episode; None means the index could not be read (rag not
-    installed, locked table, LanceDB error), so callers must not write
-    "not indexed" back as if it were known.
+    info = store.get_all_collection_info()
+    records: dict[str, list[dict]] = {}
+    for col in cols:
+        if not is_known_collection(info.get(col) or {}):
+            continue
+        for stem, record in store.episode_source_records(col).items():
+            records.setdefault(stem, []).append(record)
+    return records
 
-    Cached against the collections' dataset versions, which bump on every
-    write from any process, so a stale set can't outlive an index run.
+
+def _lance_index_state(
+    show_folder: Path, *, with_records: bool
+) -> tuple[set[str], dict[str, list[dict]] | None] | None:
+    """``(indexed stems, source records or None)`` from the shared cache.
+
+    The records are read only when asked for, and then kept with the stems
+    under the same fingerprint. None when the index could not be read.
     """
     try:
         from podcodex.ingest.show import load_show_meta
@@ -161,114 +178,42 @@ def lance_indexed_stems(show_folder: Path) -> set[str] | None:
         )
         versions = _versions_fingerprint(store, cols)
         key = _stems_cache_key(show_folder)
-        cached = _INDEXED_STEMS_CACHE.get(key)
-        if cached is not None and cached[0] == versions:
-            return set(cached[1])
-        indexed: set[str] = set()
-        for col in cols:
-            indexed.update(store.list_episodes(col))
-        _INDEXED_STEMS_CACHE[key] = (versions, indexed)
-        return set(indexed)
+        read = cached = _INDEXED_STEMS_CACHE.get(key)
+        if cached is None or cached[0] != versions:
+            indexed: set[str] = set()
+            for col in cols:
+                indexed.update(store.list_episodes(col))
+            cached = (versions, indexed, None)
+        if with_records and cached[2] is None:
+            cached = (versions, cached[1], _collect_source_records(store, cols))
+        # Stored only when this call built something, and only over the entry
+        # it read: an index write's note_episode_indexed may have stored a
+        # newer one meanwhile, and putting the older back would cost the next
+        # poll the full rescan the warm path exists to avoid.
+        if cached is not read and _INDEXED_STEMS_CACHE.get(key) is read:
+            _INDEXED_STEMS_CACHE[key] = cached
+        records = cached[2] if with_records else None
+        return set(cached[1]), (
+            {k: list(v) for k, v in records.items()} if records is not None else None
+        )
     except Exception as exc:
-        logger.warning("lance indexed-set lookup failed for {!r}: {!r}", show_name, exc)
+        logger.warning("lance index lookup failed for {!r}: {!r}", show_name, exc)
         return None
 
 
-def note_episode_indexed(show_folder: Path | str, stem: str) -> None:
-    """Incrementally add *stem* to the cached indexed set after an index write.
+def lance_indexed_stems(show_folder: Path) -> set[str] | None:
+    """Return the set of episode stems that LanceDB has chunks for, for this show.
 
-    Every LanceDB write bumps the dataset version, so during an index batch
-    each status poll would find the fingerprint stale and rebuild the set
-    with a full chunk scan — once per indexed episode. The server process
-    handling the index task knows exactly which episode just landed, so it
-    refreshes the fingerprint and adds the stem in place. Collection names
-    come from the cached fingerprint itself (metadata version reads only,
-    no meta-table scan); an episode indexed into a brand-new collection
-    self-heals through the normal rescan on the next request's mismatch.
-    Cross-process writers (bot rsync) also take the rescan path; a cold
-    cache just waits for the next request's scan.
+    Authoritative source for ``indexed`` status. An empty set means the show
+    has no indexed episode; None means the index could not be read (rag not
+    installed, locked table, LanceDB error), so callers must not write
+    "not indexed" back as if it were known.
+
+    Cached against the collections' dataset versions, which bump on every
+    write from any process, so a stale set can't outlive an index run.
     """
-    key = _stems_cache_key(show_folder)
-    cached = _INDEXED_STEMS_CACHE.get(key)
-    if cached is None:
-        return
-    try:
-        from podcodex.rag.index_store import get_index_store
-
-        store = get_index_store()
-        # Versions only, creation stamps carried over: re-reading them would
-        # scan the meta table on every indexed episode.
-        versions = tuple(
-            (name, created, store.collection_version(name))
-            for name, created, _ in cached[0]
-        )
-    except Exception as exc:
-        # Can't trust the fingerprint: drop the entry so the next request
-        # rebuilds from a real scan instead of serving a stale set.
-        _INDEXED_STEMS_CACHE.pop(key, None)
-        logger.warning("indexed-set refresh failed for {}: {!r}", key, exc)
-        return
-    if any(new[2] < old[2] for new, old in zip(versions, cached[0])):
-        # A table's version only grows: a lower one means the collection was
-        # dropped (0) or recreated since the set was built, and the old set
-        # holds the dropped table's episodes, so adding to it would keep them.
-        _INDEXED_STEMS_CACHE.pop(key, None)
-        return
-    stems = set(cached[1])
-    stems.add(stem)
-    _INDEXED_STEMS_CACHE[key] = (versions, stems)
-    _note_source_records(key, cached[0], versions, store, stem)
-
-
-def _note_source_records(key, old_versions, versions, store, stem: str) -> None:
-    """Refresh one episode's entry in ``_SOURCE_RECORDS_CACHE`` after its write.
-
-    Same reason as the stem set: the write bumped every version, and the next
-    status poll would otherwise rescan each collection's first chunks, once
-    per episode of an index batch. Only when the cache matched the state
-    before this write; otherwise it is dropped and rebuilt once.
-    """
-    cached = _SOURCE_RECORDS_CACHE.get(key)
-    if cached is None:
-        return
-    if cached[0] != old_versions:
-        _SOURCE_RECORDS_CACHE.pop(key, None)
-        return
-    try:
-        fresh = [
-            record
-            for name, _created, _version in versions
-            if (record := store.episode_source_record(name, stem))
-        ]
-    except Exception as exc:
-        _SOURCE_RECORDS_CACHE.pop(key, None)
-        logger.warning("source-record refresh failed for {}: {!r}", key, exc)
-        return
-    records = dict(cached[1])
-    if fresh:
-        records[stem] = fresh
-    else:
-        records.pop(stem, None)
-    _SOURCE_RECORDS_CACHE[key] = (versions, records)
-
-
-def forget_indexed_stems(show_folder: Path | str) -> None:
-    """Drop the cached indexed set of *show_folder*.
-
-    For a write that swaps a show's collections wholesale (a bundle import
-    under REPLACE), where the imported ``_collections`` row can carry the
-    same creation stamp as the one it replaces.
-    """
-    _INDEXED_STEMS_CACHE.pop(_stems_cache_key(show_folder), None)
-    _SOURCE_RECORDS_CACHE.pop(_stems_cache_key(show_folder), None)
-
-
-# Recorded source records by show folder, keyed like _INDEXED_STEMS_CACHE and
-# kept warm the same way after an index write (_note_source_records), which
-# re-reads the written episode's records instead of carrying the old ones.
-_SOURCE_RECORDS_CACHE: dict[
-    str, tuple[tuple[tuple[str, str, int], ...], dict[str, list[dict]]]
-] = {}
+    state = _lance_index_state(show_folder, with_records=False)
+    return state[0] if state else None
 
 
 def lance_source_records(show_folder: Path) -> dict[str, list[dict]] | None:
@@ -277,37 +222,82 @@ def lance_source_records(show_folder: Path) -> dict[str, list[dict]] | None:
     One record per collection the episode is indexed in (they differ when one
     collection was re-indexed after an edit and another was not). Episodes
     indexed before records existed are absent. None when the index could not
-    be read, like :func:`lance_indexed_stems`.
+    be read, like :func:`lance_indexed_stems`, whose cache entry holds them.
     """
-    try:
-        from podcodex.ingest.show import load_show_meta
-        from podcodex.rag.index_store import get_index_store
-    except Exception:
-        return None
+    state = _lance_index_state(show_folder, with_records=True)
+    return state[1] if state else None
 
-    meta = load_show_meta(show_folder)
-    show_name = (meta.name if meta else None) or show_folder.name
+
+def note_episode_indexed(show_folder: Path | str, stem: str) -> None:
+    """Incrementally add *stem* to the cached index state after an index write.
+
+    Every LanceDB write bumps the dataset version, so during an index batch
+    each status poll would find the fingerprint stale and rebuild the set
+    with a full chunk scan, once per indexed episode. The server process
+    handling the index task knows exactly which episode just landed, so it
+    refreshes the fingerprint, adds the stem in place and re-reads that
+    episode's source records when they are cached. Collection names come
+    from the cached fingerprint itself (metadata version reads only, no
+    meta-table scan); an episode indexed into a brand-new collection
+    self-heals through the normal rescan on the next request's mismatch.
+    Cross-process writers (bot rsync) also take the rescan path; a cold
+    cache just waits for the next request's scan.
+    """
+    key = _stems_cache_key(show_folder)
+    cached = _INDEXED_STEMS_CACHE.get(key)
+    if cached is None:
+        return
+    old_versions, old_stems, old_records = cached
     try:
+        from podcodex.rag.index_store import get_index_store
+
         store = get_index_store()
-        cols = store.collections_for_show(
-            meta.id if meta else "", show_label=show_name, strict=True
+        # Versions only, creation stamps carried over: re-reading them would
+        # scan the meta table on every indexed episode.
+        versions = tuple(
+            (name, created, store.collection_version(name))
+            for name, created, _ in old_versions
         )
-        versions = _versions_fingerprint(store, cols)
-        key = _stems_cache_key(show_folder)
-        cached = _SOURCE_RECORDS_CACHE.get(key)
-        if cached is not None and cached[0] == versions:
-            return {k: list(v) for k, v in cached[1].items()}
-        records: dict[str, list[dict]] = {}
-        for col in cols:
-            for stem, record in store.episode_source_records(col).items():
-                records.setdefault(stem, []).append(record)
-        _SOURCE_RECORDS_CACHE[key] = (versions, records)
-        return {k: list(v) for k, v in records.items()}
     except Exception as exc:
-        logger.warning(
-            "lance source-record lookup failed for {!r}: {!r}", show_name, exc
-        )
-        return None
+        # Can't trust the fingerprint: drop the entry so the next request
+        # rebuilds from a real scan instead of serving a stale set.
+        _INDEXED_STEMS_CACHE.pop(key, None)
+        logger.warning("indexed-set refresh failed for {}: {!r}", key, exc)
+        return
+    if any(new[2] < old[2] for new, old in zip(versions, old_versions)):
+        # A table's version only grows: a lower one means the collection was
+        # dropped (0) or recreated since the set was built, and the old set
+        # holds the dropped table's episodes, so adding to it would keep them.
+        _INDEXED_STEMS_CACHE.pop(key, None)
+        return
+    records = None
+    if old_records is not None:
+        try:
+            fresh = [
+                record
+                for name, _created, _version in versions
+                if (record := store.episode_source_record(name, stem))
+            ]
+        except Exception as exc:
+            # The stems are still right; the records are re-read on demand.
+            logger.warning("source-record refresh failed for {}: {!r}", key, exc)
+        else:
+            records = dict(old_records)
+            if fresh:
+                records[stem] = fresh
+            else:
+                records.pop(stem, None)
+    _INDEXED_STEMS_CACHE[key] = (versions, old_stems | {stem}, records)
+
+
+def forget_indexed_stems(show_folder: Path | str) -> None:
+    """Drop the cached index state of *show_folder*.
+
+    For a write that swaps a show's collections wholesale (a bundle import
+    under REPLACE), where the imported ``_collections`` row can carry the
+    same creation stamp as the one it replaces.
+    """
+    _INDEXED_STEMS_CACHE.pop(_stems_cache_key(show_folder), None)
 
 
 def dir_holds_episode(names: set[str] | frozenset[str]) -> bool:

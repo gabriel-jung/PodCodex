@@ -700,12 +700,20 @@ def resolve_canonical_refs(
     Same ladder per stem, resolved from two bulk queries instead of 2-3 per
     stem, so per-show consumers (speaker roster) scale.
     """
+    return _bulk_canonical_refs(show_dir, stems)[0]
+
+
+def _bulk_canonical_refs(
+    show_dir: Path, stems: list[str]
+) -> tuple[dict[str, tuple[str, str] | None], dict[tuple[str, str], list[dict]]]:
+    """:func:`resolve_canonical_refs`, plus the version rows it read, by
+    ``(stem, step)``, for callers that need more than the ref."""
     from podcodex.core._utils import episode_base
 
     db = get_pipeline_db(show_dir)
     verified = db.verified_pointers()
     by_step = db.versions_for_steps(["corrected", "transcript"])
-    return {
+    refs = {
         stem: _canonical_ref_from(
             episode_base(show_dir, stem),
             verified.get(stem),
@@ -713,6 +721,7 @@ def resolve_canonical_refs(
         )
         for stem in stems
     }
+    return refs, by_step
 
 
 def version_content_hash(base: Path, step: str, version_id: str) -> str | None:
@@ -747,18 +756,9 @@ def current_source_hash(base: Path, step: str, ref: str) -> str | None:
 def canonical_content_hashes(show_dir: Path, stems: list[str]) -> dict[str, str | None]:
     """Bulk :func:`canonical_content_hash`, from the same two bulk queries as
     :func:`resolve_canonical_refs`."""
-    from podcodex.core._utils import episode_base
-
-    db = get_pipeline_db(show_dir)
-    verified = db.verified_pointers()
-    by_step = db.versions_for_steps(["corrected", "transcript"])
+    refs, by_step = _bulk_canonical_refs(show_dir, stems)
     out: dict[str, str | None] = {}
-    for stem in stems:
-        ref = _canonical_ref_from(
-            episode_base(show_dir, stem),
-            verified.get(stem),
-            lambda step, stem=stem: by_step.get((stem, step)) or [],
-        )
+    for stem, ref in refs.items():
         out[stem] = None
         if ref:
             step, vid = ref

@@ -99,6 +99,14 @@ CHUNKING_STRATEGIES: dict[str, str] = {
 
 DEFAULT_CHUNKING = "semantic"
 
+
+def is_known_collection(meta: dict) -> bool:
+    """A collection this install can re-index: its model and chunker are ones
+    it knows. Stale chunks in any other can be neither refreshed nor cleared,
+    so they do not count toward an episode's outdated mark."""
+    return meta.get("model") in MODELS and meta.get("chunker") in CHUNKING_STRATEGIES
+
+
 # Chonkie's internal splitting model — not exposed to users
 CHUNKER_MODEL_KEY = "e5-small"
 

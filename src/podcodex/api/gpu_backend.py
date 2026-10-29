@@ -519,15 +519,32 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _extract_tar_gz(
+def _extract_archive(
     archive: Path, dest: Path, label: str, progress_cb, frac: float
 ) -> list[str]:
     """Extract *archive* into *dest* (which must already exist) and return
-    the relative paths of the files it laid down."""
+    the relative paths of the files it laid down. Any compression tarfile
+    reads: releases moved from gzip to xz, older manifests name .tar.gz.
+
+    xz unpacks on one core, a minute or more for the CUDA libraries, so the
+    message counts up (by compressed bytes read) instead of sitting still.
+    Members are extracted as the stream reaches them: listing them first
+    would decompress the whole archive twice.
+    """
+    total = max(archive.stat().st_size, 1)
     progress_cb(frac, f"Extracting {label}…")
-    with tarfile.open(archive, "r:gz") as tar:
-        tar.extractall(dest, filter="data")  # filter=data avoids tar exploits
-        return sorted(m.name for m in tar.getmembers() if m.isfile())
+    shown = 0
+    files: list[str] = []
+    with open(archive, "rb") as raw, tarfile.open(fileobj=raw, mode="r:*") as tar:
+        for member in tar:
+            tar.extract(member, dest, filter="data")  # data: refuses tar exploits
+            if member.isfile():
+                files.append(member.name)
+            pct = min(99, raw.tell() * 100 // total)
+            if pct >= shown + 5:
+                shown = pct
+                progress_cb(frac, f"Extracting {label}… {pct}%")
+    return sorted(files)
 
 
 def _resolve_artifact_url(manifest_url: str, archive_name: str) -> str:
@@ -766,7 +783,7 @@ def _download_and_install_locked(
             # install. Moving replaces the link instead.
             unpacked = scratch / f"{part.name}-files"
             unpacked.mkdir()
-            extracted_files = _extract_tar_gz(
+            extracted_files = _extract_archive(
                 archive, unpacked, label, progress_cb, end - 0.01
             )
             archive.unlink()
