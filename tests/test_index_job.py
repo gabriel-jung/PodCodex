@@ -142,7 +142,9 @@ def test_a_cancel_stops_before_marking_and_still_compacts(seams, entry):
     """What was written before the cancel is reclaimed by this subprocess,
     the only store that knows about it."""
     rec, audio = seams
-    with pytest.raises(RuntimeError, match="Cancelled"):
+    from podcodex.api.tasks import TaskCancelled
+
+    with pytest.raises(TaskCancelled):
         entry(audio, cancelled=lambda: True)
     assert rec.marked == []
     assert rec.compacted == 1

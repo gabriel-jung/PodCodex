@@ -26,6 +26,8 @@ from typing import Any
 
 from loguru import logger
 
+from podcodex.core.cancel import TaskCancelled
+
 # `spawn` so torch / LanceDB / sentence-transformers start from a clean
 # interpreter; fork on macOS is unsafe with those libs.
 _CTX = mp.get_context("spawn")
@@ -50,6 +52,11 @@ _MAX_RUNTIME_SEC = 24 * 60 * 60
 # worst-case cancel latency when the child is stuck inside an uninterruptible
 # native call (long model.generate, etc.).
 _CANCEL_GRACE_SEC = 5.0
+
+# Every child loads a model (Whisper, pyannote, an embedder, TTS), so one runs
+# at a time: on an 8 GB card a transcription overlapping an index job peaked
+# at 7.8 GB. A job that finds it taken waits (cancellably) for its turn.
+_MODEL_SLOT = threading.Lock()
 
 
 def _early_child_log(message: str) -> None:
@@ -196,6 +203,10 @@ def _child_entry(
         _early_child_log("entry function returned ok")
         result_q.put(("ok", result))
     except BaseException as exc:
+        if isinstance(exc, TaskCancelled):
+            # A cancel point, not an error: sent as such, with its summary.
+            result_q.put(("cancelled", exc.summary))
+            return
         tb = traceback.format_exc()
         _early_child_log(f"entry function raised: {exc!r}\n{tb}")
         result_q.put(("err", _head(f"{type(exc).__name__}: {exc}"), _tail(tb)))
@@ -249,6 +260,30 @@ def run_in_subprocess(
     if not signature_checked:
         _check_entry_signature(entry_path, kwargs)
 
+    def check() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise TaskCancelled()
+
+    if not _MODEL_SLOT.acquire(blocking=False):
+        logger.info("subprocess_runner: waiting for the running model job")
+        if on_progress is not None:
+            on_progress(0.0, "Waiting for another job to finish...")
+        while not _MODEL_SLOT.acquire(timeout=0.25):
+            check()
+    try:
+        return _run_child(entry_path, kwargs, on_progress, on_log, cancel_event)
+    finally:
+        _MODEL_SLOT.release()
+
+
+def _run_child(
+    entry_path: str,
+    kwargs: dict[str, Any],
+    on_progress: Callable[[float, str], None] | None,
+    on_log: Callable[[str], None] | None,
+    cancel_event: threading.Event | None,
+) -> Any:
+    """Body of :func:`run_in_subprocess`, run while holding the model slot."""
     # Cap progress queue so a chatty child cannot grow RSS unboundedly if
     # the parent stalls: a full queue blocks the child's progress_cb (back
     # pressure), while its log forwarder drops lines instead (put_nowait).
@@ -363,7 +398,7 @@ def run_in_subprocess(
 
         # Grace expired: skip the result wait; finally block will SIGTERM.
         if grace_expired:
-            raise RuntimeError("Cancelled")
+            raise TaskCancelled()
         if outcome is not None:
             # The result arrived while the child was still alive (it is
             # finishing its exit); let it go rather than terminate it below.
@@ -373,7 +408,7 @@ def run_in_subprocess(
                 outcome = result_q.get(timeout=5)
             except _queue.Empty:
                 if cancel_event is not None and cancel_event.is_set():
-                    raise RuntimeError("Cancelled")
+                    raise TaskCancelled()
                 proc.join(timeout=1)
                 raise RuntimeError(
                     f"Subprocess {proc.pid} exited without a result "
@@ -383,6 +418,10 @@ def run_in_subprocess(
 
         if outcome[0] == "ok":
             return outcome[1]
+        if outcome[0] == "cancelled":
+            # The child stopped at its own cancel point. Any other error is a
+            # real failure, even one that happened during a cancel.
+            raise TaskCancelled(outcome[1])
         _, err_msg, tb = outcome
         raise RuntimeError(f"{err_msg}\n{tb}")
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from podcodex.core.cancel import TaskCancelled
 from podcodex.rag.defaults import CHUNK_SIZE, CHUNK_THRESHOLD, DEFAULT_MODEL
 
 
@@ -184,7 +185,7 @@ def _index_episode(
 
     def on_prog(step: int, total: int, label: str) -> None:
         if cancelled():
-            raise RuntimeError("Cancelled")
+            raise TaskCancelled()
         progress_cb(
             0.05 + 0.9 * (step / max(total, 1)), f"{label} ({step + 1}/{total})"
         )

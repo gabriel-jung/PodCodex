@@ -12,26 +12,88 @@ from podcodex.api.subprocess_runner import run_in_subprocess
 
 def test_cancel_event_stops_child():
     cancel_ev = threading.Event()
+    cancelled_at: list[float] = []
 
-    def fire_cancel():
-        time.sleep(0.3)
-        cancel_ev.set()
+    def on_progress(_frac, _msg):
+        # Cancel once the child runs: a fixed delay raced its start-up, which
+        # on a loaded machine outlasted the cancel grace and got it killed.
+        if not cancel_ev.is_set():
+            cancelled_at.append(time.monotonic())
+            cancel_ev.set()
 
-    t = threading.Thread(target=fire_cancel, daemon=True)
-    t.start()
-    start = time.monotonic()
-    # Child polls cancelled() every 50ms; should exit quickly after signal.
     result = run_in_subprocess(
         "tests.fixtures.subprocess_jobs:slow",
         {},
+        on_progress=on_progress,
         cancel_event=cancel_ev,
     )
-    elapsed = time.monotonic() - start
     assert result == "cancelled"
-    # Floor is the child's bootstrap time (~1–2 s on Linux CI) before it
-    # reaches the cancel poll loop; bound generously to stay non-flaky.
-    assert elapsed < 6.0, f"took too long to honor cancel: {elapsed:.2f}s"
-    t.join(timeout=1)
+    # The child polls cancelled() every 50 ms.
+    assert time.monotonic() - cancelled_at[0] < 3.0
+
+
+@pytest.mark.parametrize("entry", ["stubborn", "raises_on_cancel"])
+def test_a_cancelled_child_raises_task_cancelled_not_an_error(entry):
+    """A batch counts any other exception as a failed episode."""
+    from podcodex.api.tasks import TaskCancelled
+
+    cancel_ev = threading.Event()
+    threading.Timer(0.3, cancel_ev.set).start()
+
+    with pytest.raises(TaskCancelled):
+        run_in_subprocess(
+            f"tests.fixtures.subprocess_jobs:{entry}", {}, cancel_event=cancel_ev
+        )
+
+
+def test_a_real_failure_during_a_cancel_is_still_an_error():
+    """A crash in the grace window must not pass for the user's cancel."""
+    cancel_ev = threading.Event()
+    threading.Timer(0.3, cancel_ev.set).start()
+    with pytest.raises(RuntimeError, match="CUDA out of memory"):
+        run_in_subprocess(
+            "tests.fixtures.subprocess_jobs:crashes_on_cancel",
+            {},
+            cancel_event=cancel_ev,
+        )
+
+
+def test_model_jobs_run_one_at_a_time():
+    """Two at once overflow a consumer GPU; the second waits its turn."""
+    spans: list[tuple[float, float]] = []
+    runs = [
+        threading.Thread(
+            target=lambda: spans.append(
+                run_in_subprocess("tests.fixtures.subprocess_jobs:timed", {})
+            )
+        )
+        for _ in range(2)
+    ]
+    for t in runs:
+        t.start()
+    for t in runs:
+        t.join(timeout=60)
+
+    first, second = sorted(spans)
+    assert second[0] >= first[1]
+
+
+def test_a_job_waiting_for_the_model_slot_can_be_cancelled():
+    from podcodex.api import subprocess_runner
+    from podcodex.api.tasks import TaskCancelled
+
+    cancel_ev = threading.Event()
+    messages: list[str] = []
+    threading.Timer(0.3, cancel_ev.set).start()
+    with subprocess_runner._MODEL_SLOT:
+        with pytest.raises(TaskCancelled):
+            run_in_subprocess(
+                "tests.fixtures.subprocess_jobs:slow",
+                {},
+                on_progress=lambda _f, m: messages.append(m),
+                cancel_event=cancel_ev,
+            )
+    assert messages == ["Waiting for another job to finish..."]
 
 
 def test_bad_entry_path_returns_error():
@@ -99,3 +161,17 @@ def test_only_the_api_default_thread_cap_is_dropped():
 
     assert defaulted == {}
     assert user_set == {"OMP_NUM_THREADS": "3"}
+
+
+def test_a_child_cancel_keeps_its_summary():
+    from podcodex.api.tasks import TaskCancelled
+
+    cancel_ev = threading.Event()
+    threading.Timer(0.3, cancel_ev.set).start()
+    with pytest.raises(TaskCancelled) as exc:
+        run_in_subprocess(
+            "tests.fixtures.subprocess_jobs:raises_on_cancel",
+            {},
+            cancel_event=cancel_ev,
+        )
+    assert exc.value.summary == "2 indexed"

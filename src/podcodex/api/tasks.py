@@ -16,6 +16,8 @@ from fastapi import WebSocket
 
 from loguru import logger
 
+from podcodex.core.cancel import TaskCancelled  # noqa: F401 (re-exported)
+
 # Max debug log lines kept per task (ring buffer)
 _MAX_DEBUG_LINES = 200
 
@@ -106,19 +108,6 @@ class TaskInfo:
         if len(self.log) >= _MAX_DEBUG_LINES:
             self.log = self.log[-_MAX_DEBUG_LINES // 2 :]
         self.log.append(message)
-
-
-class TaskCancelled(Exception):
-    """Raised at one of a task's own cancel points once the user cancelled it.
-
-    *summary* says what the task finished before it stopped ("3 downloaded");
-    ``TaskManager`` shows it after "Cancelled" as the final message. Not a
-    failure: nothing is logged as an error.
-    """
-
-    def __init__(self, summary: str = "") -> None:
-        super().__init__(summary or "Cancelled")
-        self.summary = summary
 
 
 class TaskConflict(ValueError):
