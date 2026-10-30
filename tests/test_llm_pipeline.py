@@ -116,6 +116,13 @@ def test_two_batches_apply_by_position_and_keep_breaks(ollama):
     assert all("[BREAK]" not in c["messages"][1]["content"] for c in fake.chats)
 
 
+def test_ollama_keeps_the_model_only_briefly_after_a_call(ollama):
+    """Left loaded for minutes, it shares VRAM with the next episode's Whisper."""
+    fake = ollama([_answer("ONE")])
+    _run([_seg("one", 0.0)], sink=[])
+    assert fake.chats[0]["keep_alive"] == llm.OLLAMA_KEEP_ALIVE == "30s"
+
+
 def test_a_dense_batch_is_split_by_item_count(ollama):
     """Past OLLAMA_MAX_BATCH_ITEMS the token budget no longer fits its caps."""
     n = llm.OLLAMA_MAX_BATCH_ITEMS + 5
@@ -224,21 +231,141 @@ def test_a_batch_answered_with_its_source_is_flagged_not_reverted(ollama, monkey
         "Oui.",
         "Oui, c'est tout le sujet du film, vraiment.",
     ]
-    ollama([_answer(*french)])
+    later = "Et la musique du film est vraiment magnifique."
+    ollama([_answer(*french), _answer("映画の音楽は本当に素晴らしい。")])
 
     out = translate.translate_segments(
-        [_seg(t, float(i)) for i, t in enumerate(french)],
+        [_seg(t, float(i)) for i, t in enumerate(french)] + [_seg(later, 100.0)],
         mode="ollama",
         source_lang="French",
         target_lang="Japanese",
+        batch_minutes=1.0,
         merge=False,
         output_dir="unused",
     )
 
-    assert [s["text"] for s in out] == french
+    assert [s["text"] for s in out[:3]] == french
+    first, second = recorded["records"]
+    assert first["status"] == "rejected"
+    assert "all 3 segments came back unchanged" in first["reason"]
+    assert second["status"] == "ok"
+
+
+def test_a_run_answered_with_its_source_throughout_fails(ollama, monkeypatch):
+    """Every batch echoed: saving would list the source as a translation."""
+    from podcodex.core import translate
+
+    monkeypatch.setattr("podcodex.core.llm_failures.record_run", lambda *a, **kw: None)
+    french = "Il faut revenir un peu sur ce personnage."
+    ollama([_answer(french)])
+
+    with pytest.raises(llm.LLMBatchError, match="no batch was translated"):
+        translate.translate_segments(
+            [_seg(french, 0.0)],
+            mode="ollama",
+            source_lang="French",
+            target_lang="English",
+            merge=False,
+            output_dir="unused",
+        )
+
+
+def test_an_echo_with_the_other_batches_failed_still_fails(ollama, monkeypatch):
+    """One batch times out, the rest echo: nothing at all was translated."""
+    monkeypatch.setattr("podcodex.core.llm_failures.record_run", lambda *a, **kw: None)
+    french = "Il faut revenir un peu sur ce personnage."
+    ollama([httpx.ReadTimeout("slow"), _answer(french + " Encore.")])
+
+    with pytest.raises(llm.LLMBatchError, match="no batch was translated") as exc:
+        llm.run_llm_pipeline(
+            [_seg(french, 0.0), _seg(french + " Encore.", 100.0)],
+            "system",
+            mode="ollama",
+            model="m",
+            batch_minutes=1.0,
+            merge=False,
+            flag_unchanged=True,
+            min_length_ratio=0,
+        )
+    assert "Thinking" in str(exc.value)
+
+
+def test_the_thinking_hint_is_only_for_ollama():
+    from podcodex.core.llm import _run_batches
+
+    seg = _seg("Il faut revenir un peu sur ce personnage.", 0.0)
+    with pytest.raises(llm.LLMBatchError) as exc:
+        _run_batches(
+            [seg],
+            "system",
+            lambda _n: lambda _m: _answer(seg["text"]),
+            batches=[[seg]],
+            via="API (gpt-x)",
+            instruction="Translate",
+            min_length_ratio=0,
+            flag_unchanged=True,
+            label="Translate",
+            on_batch=None,
+            batch_sink=None,
+        )
+    assert "Thinking" not in str(exc.value)
+
+
+def test_a_short_episode_mostly_left_as_it_was_is_flagged_not_failed(
+    ollama, monkeypatch
+):
+    """One batch, some lines legitimately unchanged (names, close languages)."""
+    from podcodex.core import translate
+
+    recorded: dict = {}
+    monkeypatch.setattr(
+        "podcodex.core.llm_failures.record_run",
+        lambda *a, **kw: recorded.update(kw),
+    )
+    lines = [
+        "Bom dia, hoje falamos de carros elétricos.",
+        "O Tesla Model Y e o BYD Seal estão aqui.",
+        "A seguir, a entrevista com o engenheiro.",
+    ]
+    ollama([_answer("Buenos días, hoy hablamos de coches eléctricos.", *lines[1:])])
+
+    out = translate.translate_segments(
+        [_seg(t, float(i)) for i, t in enumerate(lines)],
+        mode="ollama",
+        source_lang="Portuguese",
+        target_lang="Spanish",
+        merge=False,
+        output_dir="unused",
+    )
+
+    assert out[0]["text"].startswith("Buenos días")
     (record,) = recorded["records"]
     assert record["status"] == "rejected"
-    assert "2 of 2 segments came back unchanged" in record["reason"]
+    assert "2 of 3 segments came back unchanged" in record["reason"]
+
+
+def test_a_padded_answer_is_rejected_as_misaligned(ollama):
+    """Two segments merged, the last answer repeated to keep the count."""
+    segs = [
+        _seg("On ne vendrait plus de véhicules thermiques.", 0.0),
+        _seg("Enfin, à compter de 2035 en Europe.", 1.0),
+        _seg("C'est comme si tu disais une loi sur...", 2.0),
+    ]
+    tail = "It's like saying you want a law on..."
+    ollama([_answer("No more combustion cars from 2035 in Europe.", tail, tail)])
+    sink: list[dict] = []
+
+    out = _run(segs, sink=sink, min_length_ratio=0)
+
+    assert [s["text"] for s in out] == [s["text"] for s in segs]
+    assert sink[0]["status"] == "rejected"
+    assert "[1] and [2] came back identical" in sink[0]["reason"]
+
+
+def test_matching_answers_to_matching_sources_are_not_misaligned():
+    segs = [_seg("C'est vraiment une très bonne question.", float(i)) for i in range(2)]
+    answer = {"text": "That is really a very good question."}
+    assert llm._repeated_output(segs, {0: answer, 1: answer}) is None
 
 
 def test_short_segments_left_as_they_are_do_not_flag_a_translation():
@@ -549,3 +676,71 @@ def test_batch_count_overrides_minutes():
 def test_batch_count_one_is_single_batch():
     segments = make_segments("a", "b", "c")
     assert len(batch_segments_by_duration(segments, batch_count=1)) == 1
+
+
+def test_near_duplicate_sources_may_come_out_the_same():
+    """A correction that normalizes two near-identical lines is not padding."""
+    segs = [
+        _seg("Yeah, that's absolutely right, I agree.", 0.0),
+        _seg("Yeah that's absolutely right I agree", 1.0),
+    ]
+    answer = {"text": "Yeah, that's absolutely right, I agree."}
+    assert llm._repeated_output(segs, {0: answer, 1: answer}) is None
+
+
+def test_asr_spellings_of_one_line_may_be_corrected_the_same():
+    segs = [
+        _seg("I think thats really important for us", 0.0),
+        _seg("I think that's really important for us", 1.0),
+    ]
+    answer = {"text": "I think that's really important for us."}
+    assert llm._repeated_output(segs, {0: answer, 1: answer}) is None
+
+
+def test_a_batch_whose_short_replies_were_translated_is_not_a_full_echo():
+    batch = [
+        _seg("Il faut revenir un peu sur ce personnage.", 0.0),
+        _seg("Oui.", 1.0),
+    ]
+    sink: list = []
+    call_and_parse(
+        batch,
+        "sys",
+        lambda _m: _answer("Il faut revenir un peu sur ce personnage.", "Yes."),
+        flag_unchanged=True,
+        min_length_ratio=0,
+        on_outcome=lambda *o: sink.append(o),
+    )
+    reason = sink[0][4]
+    assert "came back unchanged" in reason and not reason.startswith("all ")
+
+
+def test_two_neighbours_corrected_alike_mid_batch_are_not_padding():
+    segs = [
+        _seg("I think it's really important for us all", 0.0),
+        _seg("I think it is really important for us all", 1.0),
+        _seg("And the next point is about the budget", 2.0),
+    ]
+    same = {"text": "I think it's really important for us all."}
+    answers = {0: same, 1: same, 2: {"text": "And the next point is about the budget."}}
+    assert llm._repeated_output(segs, answers) is None
+
+
+def test_an_echo_beside_a_batch_rejected_otherwise_keeps_the_run(ollama):
+    """The other batch was answered; it goes to the manual-fix flow."""
+    french = "Il faut revenir un peu sur ce personnage."
+    ollama([_answer(french), _answer("One", "Two")])  # echo, then count drift
+    sink: list[dict] = []
+
+    llm.run_llm_pipeline(
+        [_seg(french, 0.0), _seg("Une autre phrase assez longue.", 100.0)],
+        "system",
+        mode="ollama",
+        model="m",
+        batch_minutes=1.0,
+        merge=False,
+        flag_unchanged=True,
+        min_length_ratio=0,
+        batch_sink=sink,
+    )
+    assert [b["status"] for b in sink] == ["rejected", "rejected"]

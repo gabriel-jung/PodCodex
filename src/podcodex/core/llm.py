@@ -30,7 +30,10 @@ DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
 # Knobs for the schema-constrained correction call. See `run_ollama`.
 OLLAMA_READ_TIMEOUT_S = 600.0
 OLLAMA_CONNECT_TIMEOUT_S = 10.0
-OLLAMA_KEEP_ALIVE = "10m"
+# Short, so Ollama frees the model's VRAM by itself soon after a step: the
+# next episode's Whisper would otherwise load on top of it. Long enough to
+# keep it between the batches of a step, which follow each other at once.
+OLLAMA_KEEP_ALIVE = "30s"
 OLLAMA_TEMPERATURE = 0.1
 OLLAMA_NUM_PREDICT_MAX = 8192
 OLLAMA_NUM_CTX_MAX = 16384
@@ -586,6 +589,42 @@ def apply_corrections(
 # so only segments at least this long count as evidence.
 _UNCHANGED_MIN_CHARS = 20
 
+# Tail of the reason a batch answered with its own source is rejected with.
+# `_run_batches` fails a run whose every batch echoed in full ("all N ..."),
+# and keeps a partial echo for the manual-fix flow: names, code-switching or
+# close languages leave some segments as they were.
+_NOT_TRANSLATED = "came back unchanged (not translated)"
+
+
+def _loose(text: str) -> str:
+    """*text* without case or punctuation: near-duplicate lines compare equal."""
+    # Punctuation dropped before splitting, so "thats" and "that's" match.
+    return " ".join(re.sub(r"[^\w\s]", "", text.lower()).split())
+
+
+def _repeated_output(inputs: list[dict], by_index: dict[int, dict]) -> int | None:
+    """Position of a padded last answer, else None.
+
+    The schema pins the item count, so a model that merges two segments
+    pads the end with a copy of its last answer instead of answering short:
+    the count check passes and every segment after the merge is shifted by
+    one. Only the end is checked, where the padding lands; two neighbours
+    corrected to the same sentence elsewhere are left alone, as are sources
+    that only differ in case or punctuation.
+    """
+    n = len(inputs)
+    if n < 2:
+        return None
+    last = str(by_index.get(n - 1, {}).get("text", "")).strip()
+    before = str(by_index.get(n - 2, {}).get("text", "")).strip()
+    if (
+        len(last) >= _UNCHANGED_MIN_CHARS
+        and last == before
+        and _loose(inputs[-1]["text"]) != _loose(inputs[-2]["text"])
+    ):
+        return n - 1
+    return None
+
 
 def _mostly_unchanged(
     inputs: list[dict], outputs: list[dict]
@@ -679,6 +718,19 @@ def call_and_parse(
         )
         status, reason = "rejected", "count drift"
         by_index = {}
+    elif (repeat := _repeated_output(real_segs, by_index)) is not None:
+        # Same risk as count drift, hidden by the padding: keep originals.
+        first = start_index + repeat - 1
+        logger.warning(
+            f"LLM answers [{first}] and [{first + 1}] are identical, "
+            "rejecting batch as misaligned; keeping original text."
+        )
+        status = "rejected"
+        reason = (
+            f"segments [{first}] and [{first + 1}] came back identical "
+            "(merged or shifted)"
+        )
+        by_index = {}
 
     reverted: list[int] = []
     results = apply_corrections(
@@ -693,12 +745,21 @@ def call_and_parse(
             "(LLM output empty or much shorter than the input)"
         )
     if status == "ok" and flag_unchanged:
-        unchanged = _mostly_unchanged(real_segs, _separate_breaks(results)[1])
+        outputs = _separate_breaks(results)[1]
+        unchanged = _mostly_unchanged(real_segs, outputs)
         if unchanged:
             status = "rejected"
+            n_same, n_eligible = unchanged
+            # "all" only when not even a short reply was translated: that is
+            # the run-failing echo, anything less goes to the manual-fix flow.
+            echoed = all(
+                o["text"].strip() == i["text"].strip()
+                for i, o in zip(real_segs, outputs)
+            )
             reason = (
-                f"{unchanged[0]} of {unchanged[1]} segments came back "
-                "unchanged (not translated)"
+                f"all {len(real_segs)} segments {_NOT_TRANSLATED}"
+                if echoed
+                else f"{n_same} of {n_eligible} segments {_NOT_TRANSLATED}"
             )
 
     if on_outcome is not None:
@@ -803,11 +864,19 @@ def _run_batches(
     n_batches = len(batches)
     offset = 0
     errors: list[LLMBatchError] = []
+    untranslated = 0  # batches answered with their whole source
 
     for batch_num, batch in enumerate(batches, 1):
         logger.info(f"{label} batch {batch_num}/{n_batches} via {via}")
         _, real_segs = _separate_breaks(batch)
-        record = _outcome_recorder(batch_sink, batch_num, real_segs, offset)
+        sink_record = _outcome_recorder(batch_sink, batch_num, real_segs, offset)
+
+        def record(raw, expected, got, status, reason, _sink=sink_record):
+            nonlocal untranslated
+            echoed = reason.endswith(_NOT_TRANSLATED)
+            untranslated += echoed and reason.startswith("all ")
+            _sink(raw, expected, got, status, reason)
+
         try:
             results.extend(
                 call_and_parse(
@@ -835,6 +904,22 @@ def _run_batches(
     if errors and len(errors) == n_batches:
         raise LLMBatchError(
             f"Every batch failed; last error: {errors[-1]}", permanent=False
+        )
+    if untranslated and untranslated + len(errors) == n_batches:
+        # Every batch echoed its source or failed: nothing was translated,
+        # and saving would list the source text as a finished translation.
+        # Any other outcome (a batch rejected for another reason) keeps the
+        # run, for the manual-fix flow.
+        hint = (
+            " Models that only work with thinking on (such as the qwen3 "
+            "Thinking builds) do this; an instruct model should work."
+            if via.startswith("Ollama")
+            else ""
+        )
+        raise LLMBatchError(
+            f"{via} sent the text back untranslated, and no batch was "
+            f"translated.{hint}",
+            permanent=False,
         )
     return results
 
