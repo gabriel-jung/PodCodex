@@ -36,9 +36,6 @@ class EpisodeInfo:
     output_dir: Path  # show_folder / stem  (where all processing outputs live)
     title: str = ""  # display title from RSS metadata (falls back to stem)
     # transcription pipeline steps
-    segments_ready: bool = False
-    diarized: bool = False
-    assigned: bool = False
     transcribed: bool = False  # transcript exported (raw or validated)
     corrected: bool = False
     indexed: bool = False
@@ -60,32 +57,20 @@ def _step_has_versions(output_dir: Path | None, step: str, ext: str) -> bool:
     return next((output_dir / step).glob(f"*{ext}"), None) is not None
 
 
-def _episode_status(
-    stem: str, existing: set[str], output_dir: Path | None = None
-) -> dict:
+def _episode_status(existing: set[str], output_dir: Path | None = None) -> dict:
     """Derive pipeline status flags from the set of filenames in an output dir.
 
-    ``indexed`` is intentionally False here — authoritative truth comes from
-    the LanceDB index, set by ``scan_folder`` after this function returns.
+    A seed for ``pipeline.db``, not the status itself: ``corrected`` and
+    ``translations`` are left for ``reconcile_show_status``, which fills them
+    from the version files right after seeding. ``indexed`` is intentionally
+    False here; authoritative truth comes from the LanceDB index, set by
+    ``scan_folder`` after this function returns.
     """
-    segments_ready = (
-        f"{stem}.segments.parquet" in existing
-        and f"{stem}.segments.meta.json" in existing
-    )
-    diarized = (
-        f"{stem}.diarization.parquet" in existing
-        and f"{stem}.diarization.meta.json" in existing
-    )
-    assigned = f"{stem}.diarized_segments.parquet" in existing
-
     transcribed = _step_has_versions(output_dir, "transcript", ".json")
     synthesized = _step_has_versions(output_dir, "synthesize", ".wav")
     has_subtitles = any(f.endswith(".vtt") for f in existing)
 
     return {
-        "segments_ready": segments_ready,
-        "diarized": diarized,
-        "assigned": assigned,
         "transcribed": transcribed,
         "corrected": False,
         "indexed": False,
@@ -333,7 +318,7 @@ def _make_episode(
         stem=stem,
         output_dir=output_dir,
         title=_load_title(output_dir),
-        **_episode_status(stem, existing, output_dir),
+        **_episode_status(existing, output_dir),
     )
 
 

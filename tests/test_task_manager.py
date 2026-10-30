@@ -10,6 +10,7 @@ exercises the manager directly.
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 import time
 
 import pytest
@@ -517,3 +518,58 @@ def test_httpx_request_lines_are_not_logged():
 
     assert not logging.getLogger("httpx").isEnabledFor(logging.INFO)
     assert not logging.getLogger("httpcore").isEnabledFor(logging.INFO)
+
+
+def test_get_active_in_show_reads_keys_by_the_path_they_name(tmp_path):
+    """Move and delete use it: a run locked under another spelling of the
+    show folder (trailing slash, ``..``) must still be seen."""
+    from podcodex.api.tasks import task_manager
+
+    show = tmp_path / "Show"
+    show.mkdir()
+    with active_task(f"download:{show}/"):
+        assert task_manager.get_active_in_show(str(show)) is not None
+    with active_task(f"{tmp_path}/x/../Show/ep1.mp3"):
+        assert task_manager.get_active_in_show(str(show)) is not None
+    with active_task(str(tmp_path / "Other" / "ep1.mp3")):
+        assert task_manager.get_active_in_show(str(show)) is None
+
+
+def test_a_symlinked_show_folder_still_matches_its_episode_locks(tmp_path):
+    """Registered through a link, locked through the same link: the show
+    root and the keys under it must normalize alike."""
+    from podcodex.api.tasks import task_manager
+
+    real = tmp_path / "ext" / "Show"
+    real.mkdir(parents=True)
+    link = tmp_path / "Show"
+    link.symlink_to(real)
+    with active_task(str(link / "ep1.mp3")):
+        assert task_manager.get_active_in_show(str(link)) is not None
+        assert task_manager.get_active_in_show(str(real)) is not None
+
+
+def test_lock_path_collapses_dots_and_leaves_non_paths_alone(tmp_path, monkeypatch):
+    from podcodex.api.tasks import lock_path
+
+    show = tmp_path / "Show"
+    (show / "ep1").mkdir(parents=True)
+    assert lock_path(f"{show}/ep1/..") == lock_path(show)
+    # A key naming no folder is never resolved against the cwd, which could
+    # put it inside a show and make that show read as busy.
+    monkeypatch.chdir(show)
+    assert lock_path("gpu_backend") == Path("gpu_backend")
+
+
+def test_a_symlinked_episode_folder_stays_inside_its_show(tmp_path):
+    """A key naming a symlinked output dir must not follow the link out of
+    the show, or a show delete would rmtree under the live job."""
+    from podcodex.api.tasks import task_manager
+
+    show = tmp_path / "Show"
+    show.mkdir()
+    elsewhere = tmp_path / "ext" / "ep1"
+    elsewhere.mkdir(parents=True)
+    (show / "ep1").symlink_to(elsewhere)
+    with active_task(str(show / "ep1")):
+        assert task_manager.get_active_in_show(str(show)) is not None

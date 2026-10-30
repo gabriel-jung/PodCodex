@@ -447,6 +447,7 @@ def _resolve_target(
     show_roots: dict[str, Path] | None,
     index_root: Path,
     collection_names: Container[str],
+    declared: Container[str] = (),
 ) -> Path | None:
     """Map archive member path → target filesystem path. ``None`` to skip.
 
@@ -473,9 +474,14 @@ def _resolve_target(
         rest = member_name[len("lancedb/") :]
         first, _, _tail = rest.partition("/")
         if not _collection_member(first, collection_names):
-            logger.warning(
-                f"skipping archive member outside collections: {member_name}"
-            )
+            # A declared collection the plan skipped (a copy of an indexed
+            # show) is reported once in ``conflicts_resolved``; warning per
+            # file logged every one of its data files. Only a member the
+            # manifest never declared is worth a warning.
+            if not _collection_member(first, declared):
+                logger.warning(
+                    f"skipping archive member outside collections: {member_name}"
+                )
             return None
         return _confine(index_root / rest, index_root)
     return None
@@ -488,6 +494,7 @@ def _extract(
     folder_map: dict[str, str],
     collection_names: Container[str],
     progress: ProgressCallback | None,
+    declared: Container[str] = (),
 ) -> None:
     """Stream tar members to disk in one pass, rewriting paths via ``folder_map``."""
     # Resolve the containment roots once; _confine runs per member.
@@ -503,7 +510,7 @@ def _extract(
             if not member.isfile() or member.name == MANIFEST_FILENAME:
                 continue
             target = _resolve_target(
-                member.name, show_roots, index_root, collection_names
+                member.name, show_roots, index_root, collection_names, declared
             )
             if target is None:
                 continue
@@ -775,6 +782,7 @@ def import_archive(
                 folder_map,
                 frozenset(c[0] for c in collection_plan),
                 progress,
+                frozenset(c.name for show in manifest.shows for c in show.collections),
             )
 
         store.reconnect()

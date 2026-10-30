@@ -32,7 +32,6 @@ from podcodex.api.schemas import (  # noqa: E402
     CreateFromYouTubeRequest,
     CreateFromYouTubeResponse,
     DownloadItemResult,
-    EpisodeOut,
     EpisodeSpeakerEntry,
     EpisodeSpeakersResponse,
     EpisodeStatusOut,
@@ -163,7 +162,6 @@ MODELS: list[tuple[str | None, type[BaseModel]]] = [
     # schemas.py
     (None, PipelineDefaultsSchema),
     (None, ShowMeta),
-    (None, EpisodeOut),
     (None, BroadcastPreviewOut),
     (None, RSSEpisodeOut),
     (None, Segment),

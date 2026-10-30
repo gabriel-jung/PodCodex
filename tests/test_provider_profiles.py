@@ -148,3 +148,17 @@ def test_delete_custom(client):
 def test_delete_builtin_rejected(client):
     r = client.delete("/api/provider-profiles/openai")
     assert r.status_code == 403
+
+
+def test_a_name_with_a_slash_can_be_edited_and_deleted(client):
+    """Edit and delete route on ``/{name:path}``; on ``/{name}`` a ``/`` in
+    the name 404'd forever, including for profiles saved before the fix."""
+    from urllib.parse import quote
+
+    r = client.post(
+        "/api/provider-profiles", json={"name": "lm/studio", "base_url": "http://x"}
+    )
+    assert r.status_code == 201
+    url = f"/api/provider-profiles/{quote('lm/studio', safe='')}"
+    assert client.patch(url, json={"base_url": "http://y"}).status_code == 200
+    assert client.delete(url).status_code == 204

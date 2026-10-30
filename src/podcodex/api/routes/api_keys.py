@@ -60,6 +60,9 @@ def list_keys() -> ListResponse:
 
 @router.post("", response_model=APIKeyPublic, status_code=201)
 def create_key(req: CreateRequest) -> APIKeyPublic:
+    from podcodex.api.routes._helpers import require_url_name
+
+    require_url_name(req.name, "Key")
     new_key = APIKey(
         name=req.name,
         value=req.value,
@@ -78,7 +81,7 @@ def create_key(req: CreateRequest) -> APIKeyPublic:
     return to_public(new_key)
 
 
-@router.patch("/{name}", response_model=APIKeyPublic)
+@router.patch("/{name:path}", response_model=APIKeyPublic)
 def update_key(name: str, req: UpdateRequest) -> APIKeyPublic:
     def edit(file) -> None:
         key = find_key(file, name)
@@ -93,7 +96,7 @@ def update_key(name: str, req: UpdateRequest) -> APIKeyPublic:
     return to_public(find_key(mutate_keys(edit), name))
 
 
-@router.delete("/{name}", status_code=204)
+@router.delete("/{name:path}", status_code=204)
 def delete_key(name: str) -> None:
     def drop(file) -> None:
         if find_key(file, name) is None:

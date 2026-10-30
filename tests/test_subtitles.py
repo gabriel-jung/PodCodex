@@ -369,3 +369,28 @@ def test_cjk_sentence_ends_end_a_segment():
         _caption("次に", 4.6, 6.0),
     ]
     assert len(join_caption_cues(cues)) == 2
+
+
+def test_srt_markup_is_stripped_before_the_speaker_label():
+    """<i>, <b>, <font> and {\\an8} are common in SRT and were kept verbatim,
+    into the transcript, the index and every export."""
+    from podcodex.core._utils import NARRATOR_SPEAKER
+    from podcodex.core.subtitles import srt_to_segments
+
+    srt = (
+        "1\n00:00:00,000 --> 00:00:02,000\n{\\an8}<i>Previously on the show</i>\n\n"
+        '2\n00:00:02,500 --> 00:00:04,000\n<font color="#ff0">BOB:</font> The <b>key</b> is a starter.\n\n'
+        "3\n00:00:04,500 --> 00:00:05,000\nIf a < b and c > d\n\n"
+        "4\n00:00:05,500 --> 00:00:06,000\nPress <Enter> to continue\n\n"
+        "6\n00:00:07,500 --> 00:00:08,000\nIf x <b and c> y\n\n"
+        "5\n00:00:06,500 --> 00:00:07,000\n<v Alice>Hello there</v>\n"
+    )
+    segs = srt_to_segments(srt)
+    assert [(s["speaker"], s["text"]) for s in segs] == [
+        (NARRATOR_SPEAKER, "Previously on the show"),
+        ("BOB", "The key is a starter."),
+        (NARRATOR_SPEAKER, "If a < b and c > d"),
+        (NARRATOR_SPEAKER, "Press <Enter> to continue"),
+        (NARRATOR_SPEAKER, "If x <b and c> y"),
+        ("Alice", "Hello there"),
+    ]

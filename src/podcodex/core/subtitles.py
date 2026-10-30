@@ -242,7 +242,7 @@ def srt_to_segments(srt_text: str) -> list[dict]:
     Args:
         srt_text: Full SRT file content.
     """
-    parsed: list[tuple[float, float, str]] = []
+    parsed: list[tuple[float, float, str, str]] = []
     blocks = re.split(r"\n\s*\n", srt_text.strip())
     for block in blocks:
         lines = block.strip().splitlines()
@@ -263,16 +263,27 @@ def srt_to_segments(srt_text: str) -> list[dict]:
             continue
         start = _parse_ts(parts[0])
         end = _parse_ts(parts[1])
-        text = " ".join(lines[text_start:]).strip()
+        # Formatting markup (<i>, <b>, <font color=...>, {\an8}) is common
+        # in SRT and was kept verbatim; stripped before the speaker-label
+        # check so "<b>Bob:</b> text" still reads as Bob's. Only the known
+        # tags: dialogue can hold "<Enter>". A <v Name> voice tag (an SRT
+        # converted from VTT) names the speaker, as in vtt_to_segments.
+        text = _SRT_MARKUP_RE.sub("", " ".join(lines[text_start:]))
+        voice = ""
+        m = _VTT_SPEAKER_RE.search(text)
+        if m:
+            voice = m.group(1).strip()
+            text = _VTT_SPEAKER_RE.sub("", text)
+        text = re.sub(r"  +", " ", text).strip()
         if text:
-            parsed.append((start, end, text))
+            parsed.append((start, end, text, voice))
 
-    labels = _srt_speaker_labels(text for _, _, text in parsed)
+    labels = _srt_speaker_labels(text for _, _, text, voice in parsed if not voice)
     cues: list[dict] = []
-    for start, end, text in parsed:
-        speaker = ""
+    for start, end, text, voice in parsed:
+        speaker = voice
         prefix, sep, rest = text.partition(": ")
-        if sep and prefix in labels and rest:
+        if not voice and sep and prefix in labels and rest:
             speaker, text = prefix, rest
         cues.append(
             {
@@ -286,6 +297,13 @@ def srt_to_segments(srt_text: str) -> list[dict]:
     return merge_parsed_cues(cues)
 
 
+# Bare <i>/<b>/<u>/<s>, <font> carrying attributes (color=...), their
+# closings, and {\an8}-style positioning. Strict on purpose: dialogue like
+# "x <b and c> y" or "<Enter>" is text.
+_SRT_MARKUP_RE = re.compile(
+    r"</?[ibus]>|<font(?:\s+[\w-]+=[^>]*)?>|</font>|</v>|\{\\[^}]*\}",
+    re.IGNORECASE,
+)
 _SRT_LABEL_RE = re.compile(r"^[^\s.,!?:;\"'()][^.,!?:;\"()]{0,38}$")
 
 

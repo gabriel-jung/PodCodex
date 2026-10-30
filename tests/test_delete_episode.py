@@ -611,3 +611,113 @@ def test_a_symlinked_audio_file_is_one_episode_everywhere(tmp_path):
     assert scan_show_stems(show)[1] == {"ep1", "ep2"}
     assert is_downloaded(show, "ep1")
     assert {ep.stem for ep in scan_folder(show)} == {"ep1", "ep2"}
+
+
+# ── Version delete while a task runs ──────────────────────
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["/api/transcribe/versions/{vid}", "/api/shows/versions/{vid}"],
+    ids=["step-route", "any-step-route"],
+)
+def test_active_task_blocks_a_version_delete(client, show, url):
+    """A version delete drops the episode's chunks cut from it, and an index
+    job mid-run would write them back afterwards from the version it already
+    loaded: searchable text with nothing left to re-index from."""
+    from podcodex.core.versions import list_versions
+
+    ep = _add_episode(show, "ep1")
+    vid = list_versions(ep / "ep1", "transcript")[0]["id"]
+    audio = quote(str(show / "ep1.mp3"), safe="")
+    with active_task(str(show / "ep1.mp3")):
+        r = client.delete(url.format(vid=vid) + f"?audio_path={audio}")
+        assert r.status_code == 409, r.text
+    assert list_versions(ep / "ep1", "transcript")
+    r = client.delete(url.format(vid=vid) + f"?audio_path={audio}")
+    assert r.status_code == 200, r.text
+    assert not list_versions(ep / "ep1", "transcript")
+
+
+def test_another_episode_task_does_not_block_a_version_delete(client, show):
+    from podcodex.core.versions import list_versions
+
+    ep = _add_episode(show, "ep1")
+    _add_episode(show, "ep2")
+    vid = list_versions(ep / "ep1", "transcript")[0]["id"]
+    audio = quote(str(show / "ep1.mp3"), safe="")
+    with active_task(str(show / "ep2.mp3")):
+        r = client.delete(f"/api/transcribe/versions/{vid}?audio_path={audio}")
+    assert r.status_code == 200, r.text
+
+
+def test_synthesis_on_an_audio_less_episode_blocks_its_deletes(client, show):
+    """Generate TTS without audio locks the episode's output dir itself."""
+    from podcodex.core.versions import list_versions
+
+    ep = _add_episode(show, "ep1", audio=False)
+    vid = list_versions(ep / "ep1", "transcript")[0]["id"]
+    od = quote(str(ep), safe="")
+    with active_task(str(ep)):
+        r = client.delete(f"/api/transcribe/versions/{vid}?output_dir={od}")
+        assert r.status_code == 409, r.text
+        assert _delete(client, show, "ep1").status_code == 409
+
+
+def test_a_differently_spelled_lock_still_blocks(client, show):
+    """Keys are matched by the path they name, not the string a client sent."""
+    from podcodex.core.versions import list_versions
+
+    ep = _add_episode(show, "ep1")
+    vid = list_versions(ep / "ep1", "transcript")[0]["id"]
+    audio = quote(str(show / "ep1.mp3"), safe="")
+    with active_task(f"{show}/./sub/../ep1.mp3"):
+        r = client.delete(f"/api/transcribe/versions/{vid}?audio_path={audio}")
+        assert r.status_code == 409, r.text
+    with active_task(f"batch:{show}/"):
+        assert _delete(client, show, "ep1").status_code == 409
+
+
+def test_a_batch_does_not_block_a_version_delete(client, show):
+    """A batch locks each episode while it works on it; the show-wide key
+    would block every episode of the show for the whole run."""
+    from podcodex.core.versions import list_versions
+
+    ep = _add_episode(show, "ep1")
+    vid = list_versions(ep / "ep1", "transcript")[0]["id"]
+    audio = quote(str(show / "ep1.mp3"), safe="")
+    with active_task(f"batch:{show}"):
+        r = client.delete(f"/api/transcribe/versions/{vid}?audio_path={audio}")
+    assert r.status_code == 200, r.text
+
+
+def test_a_lock_on_a_symlinked_audio_file_blocks(client, show, tmp_path):
+    """The key names the link inside the show, not the file it points at."""
+    elsewhere = tmp_path / "other-disk" / "ep1.mp3"
+    elsewhere.parent.mkdir()
+    elsewhere.write_bytes(b"audio")
+    _add_episode(show, "ep1", audio=False)
+    (show / "ep1.mp3").symlink_to(elsewhere)
+    with active_task(str(show / "ep1.mp3")):
+        assert _delete(client, show, "ep1").status_code == 409
+
+
+def test_a_show_wide_download_does_not_block_a_version_delete(client, show):
+    """A bulk download never reads a version and can run for an hour."""
+    from podcodex.core.versions import list_versions
+
+    ep = _add_episode(show, "ep1")
+    vid = list_versions(ep / "ep1", "transcript")[0]["id"]
+    audio = quote(str(show / "ep1.mp3"), safe="")
+    with active_task(f"download:{show}"):
+        r = client.delete(f"/api/transcribe/versions/{vid}?audio_path={audio}")
+        assert r.status_code == 200, r.text
+        # The episode delete still waits: the download would write it back.
+        assert _delete(client, show, "ep1").status_code == 409
+
+
+def test_a_stem_prefix_is_another_episode(client, show):
+    """``ep.1``'s output dir must not read as episode ``ep``'s audio."""
+    _add_episode(show, "ep")
+    with active_task(str(show / "ep.1")):
+        assert _delete(client, show, "ep").status_code == 200

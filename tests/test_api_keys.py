@@ -230,3 +230,22 @@ def test_an_unreadable_pool_is_moved_aside_not_overwritten(client, tmp_path):
     (aside,) = path.parent.glob(f"{path.name}.corrupt-*")
     assert "sk-" in aside.read_text(encoding="utf-8")
     assert [k["name"] for k in client.get("/api/keys").json()["keys"]] == ["a"]
+
+
+@pytest.mark.parametrize("name", ["..", "."])
+def test_create_refuses_a_name_its_routes_cannot_address(client, name):
+    """Clients collapse a ``.`` or ``..`` path segment before sending."""
+    r = client.post("/api/keys", json={"name": name, "value": "sk-secret"})
+    assert r.status_code == 422
+    assert client.get("/api/keys").json()["keys"] == []
+
+
+@pytest.mark.parametrize("name", ["C:work", "50% off", "back\\slash", "lm/studio"])
+def test_an_unusual_name_round_trips(client, name):
+    from urllib.parse import quote
+
+    assert (
+        client.post("/api/keys", json={"name": name, "value": "sk-x"}).status_code
+        == 201
+    )
+    assert client.delete(f"/api/keys/{quote(name, safe='')}").status_code == 204

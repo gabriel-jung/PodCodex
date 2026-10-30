@@ -517,15 +517,16 @@ def parse_feed_content(content: str) -> list[RSSEpisode]:
     return _episodes_from_parsed(feedparser.parse(content))
 
 
-def fetch_feed_with_artwork(url: str) -> tuple[list[RSSEpisode], str]:
-    """Fetch a feed once and return both episodes and channel artwork.
+def fetch_feed_with_artwork(url: str) -> tuple[list[RSSEpisode], str, str]:
+    """Fetch a feed once: its episodes, channel artwork and channel title.
 
     The only feed fetch: separate episode and artwork fetches used to
     download and parse the same RSS XML twice.
     """
     content = _fetch_feed_bytes(url)
     parsed = feedparser.parse(content)
-    return _episodes_from_parsed(parsed), _artwork_from_parsed(parsed)
+    title = (parsed.feed.get("title") or "").strip()
+    return _episodes_from_parsed(parsed), _artwork_from_parsed(parsed), title
 
 
 # ── iTunes / Apple Podcasts search ────────────

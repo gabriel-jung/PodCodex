@@ -107,7 +107,7 @@ def test_downloaded_costs_one_listing_for_the_whole_feed(client, monkeypatch, sh
     # One call now returns both; the artwork upgrade reuses it rather than
     # re-downloading the feed.
     monkeypatch.setattr(
-        rss_mod, "fetch_feed_with_artwork", lambda _u: (list(_EPISODES), "")
+        rss_mod, "fetch_feed_with_artwork", lambda _u: (list(_EPISODES), "", "")
     )
 
     calls: list[str] = []
@@ -145,7 +145,7 @@ def test_the_feed_is_downloaded_once_even_when_artwork_is_upgraded(
 
     def _fetch(url):
         calls.append(url)
-        return list(_EPISODES), "https://a/3000x3000.jpg"
+        return list(_EPISODES), "https://a/3000x3000.jpg", ""
 
     monkeypatch.setattr(rss_mod, "fetch_feed_with_artwork", _fetch)
 

@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import re
 import shutil
-from dataclasses import asdict, fields
+from dataclasses import asdict
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 import hashlib
 import urllib.request
@@ -17,12 +17,10 @@ from fastapi.responses import FileResponse
 from loguru import logger
 from pydantic import BaseModel
 
-if TYPE_CHECKING:
-    from podcodex.api.tasks import TaskInfo
-
 from podcodex.api.routes._helpers import (
     apply_broadcast_pattern,
     bad_path_component,
+    active_task_on_episode,
     keyed_lock,
     get_index_store,
     list_show_stems,
@@ -33,7 +31,6 @@ from podcodex.bundle.conflicts import rename_suffix
 from podcodex.core._utils import (
     atomic_write,
     episode_base,
-    virtual_audio_path,
 )
 from podcodex.core.app_config import AppConfig, mutate_config
 from podcodex.api.routes.config import _load
@@ -43,7 +40,6 @@ from podcodex.api.schemas import (
     CreateFromRSSResponse,
     CreateFromYouTubeRequest,
     CreateFromYouTubeResponse,
-    EpisodeOut,
     EpisodeSpeakerEntry,
     EpisodeSpeakersResponse,
     EpisodeStatusOut,
@@ -66,7 +62,6 @@ from podcodex.core.versions import (
     seed_show_db,
 )
 from podcodex.ingest.folder import (
-    EpisodeInfo,
     invalidate_scan_cache,
     scan_folder,
 )
@@ -739,7 +734,7 @@ async def create_from_rss(req: CreateFromRSSRequest) -> CreateFromRSSResponse:
         raise HTTPException(400, f"Save path does not exist: {req.save_path}")
 
     try:
-        episodes, feed_art = await asyncio.to_thread(
+        episodes, feed_art, feed_title = await asyncio.to_thread(
             fetch_feed_with_artwork, req.rss_url
         )
     except Exception as exc:
@@ -760,9 +755,21 @@ async def create_from_rss(req: CreateFromRSSRequest) -> CreateFromRSSResponse:
     show_path = _feed_show_path(save_base, folder_name)
     artwork = req.artwork_url or feed_art
 
-    # Display name from search, falling back to the folder name. Merged
-    # before anything touches the folder so a 409 leaves it untouched.
-    show_name = req.name.strip() or folder_name
+    # Display name from search, else the feed's own title (a pasted feed URL
+    # has no search result, and its folder name is a placeholder), else the
+    # folder name. The title is only a suggestion: one another show already
+    # carries falls back to the folder name the user picked rather than 409.
+    # Merged before anything touches the folder so a 409 leaves it untouched.
+    from podcodex.ingest.show_registry import label_is_taken
+
+    if (
+        not req.name.strip()
+        and feed_title
+        # Reads every registered show.toml: off the event loop.
+        and await asyncio.to_thread(label_is_taken, feed_title, excluding=show_path)
+    ):
+        feed_title = ""
+    show_name = req.name.strip() or feed_title or folder_name
     meta = _merge_into_existing_show(
         show_path,
         _ShowMeta(
@@ -773,7 +780,7 @@ async def create_from_rss(req: CreateFromRSSRequest) -> CreateFromRSSResponse:
         ),
         explicit_name=req.name.strip(),
     )
-    _refuse_taken_label(meta.name, show_path)
+    await asyncio.to_thread(_refuse_taken_label, meta.name, show_path)
     show_path.mkdir(parents=True, exist_ok=True)
     save_show_meta(show_path, meta)
     _ROSTER_CACHE.pop(str(show_path), None)
@@ -878,20 +885,6 @@ def register_show(req: RegisterShowRequest) -> dict:
 
     register_folder(p)
     return {"status": "ok", "path": str(p)}
-
-
-# ── Episode serialization ────────────────────
-
-
-def _episode_to_dict(ep: EpisodeInfo) -> dict:
-    """Serialize an EpisodeInfo to a JSON-safe dict."""
-    d: dict = {}
-    for f in fields(ep):
-        val = getattr(ep, f.name)
-        if isinstance(val, Path):
-            val = str(val)
-        d[f.name] = val
-    return d
 
 
 # ── Show metadata ────────────────────────────
@@ -1072,14 +1065,6 @@ async def broadcast_preview(show_folder: str, pattern: str = Query("")) -> dict:
 
 
 # ── Episode listing ──────────────────────────
-
-
-@router.get("/{show_folder:path}/episodes", response_model=list[EpisodeOut])
-def list_episodes(show_folder: str) -> list[dict]:
-    """List locally scanned episodes for a show folder."""
-    path = require_registered_show(show_folder)
-    episodes = scan_folder(path)
-    return [_episode_to_dict(ep) for ep in episodes]
 
 
 # ── Unified episodes (local + RSS merged) ───
@@ -1493,52 +1478,6 @@ class DeleteEpisodeResponse(BaseModel):
     warnings: list[str] = []
 
 
-def _active_task_on_episode(show_folder: str, stem: str) -> "TaskInfo | None":
-    """The task blocking a delete, or None.
-
-    ``task_manager`` locks are plain strings, and each submit path mints its
-    own, so every one that can be running against this episode has to be
-    enumerated. Missing one means ``rmtree`` runs underneath a live job.
-
-    Show-level keys:
-
-    - ``{show_folder}`` (feed refresh, move, delete)
-    - ``batch:{show_folder}`` (``batch.py``'s own key for the whole run)
-    - ``download:{show_folder}`` (``rss.py``'s bulk download; it writes
-      ``{show}/{stem}.mp3`` on completion, which would resurrect the episode
-      as a bare row right after the delete)
-
-    The three show-level shapes come from ``tasks.show_lock_keys`` rather
-    than being spelled again here, so this and ``get_active_in_show`` cannot
-    drift apart.
-
-    Episode-level keys, all three, because which one is held depends on who
-    started the job rather than on the episode:
-
-    - the real ``audio_path``, when there is audio
-    - ``{show}/{stem}.mp3``, the synthetic path the *single-episode* runs use
-      for an audio-less episode (``stores/episodeStore.ts:useAudioPath``)
-    - ``virtual_audio_path(...)``, the ``.virtual`` form the *batch* runner
-      uses for the same episode
-    """
-    from podcodex.api.tasks import show_lock_keys, task_manager
-    from podcodex.core.source import episode_audio_files
-
-    show_dir = Path(show_folder)
-    ep_base = show_dir / stem
-    refs = [
-        *show_lock_keys(show_folder),
-        f"{ep_base}.mp3",
-        virtual_audio_path(ep_base),
-        *(str(a) for a in episode_audio_files(show_dir, stem)),
-    ]
-    for ref in refs:
-        active = task_manager.get_active(ref)
-        if active:
-            return active
-    return None
-
-
 @router.post(
     "/{show_folder:path}/episodes/delete", response_model=DeleteEpisodeResponse
 )
@@ -1560,7 +1499,7 @@ def delete_episode_route(
     # parent against the show), so it holds for direct callers too and there
     # is exactly one authority rather than three overlapping ones here.
 
-    active = _active_task_on_episode(show_folder, stem)
+    active = active_task_on_episode(show_folder, stem)
     if active:
         raise HTTPException(
             409,
@@ -1715,12 +1654,18 @@ def delete_any_version(
     (segments, diarization, diarized_segments, speaker_map) without a
     per-step DELETE route.
     """
-    from podcodex.api.routes._helpers import require_audio_or_output
+    from podcodex.api.routes._helpers import (
+        require_audio_or_output,
+        require_episode_idle,
+    )
+    from podcodex.api.routes._versions import check_version_id
     from podcodex.core._utils import AudioPaths
     from podcodex.core.versions import delete_version_by_id
 
+    check_version_id(version_id)
     require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    require_episode_idle(audio_path, output_dir)
     if not delete_version_by_id(p.base, version_id):
         raise HTTPException(404, f"Version {version_id} not found")
     return {"status": "deleted", "version_id": version_id}

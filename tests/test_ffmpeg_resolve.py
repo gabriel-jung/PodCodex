@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+import pytest
+
 from podcodex.core._ffmpeg import _winget_ffmpeg_payload_dirs
 
 
@@ -116,3 +118,41 @@ def test_a_fallback_hit_prepends_its_dir_to_path_once(tmp_path, monkeypatch):
     parts = os.environ["PATH"].split(os.pathsep)
     assert parts[0] == os.path.dirname(found)
     assert parts.count(os.path.dirname(found)) == 1
+
+
+def test_probe_refuses_a_binary_that_is_not_ffmpeg(tmp_path):
+    """Exit 0 on ``-version`` is not enough: ``ls -version`` passes that, and
+    the settings panel then saved it as the ffmpeg override."""
+    import sys
+
+    from podcodex.core._ffmpeg import probe_ffmpeg
+
+    if sys.platform == "win32":
+        pytest.skip("shell script stand-in")
+    fake = tmp_path / "fake"
+    fake.write_text("#!/bin/sh\necho 'total 1496'\n")
+    fake.chmod(0o755)
+    real = tmp_path / "ffmpeg"
+    real.write_text("#!/bin/sh\necho 'ffmpeg version 7.1 Copyright (c)'\n")
+    real.chmod(0o755)
+
+    bad = probe_ffmpeg(str(fake))
+    assert not bad["ok"] and "Not ffmpeg" in bad["error"]
+    good = probe_ffmpeg(str(real))
+    assert good["ok"] and good["version"].startswith("ffmpeg version 7.1")
+
+
+def test_probe_accepts_a_wrapper_that_prints_a_notice_first(tmp_path):
+    import sys
+
+    from podcodex.core._ffmpeg import probe_ffmpeg
+
+    if sys.platform == "win32":
+        pytest.skip("shell script stand-in")
+    shim = tmp_path / "ffmpeg"
+    shim.write_text(
+        "#!/bin/sh\necho 'shim: using system ffmpeg'\necho 'ffmpeg version 7.1'\n"
+    )
+    shim.chmod(0o755)
+    r = probe_ffmpeg(str(shim))
+    assert r["ok"] and r["version"] == "ffmpeg version 7.1"

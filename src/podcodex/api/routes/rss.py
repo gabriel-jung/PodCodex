@@ -55,7 +55,9 @@ async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
         # feedparser blocks on network, so keep it off the event loop. One
         # fetch yields both the episodes and the artwork the upgrade below
         # needs, rather than downloading the same XML twice.
-        episodes, feed_art = await asyncio.to_thread(fetch_feed_with_artwork, rss_url)
+        episodes, feed_art, _title = await asyncio.to_thread(
+            fetch_feed_with_artwork, rss_url
+        )
     except ValueError as exc:
         # Scheme rejection and other bad input: the caller's URL is wrong,
         # and no cache can stand in for it.

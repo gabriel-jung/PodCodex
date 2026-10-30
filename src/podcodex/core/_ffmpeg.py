@@ -242,12 +242,21 @@ def probe_ffmpeg(path: str | None = None, timeout: float = 3.0) -> dict:
             "error": f"ffmpeg -version exit {result.returncode}: {stderr}",
         }
 
-    first_line = result.stdout.decode("utf-8", "replace").splitlines()[:1]
-    return {
-        "ok": True,
-        "path": target,
-        "version": first_line[0] if first_line else "",
-    }
+    lines = result.stdout.decode("utf-8", "replace").splitlines()
+    # Exit 0 alone proves little: `ls -version` succeeds too, and the panel
+    # then saved it as the ffmpeg override. The banner is looked for in the
+    # first few lines, since a wrapper or shim may print a notice first.
+    version = next(
+        (ln for ln in lines[:5] if ln.lower().startswith("ffmpeg version")), ""
+    )
+    if not version:
+        first = lines[0] if lines else ""
+        return {
+            "ok": False,
+            "path": target,
+            "error": f"Not ffmpeg: -version printed {first[:80]!r}",
+        }
+    return {"ok": True, "path": target, "version": version}
 
 
 def log_ffmpeg_status() -> None:

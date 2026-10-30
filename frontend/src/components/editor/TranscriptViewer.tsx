@@ -14,7 +14,7 @@ import { confirmDiscard, useDirtyEdit } from "@/lib/dirtyEdits";
 import { useBulkSelection } from "./useBulkSelection";
 import { useFollowPlayback } from "./useFollowPlayback";
 import { usePlatform } from "@/platform";
-import { invalidateSpeakerViews } from "@/api/cacheInvalidation";
+import { invalidateAfterStep, invalidateSpeakerViews } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
 import { useAudioStore } from "@/stores";
 import { useSegments } from "@/hooks/useSegments";
@@ -365,9 +365,12 @@ export default function TranscriptViewer({
       invalidates: [
         queryKeys.stepVersions(editorKey, sourceRef),
         queryKeys.stepSegments(editorKey, sourceRef),
-        queryKeys.episodesAll(),
         queryKeys.allVersions(sourceRef),
         queryKeys.bestSourceSegments(sourceRef),
+        // Unlike a save, a delete can change the index: the server drops the
+        // episode from every collection whose source was the deleted version.
+        // Same sweep as a finished index run, show counts included.
+        (qc) => invalidateAfterStep(qc, "index", { audioPath: sourceRef }),
         // Deleting the canonical version shifts what the speaker views resolve.
         invalidateSpeakerViews,
       ],

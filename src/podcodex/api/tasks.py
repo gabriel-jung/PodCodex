@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import WebSocket
@@ -122,9 +124,10 @@ class TaskConflict(ValueError):
 
 # Lock-key prefixes whose remainder is a show folder rather than an audio
 # path: ``batch.py`` and ``rss.py`` mint these for whole-show runs. Every
-# reader of the key space goes through these two names, because a caller
-# that re-spells a shape (``_active_task_on_episode`` used to) silently
-# stops blocking the run it was meant to wait for.
+# reader of the key space (``get_active_in_show``,
+# ``routes._helpers.active_task_on_episode``) goes through these names and
+# `split_lock_key`, because a caller that re-spells a shape silently stops
+# blocking the run it was meant to wait for.
 SHOW_LOCK_PREFIXES = ("batch:", "download:")
 
 # Steps that mostly wait on the network or on uv, not on the CPU or GPU.
@@ -136,9 +139,44 @@ IO_STEPS = frozenset(
 )
 
 
-def show_lock_keys(show_folder: str) -> list[str]:
-    """Every lock key that is keyed on the show folder itself."""
-    return [show_folder, *(f"{p}{show_folder}" for p in SHOW_LOCK_PREFIXES)]
+def split_lock_key(key: str) -> tuple[str, Path]:
+    """A lock key as ``(prefix, path)``: one of `SHOW_LOCK_PREFIXES` or ``""``,
+    and the path it names, normalized for comparison.
+
+    Clients spell one folder several ways (separators, a trailing slash,
+    ``..``, a symlinked folder, case on Windows), and a reader comparing
+    strings let a run locked under one spelling go unseen under another.
+    """
+    prefix = next((p for p in SHOW_LOCK_PREFIXES if key.startswith(p)), "")
+    return prefix, lock_path(key[len(prefix) :])
+
+
+def lock_path(path: str | Path) -> Path:
+    """*path* normalized as `split_lock_key` normalizes a key's.
+
+    The parent is resolved and the last part kept as named: a key names the
+    file or folder a run writes to, and following a symlinked episode audio
+    or output dir would place it outside its show. A folder compared against
+    keys goes through `lock_roots`. A key that is not an absolute path
+    (``gpu_backend``, ``extras:venv``) names no folder and is returned as is,
+    never resolved against the server's cwd.
+    """
+    raw = os.path.expanduser(str(path))
+    if not os.path.isabs(raw):
+        return Path(raw)
+    p = Path(os.path.normpath(raw))
+    return Path(os.path.normcase(p.parent.resolve() / p.name))
+
+
+def lock_roots(path: str | Path) -> frozenset[Path]:
+    """The forms a folder takes in normalized keys: as named (`lock_path`),
+    and resolved, since keys made under a symlinked folder resolve their
+    parent through it."""
+    raw = os.path.expanduser(str(path))
+    if not os.path.isabs(raw):
+        return frozenset({Path(raw)})
+    resolved = Path(os.path.normcase(Path(os.path.normpath(raw)).resolve()))
+    return frozenset({lock_path(raw), resolved})
 
 
 class TaskManager:
@@ -511,6 +549,21 @@ class TaskManager:
             return info
         return None
 
+    def find_active(self, match: Callable[[str], bool]) -> TaskInfo | None:
+        """The active task holding a lock key *match* accepts, or None.
+
+        For callers that recognise a key by what it points at rather than by
+        its exact spelling (``routes._helpers.active_task_on_episode``).
+        """
+        with self._state_lock:
+            keys = list(self._audio_locks)
+        for key in keys:
+            if match(key):
+                info = self.get_active(key)
+                if info:
+                    return info
+        return None
+
     def get_active_in_show(self, show_folder: str) -> TaskInfo | None:
         """Return an active task holding any lock that touches *show_folder*.
 
@@ -522,24 +575,13 @@ class TaskManager:
         ``rmtree`` or ``shutil.move`` runs underneath a live job that keeps
         writing versions and ``pipeline.db`` into the old path.
         """
-        from pathlib import Path
+        roots = lock_roots(show_folder)
 
-        root = Path(show_folder)
-        with self._state_lock:
-            keys = list(self._audio_locks)
-        for key in keys:
-            path_part = key
-            for prefix in SHOW_LOCK_PREFIXES:
-                if key.startswith(prefix):
-                    path_part = key[len(prefix) :]
-                    break
-            candidate = Path(path_part)
-            if candidate != root and root not in candidate.parents:
-                continue
-            info = self.get_active(key)
-            if info:
-                return info
-        return None
+        def touches(key: str) -> bool:
+            path = split_lock_key(key)[1]
+            return path in roots or any(r in path.parents for r in roots)
+
+        return self.find_active(touches)
 
     def cancel(self, task_id: str) -> bool:
         """Request cooperative cancellation of a running task.

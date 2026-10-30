@@ -397,13 +397,17 @@ def remove_synthesize_version(
     output_dir: str | None = Query(None),
 ) -> dict:
     """Delete a synth version (.wav + DB row)."""
-    from podcodex.api.routes._helpers import require_audio_or_output
+    from podcodex.api.routes._helpers import (
+        require_audio_or_output,
+        require_episode_idle,
+    )
     from podcodex.api.routes._versions import check_version_id
     from podcodex.core.versions import delete_version
 
     check_version_id(version_id)
     require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    require_episode_idle(audio_path, output_dir)
     removed = delete_version(p.base, "synthesize", version_id)
     if not removed:
         raise HTTPException(404, f"Synthesize version {version_id} not found")

@@ -36,7 +36,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(
         shows_mod,
         "fetch_feed_with_artwork",
-        lambda url: (_EPISODES, "https://art/x.jpg"),
+        lambda url: (_EPISODES, "https://art/x.jpg", "Feed Title"),
     )
     monkeypatch.setattr(
         youtube_mod,
@@ -241,3 +241,32 @@ def test_readd_keeps_a_name_that_collides_since(client, tmp_path):
     r = _post_rss(client, tmp_path)
     assert r.status_code == 200, r.text
     assert load_show_meta(folder).name == "Kept Show"
+
+
+def test_a_pasted_feed_is_named_after_its_own_title(client, tmp_path):
+    """A pasted feed URL has no search result to name it, and its folder name
+    is the add dialog's placeholder ("podcast")."""
+    (tmp_path / "shows").mkdir()
+    r = _post_rss(client, tmp_path, folder_name="podcast")
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "Feed Title"
+    assert load_show_meta(tmp_path / "shows" / "podcast").name == "Feed Title"
+
+
+def test_the_feed_title_does_not_rename_a_show_on_readd(client, tmp_path):
+    folder, _ = _seed(tmp_path, rss_url=FEED)
+    before = load_show_meta(folder).name
+
+    r = _post_rss(client, tmp_path)
+    assert r.status_code == 200, r.text
+    assert load_show_meta(folder).name == before != "Feed Title"
+
+
+def test_a_feed_title_another_show_carries_falls_back_to_the_folder(client, tmp_path):
+    """The title is a suggestion; a taken one must not 409 the add."""
+    (tmp_path / "shows").mkdir()
+    first = _post_rss(client, tmp_path, folder_name="first")
+    assert first.json()["name"] == "Feed Title"
+    r = _post_rss(client, tmp_path, url=OTHER_FEED, folder_name="second")
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "second"

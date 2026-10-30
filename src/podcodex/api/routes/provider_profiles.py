@@ -43,6 +43,9 @@ def list_profiles() -> ListResponse:
 
 @router.post("", response_model=ProviderProfile, status_code=201)
 def create_profile(req: CreateRequest) -> ProviderProfile:
+    from podcodex.api.routes._helpers import require_url_name
+
+    require_url_name(req.name, "Profile")
     if is_builtin(req.name):
         raise HTTPException(
             status_code=409, detail=f"'{req.name}' collides with a built-in profile"
@@ -65,7 +68,7 @@ def create_profile(req: CreateRequest) -> ProviderProfile:
     )
 
 
-@router.patch("/{name}", response_model=ProviderProfile)
+@router.patch("/{name:path}", response_model=ProviderProfile)
 def update_profile(name: str, req: UpdateRequest) -> ProviderProfile:
     if is_builtin(name):
         raise HTTPException(status_code=403, detail="Built-in profiles are read-only")
@@ -89,7 +92,7 @@ def update_profile(name: str, req: UpdateRequest) -> ProviderProfile:
     )
 
 
-@router.delete("/{name}", status_code=204)
+@router.delete("/{name:path}", status_code=204)
 def delete_profile(name: str) -> None:
     if is_builtin(name):
         raise HTTPException(

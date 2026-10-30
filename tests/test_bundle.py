@@ -740,7 +740,16 @@ def test_reimport_under_rename_gets_a_new_label_and_id(
     export_show(show, out, with_audio=False, include_feed_credentials=True)
     original_id = show_id(show)
 
-    result = import_archive(out, shows_dir=tmp_path / "shows2")
+    from loguru import logger
+
+    warnings: list[str] = []
+    sink = logger.add(lambda m: warnings.append(str(m)), level="WARNING")
+    try:
+        result = import_archive(out, shows_dir=tmp_path / "shows2")
+    finally:
+        logger.remove(sink)
+    # The skip is reported once in conflicts_resolved, not per data file.
+    assert not [w for w in warnings if "outside collections" in w]
 
     copy = load_show_meta(tmp_path / "shows2" / "test_show")
     assert copy.name == "Test Show (imported)"

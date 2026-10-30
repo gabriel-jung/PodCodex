@@ -74,7 +74,7 @@ export default function BundleImportPanel({ onImported }: Props) {
       if (finalFolder) removeQueriesUnderPath(queryClient, finalFolder);
       queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
       queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
-      queryClient.invalidateQueries({ queryKey: ["search"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.searchAll() });
       if (skippedAnIndex(res)) setIndexSkipped(res);
       else onImported(res.shows_dir, finalFolder);
     },

@@ -294,9 +294,9 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
         // refetched only because their responses carry the display name.
         (qc) => {
           if (name === meta.name) return;
-          qc.invalidateQueries({ queryKey: ["search"] });
-          qc.invalidateQueries({ queryKey: ["index"] });
-          qc.invalidateQueries({ queryKey: ["bot-access"] });
+          qc.invalidateQueries({ queryKey: queryKeys.searchAll() });
+          qc.invalidateQueries({ queryKey: queryKeys.indexAll() });
+          qc.invalidateQueries({ queryKey: queryKeys.botAccessAll() });
         },
       ],
     },

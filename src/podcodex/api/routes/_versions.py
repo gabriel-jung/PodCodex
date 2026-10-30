@@ -75,10 +75,12 @@ def register_version_routes(
         output_dir: str | None = Query(None),
         lang: str | None = Query(None),
     ) -> dict:
+        from podcodex.api.routes._helpers import require_episode_idle
         from podcodex.core.versions import delete_version
 
         check_version_id(version_id)
         p, s = _resolve(audio_path, output_dir, lang)
+        require_episode_idle(audio_path, output_dir)
         if not delete_version(p.base, s, version_id):
             raise HTTPException(404, f"Version {version_id} not found")
         return {"status": "deleted", "version_id": version_id}

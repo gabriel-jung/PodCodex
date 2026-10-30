@@ -14,7 +14,7 @@ from loguru import logger
 from pydantic import BaseModel, field_validator
 
 from podcodex.api.schemas import TaskResponse
-from podcodex.api.tasks import TaskCancelled
+from podcodex.api.tasks import TaskCancelled, TaskInfo, lock_roots, split_lock_key
 from podcodex.core._utils import bad_path_component  # noqa: F401
 from podcodex.core._utils import (
     BREAK_SPEAKER,
@@ -168,6 +168,18 @@ def require_show_folder(show_folder: str) -> Path:
     return path
 
 
+def require_url_name(name: str, what: str) -> None:
+    """422 for a name its own routes could not address.
+
+    API keys and provider profiles are edited and deleted at
+    ``/{name:path}``, which takes a ``/``, but clients collapse a ``.`` or
+    ``..`` segment before the request is sent, so such a name was created
+    and then 404'd on every edit and delete, stuck in the list for good.
+    """
+    if name.strip() in {".", ".."}:
+        raise HTTPException(422, f"{what} name {name!r} is not allowed")
+
+
 def require_subtitle_lang(lang: str) -> None:
     """422 up front for a code that cannot name a subtitle file.
 
@@ -284,6 +296,74 @@ def _require_inside(path: Path, only: Path | None = None) -> None:
             "Path is not inside this show's folder"
             if only is not None
             else "Path is not inside a registered show folder",
+        )
+
+
+def active_task_on_episode(
+    show_folder: str | Path, stem: str, *, show_jobs: bool = True
+) -> TaskInfo | None:
+    """The task running against one episode, or None: what blocks a delete.
+
+    ``task_manager`` locks are plain strings and each submit path mints its
+    own shape, so rather than spell every shape here, each live key is read
+    as a path (`tasks.split_lock_key`) and matched by what it names. An
+    episode is busy under:
+
+    - ``{show}/{stem}`` with an audio extension (the real audio, or the
+      ``.mp3`` the single-episode runs use for an audio-less episode), the
+      batch runner's ``.virtual`` form, or bare: synthesis on an audio-less
+      episode locks its output dir. A batch takes these per episode while
+      it works on one.
+    - with *show_jobs*, the show-wide runs: ``batch:{show}`` (it reaches
+      this episode later), ``{show}`` (feed refresh, move, YouTube download)
+      and ``download:{show}`` (bulk download; it writes ``{show}/{stem}.mp3``
+      on completion, which would resurrect a deleted episode as a bare row).
+      An episode delete needs them; a version delete does not, and they can
+      run for hours.
+    """
+    # Read at call time, not import time: tests swap the manager on its module.
+    from podcodex.api.tasks import task_manager
+    from podcodex.core._utils import virtual_audio_path
+    from podcodex.core.source import audio_stem
+
+    shows = lock_roots(show_folder)
+    # The key's name is case-folded on Windows (normcase), so these are too.
+    folded_stem = os.path.normcase(stem)
+    own_names = {folded_stem, os.path.normcase(Path(virtual_audio_path(stem)).name)}
+
+    def names_episode(key: str) -> bool:
+        prefix, path = split_lock_key(key)
+        if prefix or path in shows:
+            return show_jobs and path in shows
+        return path.parent in shows and (
+            path.name in own_names or audio_stem(path.name) == folded_stem
+        )
+
+    return task_manager.find_active(names_episode)
+
+
+def require_episode_idle(audio_path: str | None, output_dir: str | None) -> None:
+    """409 while a task is running on the episode a version route names.
+
+    For deletes that reach into the index: removing a version drops the
+    episode's chunks cut from it (``versions.delete_version``), and an index
+    job mid-run would write them back afterwards from the version it already
+    loaded, leaving searchable text with no source left to re-index from.
+    Show-wide runs do not block it (see `active_task_on_episode`).
+
+    The show and stem come from the request's own paths, as the jobs' lock
+    keys do, not from the version root, whose layout a custom ``output_dir``
+    changes.
+    """
+    if audio_path:
+        show, stem = Path(audio_path).parent, Path(audio_path).stem
+    else:
+        show, stem = Path(output_dir).parent, Path(output_dir).name
+    active = active_task_on_episode(show, stem, show_jobs=False)
+    if active:
+        raise HTTPException(
+            409,
+            f"Task {active.task_id} is running on this episode, so wait for it to finish",
         )
 
 

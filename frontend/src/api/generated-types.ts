@@ -38,21 +38,6 @@ export interface ShowMeta {
   accepts_imports: boolean;
 }
 
-export interface EpisodeOut {
-  stem: string;
-  title: string;
-  audio_path: string | null;
-  output_dir: string;
-  segments_ready: boolean;
-  diarized: boolean;
-  assigned: boolean;
-  transcribed: boolean;
-  corrected: boolean;
-  indexed: boolean;
-  synthesized: boolean;
-  translations: string[];
-}
-
 export interface BroadcastPreviewOut {
   title?: string | null;
   number?: number | null;

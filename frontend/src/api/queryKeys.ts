@@ -119,6 +119,7 @@ export const queryKeys = {
     ["synthesize", "versions", audioPath] as const,
 
   // ── Index & search ─────────────────────────────────────
+  searchAll: () => ["search"] as const,
   searchConfig: () => ["search", "config"] as const,
   // Keyed by show id, like the routes: two shows may share a display name.
   searchStats: (showId: string) => ["search", "stats", showId] as const,
@@ -129,6 +130,7 @@ export const queryKeys = {
   indexedEpisode: (showId: string, stem: string, model: string, chunking: string) =>
     ["search", "indexed-episode", showId, stem, model, chunking] as const,
 
+  indexAll: () => ["index"] as const,
   indexConfig: () => ["index", "config"] as const,
   indexStatus: (audioPath: AudioPath) => ["index", "status", audioPath] as const,
   /** Collections this episode currently lives in (one row per entry). */
@@ -142,6 +144,7 @@ export const queryKeys = {
   mcpPrompts: () => ["mcp", "prompts"] as const,
 
   // ── Bot access ────────────────────────────────────────
+  botAccessAll: () => ["bot-access"] as const,
   showAccess: (showId: string) => ["bot-access", "show", showId] as const,
   showAccessList: () => ["bot-access", "list"] as const,
 

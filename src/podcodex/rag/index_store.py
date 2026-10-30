@@ -2496,6 +2496,13 @@ class IndexStore:
     def list_speakers(self, collection: str) -> list[str]:
         """Return sorted distinct ``dominant_speaker`` values in a collection.
 
+        Dominant speakers only, although the speaker filter also matches
+        turns (`build_where`): ``Retriever.random`` and ``speaker_stats`` go
+        by the dominant speaker, so a picker offering someone who only
+        interjects would return nothing there, and reading every chunk's
+        turns means parsing all of ``meta``, the collection's whole text,
+        where this reads one short column.
+
         Labels that name nobody are left out: they drive speaker pickers in
         the search panel and the bot's autocomplete, where NARRATOR_SPEAKER
         would offer "filter by Narrator" for episodes that were simply never

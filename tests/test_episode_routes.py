@@ -473,7 +473,6 @@ def test_episode_paths_outside_a_registered_show_are_refused(client, tmp_path):
             json={"show_folder": str(tmp_path / "s"), "audio_paths": [audio]},
         ),
         client.get(f"/api/shows/{quote(str(stray), safe='')}/unified"),
-        client.get(f"/api/shows/{quote(str(stray), safe='')}/episodes"),
         client.get(f"/api/shows/{quote(str(stray), safe='')}/speakers/roster"),
         client.get(f"/api/shows/{quote(str(stray), safe='')}/broadcast-preview"),
         client.get(f"/api/shows/{quote(str(stray), safe='')}/episode/win/speakers"),

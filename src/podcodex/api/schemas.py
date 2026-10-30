@@ -58,22 +58,6 @@ class BroadcastPreviewOut(BaseModel):
     error: str | None = None  # regex compile error, if the pattern is invalid
 
 
-class EpisodeOut(BaseModel):
-    stem: str
-    title: str
-    audio_path: str | None
-    output_dir: str
-    # pipeline status
-    segments_ready: bool
-    diarized: bool
-    assigned: bool
-    transcribed: bool
-    corrected: bool
-    indexed: bool
-    synthesized: bool
-    translations: list[str]
-
-
 class RSSEpisodeOut(BaseModel):
     guid: str
     title: str
