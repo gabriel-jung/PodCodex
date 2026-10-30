@@ -1,16 +1,25 @@
 # Contributing
 
-Quick orientation for human contributors. AI assistant context lives in [CLAUDE.md](CLAUDE.md); design rules in [DESIGN.md](DESIGN.md); system wiring in [ARCHITECTURE.md](ARCHITECTURE.md); ML stack pins and runtime patches in [ML_RUNTIME.md](ML_RUNTIME.md); build / packaging in [deploy/BUILD.md](deploy/BUILD.md).
+Quick orientation for human contributors. AI assistant context lives in [CLAUDE.md](CLAUDE.md); design rules in [DESIGN.md](DESIGN.md); system wiring in [ARCHITECTURE.md](ARCHITECTURE.md); build / packaging in [deploy/BUILD.md](deploy/BUILD.md).
 
 ## Setup
+
+You'll need:
+
+- **[uv](https://docs.astral.sh/uv/)**: installs Python 3.12 and the dependencies.
+- **[Node.js](https://nodejs.org/) LTS**: frontend.
+- **[Rust](https://www.rust-lang.org/)** *(optional)*: only for the native Tauri window.
+- **[FFmpeg](https://ffmpeg.org/download.html)** on PATH, as for the installed app.
+- On Linux, the Tauri system libraries listed in the `Makefile` header (apt or dnf).
 
 ```bash
 git clone https://github.com/gabriel-jung/PodCodex && cd PodCodex
 make setup                # uv sync + npm install
-make dev                  # FastAPI + Vite + Tauri, hot-reload
+make dev                  # FastAPI + Vite + Tauri, hot-reload (needs Rust)
+make dev-no-tauri         # same, in the browser, no Rust needed
 ```
 
-`make help` lists all targets. `make dev-no-tauri` runs without the native window.
+`make help` lists all targets.
 
 ## Workflows
 
@@ -25,11 +34,11 @@ make dev                  # FastAPI + Vite + Tauri, hot-reload
 ## Conventions
 
 - **Commits:** conventional commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`); imperative mood; concise; no trial-and-error context.
-- **Versioning:** bump `pyproject.toml` + `src-tauri/Cargo.toml` together on every Windows MSI release (WiX skips same-version replace). See [CLAUDE.md § Versioning](CLAUDE.md#versioning-bump-on-every-windows-msi-release).
+- **Versioning:** run `make bump VERSION=X.Y.Z` on every Windows MSI release (WiX skips same-version replace); it keeps both manifests and both lockfiles in sync. See [CLAUDE.md § Versioning](CLAUDE.md#versioning-bump-on-every-windows-msi-release).
 - **Terminology:** the LLM-correction step is **correct** (or "AI correct"), never "polish". See [CLAUDE.md § Terminology](CLAUDE.md#terminology).
 
 ## Pull requests
 
-- Run `make test` (Python) and, for frontend changes, `npx tsc -b`, `npm run lint`, `npm test` and `npm run knip` in `frontend/` (all four block CI); then the relevant smoke items from [`deploy/SMOKE.md`](deploy/SMOKE.md) before opening
-- Reference the ROADMAP item or issue in the PR description when applicable
+- Run `make test` (Python) and, for frontend changes, `npx tsc -b`, `npm run lint`, `npm test` and `npm run knip` in `frontend/` (all four block CI) before opening
+- Reference the roadmap item (README) or issue in the PR description when applicable
 - Frontend changes: include a screenshot or short clip when behavior is visual

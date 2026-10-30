@@ -33,8 +33,8 @@ PodCodex's desktop app writes the Claude Desktop config for you and points it at
 ### Enable
 
 1. Start PodCodex (`make dev-no-tauri` or the `.app` bundle).
-2. Go to **Settings → Claude Desktop**.
-3. Flip the toggle **Enable Claude Desktop integration**.
+2. Go to **Settings → Integrations → Claude Desktop**.
+3. Under **Integration**, turn on **Enable**.
 4. Fully quit Claude Desktop (Cmd+Q on macOS, Alt+F4 elsewhere) and reopen it. Claude Desktop reads its MCP config only at startup.
 5. Inside a Claude conversation, click the 🔌 plug icon: `podcodex` should appear with all eight tools.
 
@@ -84,7 +84,7 @@ Use this when you run Claude Code, or Claude Desktop without PodCodex's desktop 
 
 ### Requirements
 
-- Python 3.12, same venv as the desktop app / bot.
+- Python 3.12. In a checkout that already runs the desktop app or bot, add `--extra mcp` to the `uv sync` command you already use instead of running the one below: `uv sync` removes every extra you don't list.
 - An existing index at `<data_dir>/index/` (or wherever you point `PODCODEX_INDEX`). `<data_dir>` resolves to `~/.local/share/podcodex` on Linux, `~/Library/Application Support/podcodex` on macOS, `%APPDATA%\podcodex` on Windows.
 
 ### Install
@@ -152,7 +152,7 @@ PodCodex ships five built-ins, all of which can be toggled off:
 - `/compare {topic}`: per-show comparison on a topic.
 - `/timeline {topic}`: chronological mentions across episodes.
 
-Custom prompts are added from **Settings → Claude Desktop → Add prompt** in the desktop app. The server Claude Desktop spawns watches the prompts file and tells Claude Desktop when it changes, so edits usually show up without a restart; if one does not, restart Claude Desktop so it re-handshakes the catalog.
+Custom prompts are added from **Settings → Integrations → Claude Desktop → Add prompt** in the desktop app. The server Claude Desktop spawns watches the prompts file and tells Claude Desktop when it changes, so edits usually show up without a restart; if one does not, restart Claude Desktop so it re-handshakes the catalog.
 
 ---
 
@@ -177,7 +177,7 @@ Multi-step is fine: *"Compare how each of my shows talks about minimalism"* will
 
 **Toggle in Settings refuses to enable**
 
-- Check the status chip: "MCP extra not installed" means the backend needs `uv sync --extra desktop`.
+- Check the status chip: "MCP extra not installed" means the backend needs `uv sync --extra desktop` (the `desktop` extra includes the MCP SDK).
 - "Claude Desktop not detected" means PodCodex couldn't find the config directory. Install Claude Desktop or verify its default config directory exists.
 
 **Claude Desktop says "server failed to start" (stdio path)**

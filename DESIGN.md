@@ -10,9 +10,11 @@
 
 **Single facilities** (never reroll inline; extend if missing):
 - `frontend/src/lib/stageClasses.ts`: stage palette (`STAGE_CLASSES[stage]`: `bg`, `text`, `border`, `borderL`, `dot`)
-- `frontend/src/lib/stepStatus.ts`: `PanelStatus` (`"ready"|"review"|"none"`) + `reviewStatus` / `plainStatus` / `translationsStatus` / `isEdited`
+- `frontend/src/lib/stepStatus.ts`: `PanelStatus` (`"ready"|"review"|"none"`) and its `PANEL_STATUS_META` labels, `reviewStatus` / `plainStatus` / `translationsStatus` / `isEdited`, and `episodeCanRunStep` (the one rule for which episodes can run a step)
 - `frontend/src/lib/showCounts.ts`: episode count label formatting
+- `frontend/src/lib/runRequests.ts`: `llmRunFields`, `transcribeRunFields` for every run request, episode panel and batch alike
 - `frontend/src/lib/episodeRef.ts`: `getEpisodeSourceRef` for every per-episode query key, `getEpisodeBatchPath` for batch keys
+- `frontend/src/lib/speakerColor.ts`: speaker hues; `frontend/src/lib/speakers.ts`: unattributed-speaker constants
 
 ## 1. Visual Theme & Atmosphere
 
@@ -74,7 +76,7 @@ All colors are CSS custom properties resolved via `@theme inline` to Tailwind ut
 PodCodex elevates via **luminance step**, not shadow. Each level lifts the background by ~0.02 in oklch L:
 
 ```
-bg (canvas)  →  card  →  popover  →  (elevated dialog uses popover + ring shadow)
+bg (canvas)  →  card  →  popover        (dialogs sit on bg-background, lifted by shadow-lg and the backdrop)
 0.962        0.970    0.985        light
 0.158        0.190    0.220        dark
 ```
@@ -98,12 +100,12 @@ bg (canvas)  →  card  →  popover  →  (elevated dialog uses popover + ring 
 | H1 | Fraunces | `text-3xl` | 600 | `-0.015em` | Page title (one per page, via `EditorialHeader`) |
 | H2 (prose) | Fraunces | `text-2xl` | 600 | `-0.015em` | Section landmarks on prose pages |
 | H2 (dense) | Inter | `text-base` | 600 | normal | Subsection in settings/forms (Fraunces stacked 8+ times reads as title duplication, so demote: drop `font-display`, shrink icons to `w-4 h-4`) |
-| H3 | Inter | `text-xl` | 600 | normal | Card titles, modal headers |
+| H3 | Inter | `text-xl` | 600 | normal | Card titles |
 | H3 (dense) | Inter | `text-sm` | 600 | normal | Sub-subsection inside dense panels |
 | H4 | Inter | `text-lg` | 600 | normal | Group headers |
 | Body | Inter | `text-base` | 400 | normal | Paragraph text |
 | Body-emphasis | Inter | `text-base` | 500 | normal | Inline strong |
-| Small | Inter | `text-sm` | 400 | normal | Default for dense panels (lists, settings) |
+| Small | Inter | `text-sm` | 400 | normal | Status and empty-state messages, form labels |
 | Small-medium | Inter | `text-sm` | 500 | normal | Active nav, buttons |
 | Caption | Inter | `text-xs` | 400 | normal | Metadata, episode date/duration, status |
 | Tiny | Inter | `text-2xs` (`0.625rem`) | 500 | normal | Inline pills, version tags |
@@ -115,7 +117,7 @@ bg (canvas)  →  card  →  popover  →  (elevated dialog uses popover + ring 
 |------|------|-----|
 | Dense list row | `text-xs` | DirRow, FileRow, episode row metadata, inspect dialog rows, breadcrumb, sidebar nav buttons, footnotes |
 | Status / empty / loading message | `text-sm` | Centered "Loading…", "No results", error blurbs, empty-state copy |
-| Modal/panel header | `text-sm font-semibold` (custom) or shadcn `DialogTitle` default | Header in custom modal; never override `DialogTitle` in shadcn dialog |
+| Modal/panel header | `DialogTitle` default (`text-lg`), or `text-sm`/`text-base font-semibold` in dense dialogs | Header in any modal |
 | Reading prose | `text-base` | Transcript view, long-form modal copy |
 | Inline status pill | `text-2xs` (`0.625rem`) weight 500 | "show", "audio", "indexed" badges next to row labels |
 | Log / debug block | `text-3xs` (`0.55rem`) `font-mono` | `<pre>` log viewers, debug detail collapsibles |
@@ -191,10 +193,10 @@ Don't pair `text-2xs` with `w-3.5 h-3.5` icons or `text-xs` with `w-4 h-4` icons
 
 ### Modals / dialogs
 - **Prefer shadcn `<Dialog>` primitive.** `IndexInspectorModal` and `SegmentContextDialog` are the canonical examples. Custom modal divs are tolerated but should migrate when touched.
-- Title: `text-lg font-semibold` (shadcn `DialogTitle` default; don't override)
+- Title: `DialogTitle` renders an `h2`, so it is Fraunces through the global heading rule; its default is `text-lg font-semibold`. Size it down with a class (`text-sm` / `text-base font-semibold`) in dense dialogs
 - Description: `text-sm text-muted-foreground` (shadcn `DialogDescription` default)
 - Body density: `text-xs` for dense rows; `text-sm` for prose, status, and empty states
-- Surface: `bg-popover` (one luminance step above card)
+- Surface: `bg-background` (the `ui/dialog` default; the ring of `shadow-lg` and the backdrop separate it)
 - Border: `border border-border`
 - Radius: `rounded-lg` (never `rounded-xl`)
 - Shadow: `shadow-lg` (never `shadow-2xl`)
@@ -241,29 +243,12 @@ PodCodex uses **luminance step**, not box-shadow, for elevation. On the cream ca
 
 Shadows only on floating layers (`shadow-sm`) and dialogs (`shadow-lg`, the cap). Never `shadow-xl` or `shadow-2xl`. Decorative `shadow-lg` on overlay buttons (e.g. play/download hover overlays on cards) is forbidden; use border or background tint instead.
 
-## 7. Do's and Don'ts
+## 7. Rules of thumb
 
-### Do
-- Default to `text-sm` for UI density; reserve `text-base` for prose
-- Use shadcn semantic tokens (`bg-card`, `text-muted-foreground`); the cream/sepia/gold balance only holds when tokens stay consistent
-- Reserve `--primary` (gold-leaf) for one CTA per view and active states
-- Use `font-mono` for timestamps, IDs, hashes, file paths; not for body
-- Apply `font-feature-settings` correctly: Inter gets `cv11, ss01, ss03` (set on body), Fraunces gets `ss01, onum` (set on h1/h2)
-- Use `oklch()` when introducing new color tokens; match perceptual luminance steps of the existing scale
-- Two-column settings: label left, control right
-- Hover rows with `hover:bg-accent` and cards with a border tint, never with shadow or scale
 - Omit defaults and absent values in labels (don't render "Speaker: -" when there's no speaker)
-
-### Don't
-- Don't use pure white (`#ffffff`) or pure black (`#000000`); both fight the warm canvas
-- Don't use `uppercase` or `tracking-wider`. Period. Use weight 500–600 if you need emphasis.
-- Don't add waveform visualizations to the AudioBar
-- Don't introduce a second accent; gold-leaf is the only accent color. Stage hues (`STAGE_CLASSES`) and speaker hues (`lib/speakerColor.ts`) are identity colors, not accents, and stay inside their facilities.
-- Don't use Fraunces in body text, buttons, captions, or labels
-- Don't elevate cards with `shadow-md`/`shadow-lg` on the canvas; use `border` + `bg-card` instead
-- Don't apply zebra-striped lists; rows separate by border or hover only
-- Don't use em dashes; reach for commas, colons, periods, or parentheses instead
-- Don't bypass the token system with literal hex/oklch values in component code
+- No pure white (`#ffffff`) or pure black (`#000000`) on theme surfaces; both fight the warm canvas (media scrims below are the exception)
+- Gold-leaf is the only accent. Stage hues (`STAGE_CLASSES`) and speaker hues (`lib/speakerColor.ts`) are identity colors, not accents, and stay inside their facilities.
+- No em dashes in UI copy; use commas, colons, periods, or parentheses
 - Don't disable the paper-grain overlay; it's load-bearing for the editorial feel
 
 ### Pipeline stage palette
@@ -301,56 +286,20 @@ Elements rendered **on top of artwork or video** (episode card overlays, play bu
 
 These never appear on theme surfaces. If you find one on a card or panel without an image behind it, replace with tokens.
 
-## 8. Responsive Behavior
+## 8. Window sizes and targets
 
-### Breakpoints (Tailwind defaults)
-| Name | Width | Behavior |
-|------|-------|----------|
-| `sm` | ≥640px | Two-column starts for some panels |
-| `md` | ≥768px | Settings two-column, sidebar visible |
-| `lg` | ≥1024px | Standard desktop layout |
-| `xl` | ≥1280px | Generous gutters, wider transcript column |
+A desktop window, not a phone. Tailwind's default breakpoints apply; the one that matters is `sm` (≥640px), where `FormGrid` switches to two columns. The sidebar collapses to icons by user toggle (persisted in `layoutStore`), not by breakpoint; icon buttons carry the label as a title.
 
-### Touch targets
-- Minimum 32×32 hit area for icon buttons (use `p-2` on a `w-4 h-4` icon)
-- Pill chips: `px-2.5 py-1` minimum
-- Episode rows: `py-2` minimum row height
+- Minimum 32×32 hit area for icon buttons (`p-2` on a `w-4 h-4` icon)
+- Pill chips: `px-2.5 py-1` minimum; episode rows: `py-2` minimum
 
-### Collapsing strategy
-- Sidebar collapses to icons only by user toggle (persisted in `layoutStore`), not by breakpoint; icon buttons carry the label as a title.
-- Settings two-column → single column at `<md`
-- Modals: full-width sheet on mobile, centered card from `md` up
+## 9. Adding UI
 
-## 9. Agent Prompt Guide
-
-### When asked to add UI
-1. Use shadcn/ui primitives from `frontend/src/components/ui/` first; only build custom when the primitive doesn't fit
-2. Reach for tokens: `bg-card`, `text-muted-foreground`, `border-border`, `bg-primary`. No raw hex.
-3. Default text size: `text-sm`. Default radius: `rounded-md` for inputs/buttons, `rounded-lg` for cards.
-4. Density first: lists use `gap-1.5` to `gap-2` between elements, `py-2` row padding.
-5. One CTA per view in `bg-primary`. Everything else is `secondary`, `outline`, or `ghost`.
-
-### Quick reference
-- Canvas: `bg-background` / Card: `bg-card` / Popover: `bg-popover`
-- Body text: `text-foreground` / Caption: `text-muted-foreground`
-- Border: `border-border`
-- Primary CTA: `bg-primary text-primary-foreground`
-- Hover surface: `hover:bg-accent`
-- Mono font: `font-mono` (timestamps, hashes, IDs)
-- Display font: `font-display` (h1, h2 only)
-
-### Example prompts
-- "Add a settings row with a label `Embedding model` left and a select right. Use two-column at `md`. Label `text-sm font-medium`, helper text `text-xs text-muted-foreground` below the label. Select uses the `.input` utility."
-- "Build an episode row: `flex gap-2 py-2 hover:bg-accent rounded`. Episode number in `text-xs text-muted-foreground w-8 text-right`, title in `text-xs flex-1 truncate`, date and duration in `text-xs text-muted-foreground` right-aligned. No zebra."
-- "Status pill for indexed episode: `inline-flex items-center gap-1 rounded-full bg-success/15 text-success text-2xs font-medium px-2 py-0.5`. Lowercase label `indexed`. No uppercase, no tracking-wider."
-- "Modal: shadcn `<Dialog>` from `ui/dialog`. `DialogTitle` renders an `h2`, so it is Fraunces through the global heading rule; size it with a class (`text-lg font-semibold` by default). Body in `text-sm`. Footer right-aligned with `outline` cancel and `default` confirm."
-
-### Iteration guide
-1. If colors feel cold or harsh, the warm hue (`oklch H ≈ 55–80`) was lost; re-derive from the existing oklch scale, don't add raw hex
-2. If a page-level heading feels generic, you forgot `font-display` (Fraunces) or `font-feature-settings: 'ss01', 'onum'`. Dense subsection headings (settings, forms) stay Inter `text-base font-semibold`; don't reach for Fraunces there
-3. If lists feel cluttered, drop a font size (`text-base` → `text-sm`) before adding spacing
-4. If a CTA isn't standing out, check that you used `bg-primary` and that no other element on the view is also primary
-5. If something looks "AI-generic SaaS," check for: uppercase labels, `tracking-wider`, gradient buttons, drop shadows on cards, waveform in audio player
+1. shadcn/ui primitives from `frontend/src/components/ui/` first; custom only when the primitive doesn't fit
+2. Tokens only: `bg-card`, `text-muted-foreground`, `border-border`, `bg-primary`
+3. `text-xs` for dense lists and settings, `text-sm` for status and empty states, `text-base` for prose. `rounded-md` for inputs/buttons, `rounded-lg` for cards and dialogs
+4. One `bg-primary` CTA per view; everything else `secondary`, `outline`, or `ghost`
+5. If it looks "AI-generic SaaS", check for uppercase labels, `tracking-wider`, gradient buttons, shadows on cards, a waveform in the audio player. If colors feel cold, the warm hue (`oklch H ≈ 55–80`) was lost
 
 ## 10. Episode hub conventions
 

@@ -4,9 +4,7 @@ How to produce a distributable PodCodex `.dmg` (macOS) or `.msi`
 (Windows) from a clean checkout. Linux is not shipped; see [Linux](#linux-build-from-source)
 below.
 
-> **Status:** macOS arm64 verified end-to-end (~530 MB DMG, ~1.4 GB installed).
-> Windows path is documented but not yet smoke-tested. Expect minor gaps;
-> report what breaks.
+Releases are built by CI (see [Releasing](#releasing-ci)); the local steps below build the same CPU bundles by hand (CI also builds the Windows GPU archives).
 
 The flow is the same on every shipped target:
 
@@ -16,7 +14,7 @@ The flow is the same on every shipped target:
 2. **Build the frontend** (`npm run build`).
 3. **Bundle with Tauri** (`cargo tauri build`) → native installer.
 
-yt-dlp ships inside the sidecar as its Python module; there is no separate binary. ffmpeg is **not** bundled; the app shells out to the user's system install (see [LICENSE_AUDIT.md](../LICENSE_AUDIT.md)).
+yt-dlp ships inside the sidecar as its Python module; there is no separate binary. ffmpeg is **not** bundled: GPL builds (libx264 / libx265) would contaminate the MIT release, so the app shells out to the user's system install.
 
 `make bundle` chains all three. Use the individual `make bundle-*` targets when iterating on a single layer.
 
@@ -24,7 +22,7 @@ yt-dlp ships inside the sidecar as its Python module; there is no separate binar
 
 ---
 
-## macOS (arm64 / x86_64)
+## macOS (Apple Silicon)
 
 ```bash
 brew install node rust uv ffmpeg
@@ -56,16 +54,9 @@ Without signing, Gatekeeper blocks first launch. Drag the app to
 xattr -dr com.apple.quarantine /Applications/PodCodex.app
 ```
 
-### Auto-updater signing
+### Auto-updater
 
-The Tauri updater needs an ed25519 keypair. Three steps:
-
-1. Generate the keypair: `cargo tauri signer generate -w ~/.tauri/podcodex.key`.
-2. In `src-tauri/tauri.conf.json`: paste the public key into `plugins.updater.pubkey`,
-   set `plugins.updater.active = true`, set `bundle.createUpdaterArtifacts = "v1Compatible"`.
-3. Add `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` to GitHub repo secrets.
-
-Without these, releases ship without `latest.json` (auto-update disabled, manual install still works).
+The Tauri updater is off (`plugins.updater.active = false` and a placeholder `pubkey` in `src-tauri/tauri.conf.json`), so releases ship no `latest.json` and users install updates by hand. Turning it on takes an ed25519 keypair (`cargo tauri signer generate -w ~/.tauri/podcodex.key`), its public key in `plugins.updater.pubkey`, `bundle.createUpdaterArtifacts = "v1Compatible"`, and the `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` repo secrets.
 
 ### macOS gotchas
 
@@ -95,6 +86,10 @@ Without these, releases ship without `latest.json` (auto-update disabled, manual
   does not return the space while the kernel holds it. `hdiutil info` lists
   the leaks; detach them before retrying, or the next run finds
   `/Volumes/PodCodex` taken and fails again for a different reason.
+- Even when the DMG step fails, the `.app` under
+  `src-tauri/target/release/bundle/macos/` is complete and runnable (CI
+  builds the DMG anyway). When the DMG step succeeds, Tauri deletes that
+  `.app`; copy it out of the DMG to run it.
 - `zlib-level=9` in the recovery above is not decoration: it is what tauri
   itself passes. Converting the same staging image without it yields a DMG
   about 50 MB larger, so dropping it would silently ship a fatter download
@@ -172,7 +167,7 @@ A few files are checked in but auto-generated. Re-run after editing the source:
 
 ```bash
 make types     # frontend/src/api/generated-types.ts from Pydantic models
-make icons     # src-tauri/icons/ + frontend/public/icon.png from assets/icon.png
+make icons     # src-tauri/icons/, frontend/public/icon.png and default-cover.png from assets/icon.png
 ```
 
 ---
@@ -204,7 +199,11 @@ After `make bundle`, smoke-test:
 1. Move the dev checkout out of the way (or run on a different account).
 2. Launch the bundle from its installed location.
 3. Confirm splash phase messages on cold start (10-30 s first launch each session).
-4. Step through [`SMOKE.md`](SMOKE.md).
+4. Run one short episode through transcribe, index and search, and check that the Claude Desktop toggle writes the installed `podcodex-server --mcp`, not a dev venv.
+5. Offline: with models already downloaded, launch with `HF_ENDPOINT=http://127.0.0.1:9`; transcribe (with diarization), synthesize and search must work and the server log must show no `Retrying in` lines. Don't simulate offline with a dead `HTTPS_PROXY`: huggingface_hub treats a proxy error as fatal instead of falling back to the cache.
+6. Upgrade over the previous release without touching real data: clone the data dir and the show folders into a scratch `HOME` (`cp -c` on APFS), **repoint the paths in the copied `config.json` and `pipeline.db`** (otherwise they still name the real show folders), then launch with `open -n --env HOME=<scratch> PodCodex.app`. Every show file must come through unchanged.
+7. On an NVIDIA machine, the GPU backend installs from the GPU panel in one click, prereleases included (see [Prerelease caveats](#prerelease-caveats)).
+8. `podcodex-reindex <show> --dry-run` writes nothing; a real reindex killed part way leaves the show searchable, and rerunning it completes.
 
 If `/api/health` never returns and the splash stays past ~60 s, run
 from a terminal to surface stderr:
@@ -225,7 +224,7 @@ Report build issues at <https://github.com/gabriel-jung/PodCodex/issues>. Includ
 
 ## Releasing (CI)
 
-`release.yml` builds and publishes on a pushed `v*` tag. Bump first (`make bump VERSION=X.Y.Z`, see [CLAUDE.md § Versioning](../CLAUDE.md#versioning-bump-on-every-windows-msi-release)), commit, then tag. The tag name decides the flow:
+`release.yml` builds and publishes on a pushed `v*` tag. Bump first (`make bump VERSION=X.Y.Z`, see [CLAUDE.md § Versioning](../CLAUDE.md#versioning-bump-on-every-windows-msi-release)), commit, then tag. Tag stable releases only from main after merge: a stable tag from a branch makes the README's download links serve unmerged code. Use a `-beta.N` / `-rc.N` tag for branch builds. The tag name decides the flow:
 
 | Tag | Result |
 |-----|--------|
@@ -244,7 +243,3 @@ The release workflow runs no tests. Check that the CI run on the commit you tag 
 - **GPU backend download.** The app looks for its GPU manifest under its own version, `/releases/download/vX.Y.Z/cuda-libs.json`, which a prerelease tag doesn't match. It then tries the `beta` channel and uses it only when that manifest was built for the app's exact version, then "latest", whose manifest it refuses when built for another version. So a prerelease installs its GPU backend in one click. Every `X.Y.Z-beta.N` shares one version number, so the match also checks the build id: `build_server.py` bundles the commit a build is made from (`_podcodex_build.py`) and `package_gpu.py` stamps the same commit into the manifest. An older beta, superseded on the channel, is refused with a sentence saying to update rather than handed the newest beta's backend; update to the newest beta (the beta link always serves it). The same id guards an installed backend: `src-tauri/build.rs` stamps the commit into the desktop shell, which won't launch a backend whose manifest names another build (it falls back to CPU), and the GPU panel then asks to update, which downloads that build's server core instead of reusing the old one. A stable release can't pick up a beta's backend: its MSI is uploaded only after its own GPU files. `PODCODEX_GPU_MANIFEST_URL` still overrides the lookup (point it at `/releases/download/<tag>/cuda-libs.json`).
 - **Windows MSI version.** An MSI version cannot carry `-beta.N`, so every prerelease of `X.Y.Z` and the stable `X.Y.Z` share one MSI version, and WiX skips replacing files on a same-version install. On a machine that has a prerelease installed, uninstall it before installing the next prerelease or the stable build (the README says so next to the beta links).
 - **Updater.** The Tauri updater is off (`tauri.conf.json`), so prereleases reach only people who download them directly.
-
-### Local `make bundle` and the DMG
-
-`bundle_dmg.sh` sometimes fails locally (Finder layout over a mounted image); the `.app` under `src-tauri/target/release/bundle/macos/` is still complete, and CI builds the DMG. When the DMG step succeeds, Tauri deletes that `.app`; copy it out of the DMG to run it. A failed run can leave a multi-GB `rw.*.dmg` in `src-tauri/target/release/bundle/dmg/`; delete it.

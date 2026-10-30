@@ -15,7 +15,7 @@ After either path, see:
 
 ## Before you start
 
-You need four things before either install path:
+You need three things before either install path, and one thing to know:
 
 ### 1. A Discord bot application and token
 
@@ -37,7 +37,7 @@ Requirements:
 - **1-10 GB RAM**, depending on the embedder. BGE-M3 (the default) uses ~2.5 GB; smaller models cut this to ~1 GB, larger ones (Perplexity 4B) need ~10 GB. See [Resource requirements](#resource-requirements).
 - Outbound internet for the bot's connection to Discord's gateway. No inbound ports needed.
 
-The bot searches an existing index (the only thing it ever writes there is a show password, and only on an index it owns), so it does **not** need:
+The bot searches an existing index and never builds one (it writes only show passwords, on an index it owns, plus small regenerable metadata repairs), so it does **not** need:
 
 - `ffmpeg`: only needed during transcription (desktop app)
 - A GPU or `CUDA`: only needed for local transcription/indexing (desktop app)
@@ -83,7 +83,7 @@ This creates `.venv/` with all runtime dependencies (~1.5 GB).
 Both trailing flags matter on a typical GPU-less VPS:
 
 - `--extra cpu` pulls the CPU-only PyTorch wheel. Without it, torch resolves from PyPI, which on Linux means the CUDA build plus ~6 GB of `nvidia-*` and `triton` packages the host can never use.
-- `--no-dev` skips the dev dependency group (Jupyter, pre-commit, pytest), which `uv sync` installs by default.
+- `--no-dev` skips the dev dependency group (Jupyter, pre-commit, pytest), which `uv sync` installs by default. `uv run` syncs before it runs and would add the group back, so the commands below pass `--no-dev` to it too.
 
 The bot encodes search queries on CPU whatever the host has: one query takes milliseconds, so a GPU buys it nothing. Keep `--extra cpu` even on a GPU host, unless the same environment also runs indexing, which does use the GPU (`--extra gpu`, or `--extra gpu-pascal` on GTX 10xx / P40 / P100, see [PASCAL.md](PASCAL.md)). The extras are mutually exclusive.
 
@@ -110,19 +110,12 @@ EOF
 
 Then open `.env` and fill in `DISCORD_TOKEN`. `.env` is gitignored.
 
-**How the bot finds the index** (logged at startup):
-
-1. `PODCODEX_INDEX` env var if set: always wins.
-2. `<data_dir>/index/` if it exists with data: desktop app default (Linux: `~/.local/share/podcodex/index/`).
-3. `./deploy/index/` or `./index/` relative to the bot's working directory: repo-local fallback.
-4. Else: creates an empty `<data_dir>/index/`.
-
-Check the startup log line (`IndexStore opened: <path> (<reason>)`) to confirm which one was picked.
+The bot finds the index as described in [An index to serve](#3-an-index-to-serve); check the startup log line (`IndexStore opened: <path> (<reason>)`) to confirm which path it picked.
 
 ### 4. Start the bot
 
 ```bash
-uv run podcodex-bot
+uv run --no-dev podcodex-bot
 ```
 
 The first search downloads the BGE-M3 model (~2.5 GB), so it takes a while; later searches, and later starts, are fast.
@@ -149,7 +142,7 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/PodCodex
 EnvironmentFile=/home/ubuntu/PodCodex/.env
-ExecStart=/home/ubuntu/.local/bin/uv run podcodex-bot
+ExecStart=/home/ubuntu/.local/bin/uv run --no-dev podcodex-bot
 Restart=always
 RestartSec=5
 
@@ -209,7 +202,7 @@ To copy a server's id, turn on **Developer Mode** in Discord's settings, then ri
 
 ## Which models the bot loads
 
-`/search` encodes queries with the default embedding model (`--model`, BGE-M3 unless you change it) and with any model a server picks through `/setup model:`. A show indexed only under another model is not searched by `/search` on the bot (the reply names it); `/exact`, `/random` and the stats commands still reach it, since they load no model. **Upgrading:** a model a server picked with `/setup` before this release is not loaded automatically (the bot cannot tell it from one an older `--model` saved); the bot logs those servers at startup, and `--models` keeps the model loaded. To make it searchable, index it with the default model in the desktop app, or list the models the bot may load with `--models bge-m3,e5-small` (each one adds its RAM, see [Resource requirements](#resource-requirements)). `/setup model:` accepts only models the bot loads.
+`/search` encodes queries with the default embedding model (`--model`, BGE-M3 unless you change it) and with any model a server picks through `/setup model:`. A show indexed only under another model is not searched by `/search` on the bot (the reply names it); `/exact`, `/random` and the stats commands still reach it, since they load no model. **Upgrading:** a model a server picked with `/setup` before 0.3.0 is not loaded automatically (the bot cannot tell it from one an older `--model` saved); the bot logs those servers at startup, and `--models` keeps the model loaded. To make it searchable, index it with the default model in the desktop app, or list the models the bot may load with `--models bge-m3,e5-small` (each one adds its RAM, see [Resource requirements](#resource-requirements)). `/setup model:` accepts only models the bot loads.
 
 ---
 
@@ -241,7 +234,7 @@ On the machine that owns the index, stop the bot, then run:
 
 ```bash
 # Path A (uv)
-uv run podcodex-bot --manage-passwords
+uv run --no-dev podcodex-bot --manage-passwords
 
 # Path B (Docker)
 docker compose run --rm bot --manage-passwords
@@ -390,11 +383,7 @@ Bundle format records each collection's embedding model + chunker in a manifest 
 | `/sync`                              | Admin    | Manually re-sync slash commands                  |
 | `/admin-reload`                      | Admin    | Reconnect to the index and reload show passwords |
 
-The bot polls the index for changes (default every 10 min, `--announce-interval`
-to tune) and posts newly indexed episodes to each server's configured channel.
-The first pass after enabling records the existing catalogue silently — only
-episodes added afterwards are announced. Locked shows are only announced on
-servers that unlocked them.
+The bot polls the index for changes (default every 10 min, `--announce-interval` to tune) and posts newly indexed episodes to each server's configured channel. The first pass after enabling records the existing catalogue silently: only episodes added afterwards are announced. Locked shows are only announced on servers that unlocked them.
 
 ---
 

@@ -381,8 +381,8 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
         .stderr(Stdio::piped())
         .stdin(Stdio::null());
 
-    // ffmpeg uses the user's system install (see LICENSE_AUDIT.md). macOS
-    // GUI apps inherit launchd's minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin),
+    // ffmpeg uses the user's system install (GPL builds can't ship in an MIT
+    // bundle). macOS GUI apps inherit launchd's minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin),
     // so brew/MacPorts/Linux-snap install dirs are invisible to the spawned
     // sidecar — augment PATH here. Honored by Python's shutil.which and by
     // whisperx/faster-whisper subprocess shellouts to bare "ffmpeg".

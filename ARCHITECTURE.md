@@ -84,7 +84,8 @@ episodes (
   stem TEXT PRIMARY KEY,
   audio_path TEXT,
   transcribed INTEGER, corrected INTEGER,
-  indexed INTEGER, synthesized INTEGER,
+  indexed INTEGER,               -- fallback only, see RAG layer
+  synthesized INTEGER,
   translations TEXT,             -- JSON array of language codes
   provenance TEXT,               -- JSON
   verified_step TEXT,            -- verified pointer: the version the user
@@ -98,6 +99,7 @@ versions (
   manual_edit INTEGER,
   content_hash TEXT, input_hash TEXT,
   segment_count INTEGER,
+  missing_since REAL,            -- file gone since; row kept through a grace period
   PRIMARY KEY (id, stem, step)
 )
 ```
@@ -118,16 +120,17 @@ Every variable the backend reads. None is required for a desktop install; the Ta
 | `PODCODEX_CACHE_DIR` | `core/cache.py` | Moves the whole model cache (HF, torch, sentence-transformers) out of `<data_dir>/models`. |
 | `PODCODEX_HF_OFFLINE` | `core/cache.py` | `1` sets `HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE`, skipping Hub round-trips when every model is cached. |
 | `PODCODEX_INDEX` | `rag/index_store.py`, `core/recovery.py` | Uses another LanceDB index instead of `<data_dir>/index`. |
-| `PODCODEX_DEVICE` | `core/device.py` | `auto`, `cpu` or `cuda`; see CLAUDE.md. |
+| `PODCODEX_DEVICE` | `core/device.py` | `auto`, `cpu` or `cuda`; see [deploy/BUILD.md § GPU extras](deploy/BUILD.md#gpu-extras-source-builds). |
+| `PODCODEX_DEBUG` | `cli/resolve.py` | `1` makes the `podcodex-*` CLIs raise with a traceback instead of a one-line error. |
 | `PODCODEX_MACHINE_ID` | `core/machine_id.py` | Fixes the machine identity used for index ownership (containers without a persistent data dir). |
-| `PODCODEX_FFMPEG_EXE` | `core/_ffmpeg.py` | Path to the ffmpeg binary; the Tauri shell points it at the bundled one. |
+| `PODCODEX_FFMPEG_EXE` | `core/_ffmpeg.py` | Path to ffmpeg, overriding the system install found on PATH. The Tauri shell sets it from the user's saved ffmpeg path; ffmpeg is never bundled. |
 | `PODCODEX_API_TOKEN` | `api/api_token.py` | Loopback API token; overrides the persisted one in the config dir (tests pin it). |
 | `PODCODEX_API_PORT`, `PODCODEX_PARENT_PID` | `api/app.py`, `api/server.py` | Sidecar port, and the shell PID the sidecar watches so it exits with the app. Set by Tauri. |
 | `PODCODEX_GPU_MANIFEST_URL` | `api/gpu_backend.py` | Alternative manifest for the optional CUDA backend download (default: the app's own release tag, then the rolling `beta` release when it holds this version, then latest). |
 | `PODCODEX_CPU_SERVER` | `api/routes/integrations.py` | Path of the bundled CPU sidecar, set by Tauri; the Claude Desktop MCP entry points at it even when the GPU backend is running. |
 | `OLLAMA_HOST` | `core/llm.py` | Ollama daemon URL, default `http://127.0.0.1:11434`. |
 | `HF_TOKEN` | `core/transcribe.py` | Hugging Face token for the gated pyannote diarization model. |
-| `HF_HOME`, `HF_HUB_CACHE`, `TRANSFORMERS_CACHE`, `TORCH_HOME`, `SENTENCE_TRANSFORMERS_HOME` | libraries | Set by `wire_model_caches` at bootstrap; see ML_RUNTIME.md. |
+| `HF_HOME`, `HF_HUB_CACHE`, `TRANSFORMERS_CACHE`, `TORCH_HOME`, `SENTENCE_TRANSFORMERS_HOME` | libraries | Set by `wire_model_caches` at bootstrap; layout in its docstring. |
 
 ## RAG layer
 
@@ -137,7 +140,9 @@ Because of those two shapes, a table name is never something a caller reconstruc
 
 Changing the embedding model or chunker creates a new collection rather than overwriting; old collections stick around until explicitly removed. The desktop app's Index step writes here; the bot and MCP server read.
 
-**Truth-of-record:** indexed status comes from LanceDB itself, not from filesystem markers. `lance_indexed_stems()` returns the set of stems present in the index; `unified_episodes()` reconciles this against the per-show `pipeline.db` on each call. There is no `.rag_indexed` marker file.
+**Truth-of-record:** indexed status comes from this install's LanceDB index, not from `pipeline.db` and not from filesystem markers. A show folder (and its `pipeline.db`) can be shared between installs that each have their own index, so `reconcile_show_status` (`core/episode_status.py`) overlays the flag from `lance_indexed_stems()` on every read and does not persist it; the stored `indexed` column is only the fallback when the index can't be read.
+
+**Outdated indexes:** each chunk records the content hash of the version it was cut from and how that version was picked (`source_version`). `_overlay_index_outdated` flags an episode `index_outdated` when the canonical version's hash has changed since (an edit, a newer correct run), or, for an index of a picked step such as a translation, when that step's default version changed. A pinned version is never outdated, and chunks from before the record existed are never flagged. A batch index run re-indexes outdated episodes.
 
 **Hybrid retrieval:** vector ANN (cosine on embeddings) + BM25 full-text on the raw segment text, each ranked and rank-normalized (top hit 1.0), then blended linearly by `alpha` (1 is dense only, 0 is full-text only). Both indexes are maintained inside the single LanceDB table per collection. A collection that fails is skipped; a search where every collection failed raises rather than answering "no matches". Query embeddings are computed on CPU on every surface: one query is milliseconds, and the GPU is left to indexing.
 
@@ -155,6 +160,6 @@ Don't hand-edit `frontend/src/api/generated-types.ts`; it's overwritten by `make
 
 ## Bot and MCP
 
-Both consume the same shared search service (see **Shared search service** above). They are read-only; neither builds the index. The bot resolves the index path via `_resolve_default_index_path()` in `rag/index_store.py` (PODCODEX_INDEX env > `<data_dir>/index/` > `./deploy/index/` > `./index/`). MCP server runs over stdio for Claude Desktop. The same uvicorn process also exposes HTTP at `/mcp` for other clients.
+Both consume the same shared search service (see **Shared search service** above). Neither builds the index. MCP never writes to it; the bot writes only show passwords (on an index it owns) and the regenerable metadata repairs described under [The index has an owner](CLAUDE.md#footguns). The bot resolves the index path via `_resolve_default_index_path()` in `rag/index_store.py` (PODCODEX_INDEX env > `<data_dir>/index/` > `./deploy/index/` > `./index/`). MCP server runs over stdio for Claude Desktop. The same uvicorn process also exposes HTTP at `/mcp` for other clients.
 
 Detailed deploy guides: `deploy/BOT.md`, `deploy/MCP.md`.

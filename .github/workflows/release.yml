@@ -6,13 +6,13 @@ name: Release
 #   - PodCodex-macos-arm64.dmg + PodCodex-windows-x64.msi — version-less
 #     aliases so README can link to /releases/latest/download/<alias>
 #   - server-core + torch-runtime-<tag> + cuda-libs-<tag> .tar.xz archives and cuda-libs.json (Windows GPU
-#     archives for in-app download — VoiceBox-style runtime CUDA install)
+#     archives for the in-app runtime CUDA install)
 #   - the same aliases + GPU archives mirrored onto the rolling "beta"
 #     release when this build is the newest (see the beta-channel job)
 #   - latest.json (Tauri updater manifest — only when TAURI_SIGNING_PRIVATE_KEY
 #     is configured; see deploy/BUILD.md for keypair setup)
 #
-# Linux is intentionally not built — see ROADMAP.md Phase M. Linux users
+# Linux is intentionally not built (see deploy/BUILD.md). Linux users
 # build from source via `make dev`.
 #
 # Each platform job builds + uploads its own artifacts to the same release

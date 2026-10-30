@@ -28,7 +28,7 @@
   <a href="#what-it-does">Features</a> •
   <a href="#get-it">Download</a> •
   <a href="#integrations">Discord &amp; MCP</a> •
-  <a href="ROADMAP.md">Roadmap</a> •
+  <a href="#roadmap">Roadmap</a> •
   <a href="CONTRIBUTING.md">Contribute</a>
 </p>
 
@@ -91,7 +91,7 @@ Point it at audio. Six steps, all on your machine:
    - As in a regular podcast app: subscribe to any show available through Apple Podcasts search or any RSS URL.
    - Follow YouTube channels, with audio and subtitle downloads.
    - Or just point it at a folder of recordings you already have.
-   - Single audio files dropped onto the app are copied into a managed "Files" show inside your library folder, so they stay around like any other episode. (Before 0.2.9, dropped files were opened in place and their transcripts were written next to the source audio; those outputs are not migrated, but re-adding the original folder as a local show finds them again.)
+   - Single audio files dropped onto the app are copied into a managed "Files" show inside your library folder, so they stay around like any other episode.
 
 2. **Transcribe**
    - Turn audio into a transcript using [WhisperX](https://github.com/m-bain/whisperX), with optional speaker labels from [pyannote-audio](https://github.com/pyannote/pyannote-audio).
@@ -177,8 +177,8 @@ The installers ship CPU-only. On Windows, NVIDIA users activate the in-app CUDA 
 Share your archive with a small community. Drop the bot into any Discord server and listeners can run slash commands for semantic search (`/search`), exact phrase (`/exact`), random samples (`/random`), episode browsing (`/episodes`), speaker stats (`/speakers`), and library stats (`/stats`). Shows can be password-protected: a protected show answers only in servers that unlocked it with `/unlock`.
 
 ```bash
-uv sync --extra bot --extra rag --extra cpu
-DISCORD_TOKEN=... uv run podcodex-bot
+uv sync --extra bot --extra rag --extra cpu --no-dev
+DISCORD_TOKEN=... uv run --no-dev podcodex-bot
 ```
 
 Full deploy guide (uv + Docker, systemd, password rotation, VPS rsync) in [`deploy/BOT.md`](deploy/BOT.md).
@@ -187,7 +187,7 @@ Full deploy guide (uv + Docker, systemd, password rotation, VPS rsync) in [`depl
 
 PodCodex ships a Model Context Protocol server, so any MCP-compatible client (Claude Desktop, Claude Code, Cursor, Continue, Zed, and others) can search your archive mid-conversation. It exposes search, exact phrase, show listing, and context-fetch tools, plus editable slash prompts like `/brief`, `/speaker`, `/timeline`.
 
-**Claude Desktop:** one-click setup at **Settings → Integrations → Claude Desktop (MCP) → Enable** writes the stdio config for you.
+**Claude Desktop:** one-click setup at **Settings → Integrations → Claude Desktop → Enable** writes the stdio config for you.
 
 **Other clients:** point them at `http://127.0.0.1:18811/mcp` (HTTP transport, while the app is running), or run the server manually over stdio. See [`deploy/MCP.md`](deploy/MCP.md).
 
@@ -203,40 +203,7 @@ PodCodex ships a Model Context Protocol server, so any MCP-compatible client (Cl
 
 ## For contributors
 
-Start with [CONTRIBUTING.md](CONTRIBUTING.md). System wiring in [ARCHITECTURE.md](ARCHITECTURE.md). AI assistant context in [CLAUDE.md](CLAUDE.md). Frontend design rules in [DESIGN.md](DESIGN.md). ML stack pins, cache layout, and runtime patches in [ML_RUNTIME.md](ML_RUNTIME.md).
-
-### Build from source
-
-You'll need:
-
-- **[uv](https://docs.astral.sh/uv/)**: handles Python 3.12 install + dependencies.
-- **[Node.js](https://nodejs.org/) LTS**: frontend (or via nvm, Homebrew, winget, etc.).
-- **[Rust](https://www.rust-lang.org/)** *(optional)*: for the native Tauri window.
-
-Plus the same runtime prerequisites as [Get it](#get-it).
-
-**Install:**
-
-```bash
-git clone https://github.com/gabriel-jung/PodCodex && cd PodCodex
-make setup          # uv sync + npm install
-```
-
-**Run the app:**
-
-Browser only (no Rust, faster to try):
-
-```bash
-make dev-no-tauri
-```
-
-Native Tauri window (needs Rust):
-
-```bash
-make dev
-```
-
-More on building and signing in [`deploy/BUILD.md`](deploy/BUILD.md).
+Build from source, run the tests and read the conventions in [CONTRIBUTING.md](CONTRIBUTING.md). System wiring in [ARCHITECTURE.md](ARCHITECTURE.md), frontend design rules in [DESIGN.md](DESIGN.md), AI assistant context in [CLAUDE.md](CLAUDE.md), packaging and releases in [`deploy/BUILD.md`](deploy/BUILD.md).
 
 ### Tech stack
 
@@ -256,7 +223,35 @@ More on building and signing in [`deploy/BUILD.md`](deploy/BUILD.md).
 
 ## Roadmap
 
-See [ROADMAP.md](ROADMAP.md) for what's next and longer-term plans. Shipped features live in [CHANGELOG.md](CHANGELOG.md).
+Shipped features live in [CHANGELOG.md](CHANGELOG.md).
+
+### Next
+
+#### Speaker auto-mapping
+
+Auto-generate `speaker_map.json` for new episodes via voice embeddings. Show-level registry with cross-episode identity, cosine similarity over Resemblyzer / pyannote embeddings, bootstrapped from a handful of labeled episodes.
+
+#### Onboarding follow-ups
+
+The wizard + home empty-state ship. Remaining:
+
+- Hardware auto-detection (GPU / CPU / VRAM) to pick the default Whisper preset
+- ShowPage empty-state CTA into the pipeline preset flow
+- Replay wizard from Settings for users who dismissed it
+
+#### Developer experience
+
+- Transcription engine abstraction: decouple `core/transcribe.py` from WhisperX (Voxtral, Whisper.cpp, cloud ASR)
+
+### Parallel tracks
+
+- Discord bot conversation context (thread-based or per-user stateful)
+
+### Future
+
+#### Timeline editor
+
+Multi-track assembly with jingle / music reinsertion: drag-to-reorder segments, insert intros / outros / music beds, per-segment volume + fade, single-file audio export.
 
 ---
 

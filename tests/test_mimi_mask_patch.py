@@ -1,4 +1,4 @@
-"""The MiMi mask patch in `core/synthesize.py` (see ML_RUNTIME.md).
+"""The MiMi mask patch in `core/synthesize.py`.
 
 It replaces a private transformers function, so a transformers upgrade can
 remove or reshape its target without any error until a synthesis fails deep

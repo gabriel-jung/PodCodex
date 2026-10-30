@@ -42,6 +42,9 @@ def get_hf_cache_dir() -> Path:
     """Return (and create) the HuggingFace root inside the PodCodex cache.
 
     ``HF_HOME`` points here; see :func:`wire_model_caches` for the layout.
+    WhisperX, E5 and Pplx have always cached here (flat ``models--*``
+    layout) and keep doing so, so existing downloads stay valid; pyannote and
+    BGE-M3 use :func:`get_hf_hub_dir`. The model list and delete read both.
     """
     hf_dir = get_cache_dir() / "huggingface"
     hf_dir.mkdir(parents=True, exist_ok=True)
@@ -164,7 +167,12 @@ def wire_model_caches() -> None:
     ``from_pretrained`` look up via ``TRANSFORMERS_CACHE`` and fall back to
     ``HF_HOME/transformers`` (a stub dir distinct from where
     ``snapshot_download`` writes), so the hub and transformers vars must
-    agree or the loader and downloader halves split-brain.
+    agree or the loader and downloader halves split-brain. The symptom is
+    ``OSError: Can't load feature extractor for <path>/preprocessor_config.json``;
+    any snapshot left under ``<hf>/transformers/`` is dead weight. Models
+    re-downloading or missing from the in-app list mean something imported
+    huggingface_hub before this ran, so the weights went to
+    ``~/.cache/huggingface``.
     """
     models_dir = get_cache_dir()
     hub = str(get_hf_hub_dir())

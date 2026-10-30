@@ -6,8 +6,7 @@ provenance dict — and because ``api/routes/__init__`` eagerly imports all
 nineteen route modules, a subprocess step worker loaded the whole API
 surface plus fastapi to do it. On an install without the desktop extra
 (``deploy/BOT.md``'s bot+rag+cpu has no fastapi at all) that was not a cost
-but a crash: ``podcodex-reindex``, which ``deploy/SMOKE.md`` documents,
-raised ``ModuleNotFoundError: fastapi``.
+but a crash: ``podcodex-reindex`` raised ``ModuleNotFoundError: fastapi``.
 
 ``_helpers`` re-exports every name here, so route modules are unchanged.
 """

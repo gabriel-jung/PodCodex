@@ -492,6 +492,12 @@ def _patch_sdpa_mask_for_mimi_vmap_bug() -> None:
     masks for that path (broadcasting handles ``or_masks`` the same way),
     but we keep the scope narrow to avoid affecting unrelated subprocesses
     until needed. Idempotent for the lifetime of the Python (sub)process.
+
+    Forcing the older ``sdpa_mask_older_torch`` path instead would dodge this
+    bug but break Pplx. When qwen-tts stops pinning transformers exactly and
+    upstream fixes the vmap path, drop this patch and its call in
+    ``load_tts_model``; the bootstrap torch-check patch is a separate
+    (PyInstaller dist-info) problem and likely stays.
     """
     global _SDPA_MASK_PATCHED
     if _SDPA_MASK_PATCHED:
@@ -504,7 +510,7 @@ def _patch_sdpa_mask_for_mimi_vmap_bug() -> None:
         raise RuntimeError(
             "transformers.masking_utils._vmap_for_bhqkv is gone (transformers "
             f"{getattr(__import__('transformers'), '__version__', '?')}); the "
-            "MiMi mask patch needs updating, see ML_RUNTIME.md"
+            "MiMi mask patch in core/synthesize.py needs updating"
         )
 
     def _no_vmap_for_bhqkv(mask_function: Any, bh_indices: bool = True) -> Any:

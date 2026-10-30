@@ -2,7 +2,7 @@
 
 The contrib hook calls ``collect_submodules("av")`` and (on Windows)
 copies ``av.libs/*.dll`` — both pull in PyAV's GPL FFmpeg. We ship a
-stub at ``packaging/pyi_av_stub/av`` instead. See LICENSE_AUDIT.md.
+stub at ``packaging/pyi_av_stub/av`` instead.
 """
 
 hiddenimports: list[str] = []

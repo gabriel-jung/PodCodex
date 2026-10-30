@@ -79,7 +79,7 @@ pipeline = [
     "pyarrow>=23.0.0",
     # Exact: the MiMi mask patch in core/synthesize.py replaces a private
     # transformers function, and qwen-tts 0.1.1 is what pins transformers to
-    # the 4.57.3 that patch was written against (ML_RUNTIME.md).
+    # the 4.57.3 that patch was written against.
     "qwen-tts==0.1.1",
     "soundfile>=0.13.1",
     "torch>=2.6",        # same floor as the rag extra; was only arriving through whisperx

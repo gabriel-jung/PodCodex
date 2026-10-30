@@ -541,7 +541,7 @@ def _install_torch_from_numpy_patch() -> None:
     the FrozenImporter loads numpy 2.x first; ``torch.from_numpy`` then raises
     ``RuntimeError: Numpy is not available`` even though numpy is importable.
     Wrap ``torch.from_numpy`` with a ctypes ``memmove`` fallback that bypasses
-    the C-level numpy ABI version check. Adapted from voicebox.
+    the C-level numpy ABI version check.
 
     Runs synchronously after ``import torch`` finishes — never mid-init —
     which is the whole point of this function existing instead of the old

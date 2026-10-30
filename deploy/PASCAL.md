@@ -1,125 +1,38 @@
 # Pascal GPU support (GTX 10xx, Titan Xp, P40, P100)
 
-The default PodCodex bundle ships PyTorch built against CUDA 12.8 (cu128).
-Those wheels were compiled for **Turing (sm_75) and newer GPUs only**;
-NVIDIA dropped Pascal kernels from the cu128 build matrix. If you have a
-Pascal card, the bundle will start, the Tauri shell will appear, and the
-first transcription run will crash inside torch with:
+PodCodex's GPU builds use PyTorch for CUDA 12.8, which has no kernels for Pascal cards (compute capability sm_60-62: GTX 1050-1080 Ti, Titan X/Xp, Tesla P40 and P100, Jetson TX2). On those cards the kernel guard (`core/device.py`) detects the missing kernels, switches PodCodex to CPU and logs a warning, so the app keeps working without the GPU.
 
-```
-CUDA error: no kernel image is available for execution on the device
-```
+Turing (RTX 20xx / GTX 16xx) and newer don't need this page.
 
-PodCodex's kernel guard (`core/device.py`) catches this before the first GPU use (at startup in dev), sets `PODCODEX_DEVICE=cpu`, and logs a warning, so the app stays usable in CPU mode without manual intervention. To actually use the GPU, follow one of the install paths below.
+## Using the GPU: run from source
 
----
-
-## Affected GPUs
-
-| GPU | Architecture | Compute capability |
-|-----|-------------|-------------------|
-| GeForce GTX 1050 / 1060 / 1070 / 1080 (Ti) | Pascal GP102/104/106/107 | sm_61 |
-| Titan X (Pascal) / Titan Xp | Pascal GP102 | sm_61 |
-| Tesla P40 | Pascal GP102 | sm_61 |
-| Tesla P100 | Pascal GP100 | sm_60 |
-| Jetson TX2 / Tegra X2 | Pascal GP10B | sm_62 |
-
-Anyone with Turing (RTX 20xx / GTX 16xx) or newer does not need this doc.
-
----
-
-## Install path A: dev install via uv (recommended)
-
-If you cloned the repo and run from source, add the `gpu-pascal` extra
-instead of `gpu`:
+The installed app can't use a Pascal GPU: its in-app GPU backend is a frozen build of the CUDA 12.8 torch, and nothing in it can be swapped. Run from source with the `gpu-pascal` extra instead, which pulls torch from PyTorch's `cu126` index (still built with Pascal kernels):
 
 ```bash
 git clone https://github.com/gabriel-jung/PodCodex && cd PodCodex
 uv sync --extra desktop --extra pipeline --extra rag --extra youtube --extra mcp --extra bot --extra gpu-pascal
+make setup-frontend       # npm install
+make dev-no-tauri         # or `make dev` for the native window (needs Rust)
 ```
 
-`gpu-pascal` pulls torch + torchaudio from PyTorch's `cu126` index, which
-still ships sm_60 + sm_61 kernels. Mutually exclusive with `gpu`; never
-add both.
+Never run `make setup` or `make setup-python` on this checkout: they re-sync without `gpu-pascal`, which swaps the cu126 torch back out and silently puts you on the CPU. `gpu-pascal`, `gpu` and `cpu` are mutually exclusive. cu126 wheels need NVIDIA driver 535 or newer.
 
----
+To force the CPU anyway, use the GPU panel in Settings or set `PODCODEX_DEVICE=cpu` (`$env:PODCODEX_DEVICE = "cpu"` in PowerShell).
 
-## Install path B: pre-built bundle
-
-There is no Pascal path here. The in-app GPU activation downloads a frozen PyInstaller backend to `<data_dir>/backends/gpu/` (Windows: `%APPDATA%\podcodex\backends\gpu\`), and that tree is not a Python environment: torch lives inside `_internal/`, there is no interpreter to install into and no pip target, so a `uv pip install` run there would only touch whatever environment happened to be active in your shell. The cu128 torch the backend ships with has no Pascal kernels, and nothing in the bundle can replace it.
-
-Two supported options for bundle users:
-
-- **Use the GPU:** install from source instead, following path A above. It is the only way to get cu126 wheels onto a Pascal card.
-- **Stay on the bundle:** run in CPU mode. The kernel guard already detects the missing kernels and sets `PODCODEX_DEVICE=cpu` for you, so the installed app keeps working without any change. See the CPU fallback section below for what to expect.
-
----
-
-## Verify it worked (path A)
+Check that it took:
 
 ```bash
-uv run python -c "import torch; print(torch.cuda.get_arch_list()); print(torch.cuda.get_device_name(0))"
+uv run python -c "import torch; print(torch.cuda.get_arch_list(), torch.cuda.get_device_name(0))"
 ```
 
-Expected output includes `sm_60` (P100) or `sm_61` (everything else listed above), and your GPU's name. If `sm_61` is missing, the `gpu-pascal` extra didn't take; re-run the `uv sync` above with `--reinstall`, and check that no `gpu` extra is still in the command.
+The list must include `sm_60` (P100) or `sm_61` (the others). If not, re-run the `uv sync` above with `--reinstall`. With the app running, Settings → GPU acceleration should then show the card in use.
 
-PodCodex's own diagnostic endpoint also reports it:
+## What to expect
 
-```bash
-# API calls need the loopback auth token (created on first app start)
-curl -H "X-PodCodex-Token: $(cat ~/.config/podcodex/api_token)" \
-  http://localhost:18811/api/system/device
-```
+- Transcription runs with `compute_type=int8_float32`: CTranslate2 refuses `float16` on Pascal, where FP16 is very slow, and INT8 runs at about FP32 speed in half the VRAM. A GTX 1080 (8 GB) fits large-v3 plus pyannote.
+- Voice synthesis runs in `float32`, since bfloat16 needs sm_80 (about twice the VRAM, same quality; works on a GTX 1080).
+- On CPU instead (the installed app, or `PODCODEX_DEVICE=cpu`), Whisper large-v3 runs at about 3-4× real time on a recent x86 CPU.
 
-```json
-{
-  "device": "cuda",
-  "compute_type": "int8_float32",
-  "torch_dtype": "float32",
-  "compute_capability": "6.1",
-  "gpu_name": "NVIDIA GeForce GTX 1080",
-  "arch_list": ["sm_50", "sm_60", "sm_61", "sm_70", "sm_75", "sm_86"],
-  "available": true,
-  "override": null
-}
-```
+## Lifetime
 
-`compute_type: int8_float32` is correct for Pascal: CTranslate2
-(faster-whisper backend) refuses `float16` on Pascal because FP16 matmul
-runs at 1/64 of FP32 speed there. INT8 matmul uses Pascal's DP4A
-instructions (~native FP32 speed) and uses half the VRAM of FP32. For a
-GTX 1080 (8 GB) running large-v3 + pyannote concurrently, this is the
-sweet spot.
-
----
-
-## CPU fallback
-
-This is where the bundle lands on Pascal, and it is also what to set to skip the GPU entirely on a source install. The env var is read at launch:
-
-```bash
-PODCODEX_DEVICE=cpu          # Linux/macOS
-$env:PODCODEX_DEVICE = "cpu" # Windows PowerShell
-```
-
-`make dev-no-tauri-cpu` does this for the dev flow. Bundle launchers
-read `PODCODEX_DEVICE` from the parent shell's environment.
-
-CPU mode uses CTranslate2's INT8 path. On modern x86 CPUs (Zen 3+,
-Alder Lake+) Whisper large-v3 runs at ~3-4× real-time. Slower than a
-GTX 1080 in INT8/FP32, but workable for one-off transcriptions.
-
----
-
-## Long-term notes
-
-- **PyTorch 2.10 is expected to drop Pascal entirely** (NVIDIA deprecated
-  Pascal in CUDA 13). When PodCodex's torch baseline crosses 2.10, the
-  `gpu-pascal` extra and this doc go away. Pin: the extra currently caps
-  at `torch<2.10` so a stray `uv lock` doesn't silently upgrade you off
-  the supported wheel.
-- **NVIDIA drivers ≥ 535** are required for cu126 wheels. Older drivers
-  on Pascal cards still get the same `no kernel image` error.
-- **bfloat16 is not supported on Pascal** (needs sm_80). Qwen3-TTS
-  voice synthesis on Pascal runs in float32 (~2× the VRAM of bfloat16,
-  same quality). Confirmed working on a GTX 1080 with 8 GB.
+PyTorch 2.10 is expected to drop Pascal entirely. The `gpu-pascal` extra caps torch below 2.10, and it and this page go away when PodCodex's torch baseline moves past that.

@@ -4,8 +4,7 @@
 installs that have no fastapi: ``deploy/BOT.md``'s bot+rag+cpu, and every
 spawned pipeline step worker. Reaching into ``podcodex.api.routes`` for a
 domain helper pulls the whole route surface with it (``routes/__init__``
-imports all nineteen modules eagerly), so ``podcodex-reindex`` (documented in
-``deploy/SMOKE.md``) dies on ``ModuleNotFoundError: fastapi``.
+imports all nineteen modules eagerly), so ``podcodex-reindex`` dies on ``ModuleNotFoundError: fastapi``.
 
 A subprocess, not an in-process import: pytest has already imported the API
 for other suites, so ``sys.modules`` here proves nothing.
@@ -49,8 +48,7 @@ def test_base_layers_do_not_import_the_api_package():
 
 
 def test_reindex_runs_without_fastapi():
-    """The entry point `deploy/SMOKE.md` documents runs on an install that
-    has no fastapi."""
+    """`podcodex-reindex` runs on an install that has no fastapi."""
     snippet = (
         "import sys;"
         "sys.modules['fastapi'] = None;"

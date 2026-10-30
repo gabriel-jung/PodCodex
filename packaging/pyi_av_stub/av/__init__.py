@@ -1,7 +1,7 @@
 """PyAV stub package — shadows real ``av`` during PyInstaller bundling.
 
 Real PyAV ships GPL-built FFmpeg dylibs (libx264 / libx265); bundling
-those contaminates the MIT release. See LICENSE_AUDIT.md.
+those contaminates the MIT release.
 
 Selected over real PyAV by ``--paths`` ordering in build_server.py.
 Module-level ``__getattr__`` returns a sentinel so deep chains like
