@@ -626,9 +626,35 @@ def test_build_where_combined():
     )
     assert w == (
         "episode IN ('ep1', 'ep2') AND source = 'transcript' AND "
-        "dominant_speaker = 'A' AND pub_date >= '2024-01-01' AND "
-        "pub_date <= '2024-12-31'"
+        """(dominant_speaker = 'A' OR meta LIKE '%"speaker": "A"%') AND """
+        "pub_date >= '2024-01-01' AND pub_date <= '2024-12-31'"
     )
+
+
+@pytest.mark.parametrize("name", ["SPEAKER_01", "Éric", "O'Brien"])
+def test_a_speaker_filter_finds_turns_they_do_not_dominate(tmp_path, name):
+    """A guest who only interjects is never a chunk's dominant speaker."""
+    s = _store(tmp_path)
+    s.ensure_collection("c", show="S", model="m", chunker="semantic", dim=8)
+    turns = [
+        {"speaker": "Host", "text": "A long explanation of the update."},
+        {"speaker": name, "text": "Really?"},
+    ]
+    other = {"speaker": "SPEAKERX01", "text": "Not them."}  # `_` is a LIKE wildcard
+    chunks = [
+        {"text": "both", "start": 0.0, "dominant_speaker": "Host", "speakers": turns},
+        {
+            "text": "neither",
+            "start": 9.0,
+            "dominant_speaker": "Host",
+            "speakers": [other],
+        },
+    ]
+    s.save_chunks("c", "ep1", chunks, _rng_embeddings(2))
+
+    hits = s.search_vector("c", _rng_embeddings(1)[0], 5, speaker=name)
+
+    assert [h.text for h in hits] == ["both"]
 
 
 # ── get_episode / list_episodes_filtered ─────────────────────────────────
@@ -1573,3 +1599,22 @@ def test_concurrent_first_calls_open_the_default_store_once(
     mod.get_index_store.cache_clear()
 
     assert opened == [1]
+
+
+def test_a_random_pick_keeps_the_speaker_to_chunks_they_dominate(tmp_path):
+    """A random quote from a chunk they only interjected in is a one-word turn."""
+    s = _store(tmp_path)
+    s.ensure_collection("c", show="S", model="m", chunker="semantic", dim=8)
+    turns = [
+        {"speaker": "Host", "text": "A long explanation of the update."},
+        {"speaker": "Guest", "text": "Yeah."},
+    ]
+    s.save_chunks(
+        "c",
+        "ep1",
+        [{"text": "both", "start": 0.0, "dominant_speaker": "Host", "speakers": turns}],
+        _rng_embeddings(1),
+    )
+    assert s.count_chunks("c", speaker="Guest") == 0
+    assert s.chunk_at("c", 0, speaker="Guest") is None
+    assert s.count_chunks("c", speaker="Host") == 1

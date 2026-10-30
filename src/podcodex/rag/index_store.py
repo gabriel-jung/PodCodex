@@ -1878,7 +1878,12 @@ class IndexStore:
         pub_date_min: str | None = None,
         pub_date_max: str | None = None,
     ) -> int:
-        """Count chunks matching the filters (no rows marshalled)."""
+        """Count chunks matching the filters (no rows marshalled).
+
+        Used by ``Retriever.random`` with :meth:`chunk_at`, which keep
+        ``speaker`` to chunks the speaker dominates: a random quote from a
+        chunk they only interjected in would be their one-word turn.
+        """
         if not self.collection_exists(collection):
             return 0
         t = self._table(collection)
@@ -1889,6 +1894,7 @@ class IndexStore:
             speaker=speaker,
             pub_date_min=pub_date_min,
             pub_date_max=pub_date_max,
+            speaker_turns=False,
         )
         return t.count_rows(clause) if clause else t.count_rows()
 
@@ -1922,6 +1928,7 @@ class IndexStore:
             speaker=speaker,
             pub_date_min=pub_date_min,
             pub_date_max=pub_date_max,
+            speaker_turns=False,  # see count_chunks
         )
         if clause:
             q = q.where(clause)
@@ -2791,6 +2798,16 @@ def _escape(s: str) -> str:
     return s.replace("'", "''")
 
 
+def _json_turn(speaker: str) -> str:
+    """``"speaker": "<name>"`` as ``json.dumps`` writes it into ``meta``."""
+    return json.dumps({"speaker": speaker})[1:-1]
+
+
+def _like_literal(s: str) -> str:
+    """Escape LIKE's metacharacters (``_`` is in every ``SPEAKER_NN``)."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def chunk_map_from_chunks(chunks: list[Hit], text_preview: int = 0) -> list[dict]:
     """Project loaded chunks into the lightweight chunk-map shape.
 
@@ -2858,12 +2875,14 @@ def build_where(
     speaker: str | None = None,
     pub_date_min: str | None = None,
     pub_date_max: str | None = None,
+    speaker_turns: bool = True,
 ) -> str:
     """Build a LanceDB WHERE clause from equality / range filters.
 
     ``episodes`` (list) takes precedence over ``episode`` (scalar) when
     both are given. Dates are normalized to ``YYYY-MM-DD``; invalid
-    inputs raise ``ValueError``.
+    inputs raise ``ValueError``. ``speaker`` matches a chunk where they have
+    a turn; ``speaker_turns=False`` keeps it to chunks they dominate.
     """
     parts: list[str] = []
     if episodes:
@@ -2875,8 +2894,17 @@ def build_where(
         parts.append(f"episode = '{_escape(episode)}'")
     if source:
         parts.append(f"source = '{_escape(source)}'")
-    if speaker:
+    if speaker and not speaker_turns:
         parts.append(f"dominant_speaker = '{_escape(speaker)}'")
+    elif speaker:
+        # A semantic chunk spans several turns, so a speaker who is never
+        # dominant (a guest who interjects) would be unreachable. Their turns
+        # live in the ``meta`` JSON; match the key/value exactly as json.dumps
+        # wrote it, with LIKE's own metacharacters escaped.
+        parts.append(
+            f"(dominant_speaker = '{_escape(speaker)}' "
+            f"OR meta LIKE '%{_escape(_like_literal(_json_turn(speaker)))}%')"
+        )
     if pub_date_min:
         norm = normalize_pub_date(pub_date_min)
         if not norm:

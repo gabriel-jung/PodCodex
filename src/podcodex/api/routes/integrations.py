@@ -191,9 +191,38 @@ def _bundled_server_path() -> str:
     under the data dir, which uninstalling the GPU backend deletes.
     """
     cpu = os.environ.get("PODCODEX_CPU_SERVER", "").strip()
-    if cpu and Path(cpu).is_file():
-        return str(Path(cpu).resolve())
-    return str(Path(sys.executable).resolve())
+    path = Path(cpu) if cpu and Path(cpu).is_file() else Path(sys.executable)
+    # The shell hands over a `\\?\C:\...` extended path; it is written into
+    # another app's config, so keep the plain form.
+    return _plain_windows_path(str(path.resolve()))
+
+
+def _plain_windows_path(path: str) -> str:
+    """*path* without the extended-length prefix.
+
+    ``\\\\?\\C:\\...`` becomes ``C:\\...`` and ``\\\\?\\UNC\\server\\share``
+    becomes ``\\\\server\\share`` (an install on a network share).
+    """
+    if path.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + path[len("\\\\?\\UNC\\") :]
+    return path.removeprefix("\\\\?\\")
+
+
+def _binary_missing(command: str) -> bool:
+    """True only when *command* can be checked from here and is not there.
+
+    Only an absolute path in this OS's form is checked. A bare name or a
+    relative or ``~`` path is resolved by Claude Desktop with its own PATH
+    and working directory, which this process does not share; a path in the
+    other OS's form (the Windows exe of a config read by an API running in
+    WSL) cannot be checked at all. Those all count as present.
+    """
+    command = _plain_windows_path(command)
+    windows_form = command[1:3] in (":\\", ":/") or command.startswith("\\\\")
+    if windows_form != (platform.system() == "Windows"):
+        return False
+    path = Path(command)
+    return path.is_absolute() and not path.is_file()
 
 
 def _entry() -> dict:
@@ -237,13 +266,23 @@ def _is_enabled(cfg: dict) -> bool:
     Stale entries from older PodCodex versions (bundled install pointing
     at non-existent ``podcodex-mcp.exe``) are NOT recognized — the UI
     will show "Disabled" so a single click of Enable rewrites the entry
-    in the correct shape.
+    in the correct shape. Neither is a right-shaped entry whose binary is
+    gone, as when an update moved the exe into ``binaries/server``.
     """
     entry = (cfg.get("mcpServers") or {}).get(_SERVER_KEY)
     if not isinstance(entry, dict):
         return False
     command = str(entry.get("command", ""))
     args = entry.get("args") or []
+
+    if command == _WSL_LAUNCHER or command.endswith(f"\\{_WSL_LAUNCHER}"):
+        binary = next(
+            (a for a in args if isinstance(a, str) and a.endswith(_BIN_NAME)), None
+        )
+        # The binary is a path inside the distro, checkable only from there.
+        return binary is not None and not (_is_wsl() and not Path(binary).is_file())
+    if _binary_missing(command):
+        return False
 
     # -gpu too: an entry written by the GPU sidecar before it pointed at the
     # CPU binary is still a working entry while the GPU backend exists.
@@ -257,11 +296,7 @@ def _is_enabled(cfg: dict) -> bool:
     )
     if server_command_match and any(a == "--mcp" for a in args if isinstance(a, str)):
         return True
-    if command.endswith(_BIN_NAME) or command.endswith(f"{_BIN_NAME}.exe"):
-        return True
-    if command == _WSL_LAUNCHER or command.endswith(f"\\{_WSL_LAUNCHER}"):
-        return any(isinstance(a, str) and a.endswith(_BIN_NAME) for a in args)
-    return False
+    return command.endswith(_BIN_NAME) or command.endswith(f"{_BIN_NAME}.exe")
 
 
 # ── Response model ─────────────────────────────────────────────────────

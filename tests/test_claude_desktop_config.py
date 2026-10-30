@@ -29,6 +29,12 @@ def _redirect_config(tmp_path: Path, monkeypatch):
     yield cfg_path
 
 
+@pytest.fixture(autouse=True)
+def _not_wsl(monkeypatch):
+    """The suite may run inside WSL; tests that want it use ``_force_wsl``."""
+    monkeypatch.setattr(integrations, "_is_wsl", lambda: False)
+
+
 @pytest.fixture
 def client() -> TestClient:
     return client_for(app)
@@ -54,21 +60,37 @@ def test_status_reports_disabled_when_no_config(client, _redirect_config):
     assert "Quit" in body["needs_restart_hint"]
 
 
-def test_status_reports_enabled_when_entry_present(client, _redirect_config):
-    _redirect_config.parent.mkdir(parents=True, exist_ok=True)
-    _redirect_config.write_text(
-        json.dumps(
-            {
-                "mcpServers": {
-                    "podcodex": {"command": "/some/path/.venv/bin/podcodex-mcp"}
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
+def _write_entry(config: Path, entry: dict) -> None:
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(json.dumps({"mcpServers": {"podcodex": entry}}), encoding="utf-8")
+
+
+def test_status_reports_enabled_when_entry_present(client, _redirect_config, tmp_path):
+    binary = tmp_path / ".venv" / "bin" / "podcodex-mcp"
+    binary.parent.mkdir(parents=True)
+    binary.touch()
+    _write_entry(_redirect_config, {"command": str(binary)})
     r = client.get("/api/integrations/claude-desktop")
     assert r.status_code == 200
     assert r.json()["enabled"] is True
+
+
+def test_status_reports_disabled_when_the_binary_moved(
+    client, _redirect_config, tmp_path
+):
+    """An update moved the exe into binaries/server; the old entry is dead."""
+    gone = tmp_path / "PodCodex" / "podcodex-server.exe"
+    _write_entry(_redirect_config, {"command": str(gone), "args": ["--mcp"]})
+    r = client.get("/api/integrations/claude-desktop")
+    assert r.json()["enabled"] is False
+
+
+def test_the_bundled_path_drops_the_extended_prefix(monkeypatch, tmp_path):
+    exe = tmp_path / "podcodex-server.exe"
+    exe.touch()
+    monkeypatch.setenv("PODCODEX_CPU_SERVER", str(exe))
+    monkeypatch.setattr(Path, "resolve", lambda self: Path("\\\\?\\" + str(self)))
+    assert integrations._bundled_server_path() == str(exe)
 
 
 def test_status_reports_disabled_for_unknown_command(client, _redirect_config):
@@ -239,7 +261,11 @@ def test_wsl_enable_writes_wsl_exe_entry(client, _redirect_config, _force_wsl):
     assert entry["args"][3].endswith("podcodex-mcp")
 
 
-def test_wsl_status_detects_wsl_exe_shape(client, _redirect_config, _force_wsl):
+def test_wsl_status_detects_wsl_exe_shape(
+    client, _redirect_config, _force_wsl, tmp_path
+):
+    binary = tmp_path / "podcodex-mcp"
+    binary.touch()
     _redirect_config.parent.mkdir(parents=True, exist_ok=True)
     _redirect_config.write_text(
         json.dumps(
@@ -251,7 +277,7 @@ def test_wsl_status_detects_wsl_exe_shape(client, _redirect_config, _force_wsl):
                             "-d",
                             "Ubuntu",
                             "-e",
-                            "/home/me/PodCodex/.venv/bin/podcodex-mcp",
+                            str(binary),
                         ],
                     }
                 }
@@ -298,3 +324,47 @@ def test_wsl_enable_without_distro_omits_distro_flag(
     assert "-d" not in entry["args"]
     assert entry["args"][0] == "-e"
     assert entry["args"][1].endswith("podcodex-mcp")
+
+
+def test_an_extended_unc_path_maps_to_a_plain_share_path():
+    assert (
+        integrations._plain_windows_path("\\\\?\\UNC\\nas\\apps\\podcodex-server.exe")
+        == "\\\\nas\\apps\\podcodex-server.exe"
+    )
+    assert integrations._plain_windows_path("\\\\?\\C:\\x.exe") == "C:\\x.exe"
+
+
+def test_a_bare_command_is_not_judged(monkeypatch):
+    """Claude Desktop resolves it on its own PATH, not this process's."""
+    monkeypatch.setattr(integrations.shutil, "which", lambda _name: None)
+    assert integrations._is_enabled(
+        {"mcpServers": {"podcodex": {"command": "podcodex-mcp"}}}
+    )
+
+
+def test_a_windows_path_read_from_wsl_is_not_judged(monkeypatch):
+    """The API in WSL cannot see C:\\ the way Claude Desktop does."""
+    monkeypatch.setattr(integrations.platform, "system", lambda: "Linux")
+    entry = {
+        "command": "C:\\Program Files\\PodCodex\\podcodex-server.exe",
+        "args": ["--mcp"],
+    }
+    assert integrations._is_enabled({"mcpServers": {"podcodex": entry}})
+
+
+def test_a_stale_wsl_entry_reads_as_disabled(_force_wsl, tmp_path):
+    entry = {
+        "command": "wsl.exe",
+        "args": ["-e", str(tmp_path / "gone" / "podcodex-mcp")],
+    }
+    assert not integrations._is_enabled({"mcpServers": {"podcodex": entry}})
+    binary = tmp_path / "podcodex-mcp"
+    binary.touch()
+    entry["args"] = ["-e", str(binary)]
+    assert integrations._is_enabled({"mcpServers": {"podcodex": entry}})
+
+
+@pytest.mark.parametrize("command", ["bin/podcodex-mcp", "~/.local/bin/podcodex-mcp"])
+def test_a_relative_command_is_not_judged(command):
+    """Claude Desktop resolves it from its own working directory."""
+    assert integrations._is_enabled({"mcpServers": {"podcodex": {"command": command}}})

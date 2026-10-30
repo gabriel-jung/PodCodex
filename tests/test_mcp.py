@@ -52,10 +52,14 @@ def _reset_caches(tmp_path, isolated_index):
     # cache, so one test's setup can't leak into another. The resolver is
     # restored, not cleared, on the way out: later modules expect the app's.
     mcp_server._SHOW_DATE_CACHE.clear()
+    # Off unless a test turns it on: stdio main() enables it, and a warm-up
+    # here would load a real embedder.
+    mcp_server._search_model = mcp_server._SearchModel()
     with show_folder_resolver(None):
         yield
     rag_retriever.get_retriever.cache_clear()
     mcp_server._SHOW_DATE_CACHE.clear()
+    mcp_server._search_model = mcp_server._SearchModel()
 
 
 def test_server_info_reports_the_podcodex_version():
@@ -69,6 +73,13 @@ def test_server_info_reports_the_podcodex_version():
 def test_list_shows_returns_indexed_shows():
     shows = mcp_server.list_shows()
     assert shows == [{"show": "My Show", "episodes": 1}]
+
+
+def test_list_shows_leaves_out_a_show_with_no_episodes():
+    """An emptied collection offers a show nothing can be found in."""
+    store = rag_index_store.get_index_store()
+    store.delete_episode(add_show(store, "Emptied"), "ep1")
+    assert [s["show"] for s in mcp_server.list_shows()] == ["My Show"]
 
 
 def test_list_shows_includes_non_default_combo_shows(tmp_path):
@@ -668,3 +679,79 @@ def test_a_legacy_narrator_label_is_kept_like_speaker_stats_keeps_it():
     assert listed["speakers"] == ["Narrator"]
     [hit] = mcp_server.get_context(show="Doc", episode="d1", chunk_index=0)
     assert hit["speaker"] == "Narrator"
+
+
+# ── Search model idle unload ─────────────────────────────────────────────
+
+
+def test_a_first_search_tells_the_client_the_model_is_loading(monkeypatch):
+    import asyncio
+
+    model = mcp_server._SearchModel()
+    model.enabled = True  # without enable(): no idle thread in tests
+    monkeypatch.setattr(mcp_server, "_search_model", model)
+    monkeypatch.setattr(mcp_server, "_svc_hybrid", lambda *a, **k: [])
+    sent: list[object] = []
+
+    async def record(make):
+        sent.append(make)  # not called: no request context here
+
+    monkeypatch.setattr(mcp_server, "_notify", record)
+    asyncio.run(mcp_server.mcp.call_tool("search", {"query": "chunk"}))
+    asyncio.run(mcp_server.mcp.call_tool("search", {"query": "chunk"}))
+    asyncio.run(mcp_server.mcp.call_tool("list_shows", {}))
+    assert len(sent) == 1 and model.loaded
+
+
+def test_the_model_is_unloaded_after_a_stretch_without_searches(monkeypatch):
+    from podcodex.rag import embedder
+
+    cleared: list[bool] = []
+    monkeypatch.setattr(embedder, "clear_embedder_cache", lambda: cleared.append(True))
+    monkeypatch.setattr(mcp_server, "_IDLE_UNLOAD_S", 60.0)
+    model = mcp_server._SearchModel()
+    model.begin_search()
+    model.loaded = True  # what a successful search leaves
+    model.end_search()
+
+    assert not model.unload_if_idle()  # just used
+    model._last_use -= 120
+    model.begin_search()
+    assert not model.unload_if_idle()  # a search is running
+    model._searches -= 1
+    assert model.unload_if_idle()
+    assert cleared == [True] and not model.loaded
+
+
+@pytest.mark.parametrize(
+    ("raw", "seconds"),
+    [("", 900), ("5", 300), ("0", 60), ("-3", 60), ("soon", 900), ("nan", 900)],
+)
+def test_the_idle_unload_setting_is_bounded(monkeypatch, raw, seconds):
+    monkeypatch.setenv("PODCODEX_MCP_IDLE_UNLOAD_MIN", raw)
+    assert mcp_server._idle_unload_seconds() == seconds
+
+
+def test_a_search_that_fails_fast_leaves_the_notice_for_the_next(monkeypatch):
+    import asyncio
+
+    model = mcp_server._SearchModel()
+    model.enabled = True
+    monkeypatch.setattr(mcp_server, "_search_model", model)
+
+    def broken(*_a, **_k):
+        raise ValueError("Invalid pub_date_min")
+
+    monkeypatch.setattr(mcp_server, "_svc_hybrid", broken)
+    with pytest.raises(Exception):
+        asyncio.run(mcp_server.mcp.call_tool("search", {"query": "x"}))
+    assert not model.loaded
+
+
+def test_a_notice_that_cannot_be_built_does_not_fail_the_search():
+    import asyncio
+
+    def no_context():
+        raise LookupError("no request context")
+
+    asyncio.run(mcp_server._notify(no_context))  # no exception

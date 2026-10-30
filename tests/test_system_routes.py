@@ -87,15 +87,17 @@ def test_claude_desktop_entry_from_the_gpu_sidecar(tmp_path, monkeypatch):
     monkeypatch.setenv("PODCODEX_CPU_SERVER", str(cpu))
     # The entry points at the bundled CPU binary, not the GPU one.
     assert integrations._bundled_server_path() == str(cpu.resolve())
-    # An entry an older GPU sidecar wrote still reads as enabled.
+    # An entry an older GPU sidecar wrote still reads as enabled while that
+    # GPU install exists, and as disabled once an update has removed it.
+    gpu = tmp_path / "backends" / "gpu" / "v-0.3.0-1" / "podcodex-server-gpu"
     cfg = {
         "mcpServers": {
-            integrations._SERVER_KEY: {
-                "command": "/data/backends/gpu/podcodex-server-gpu",
-                "args": ["--mcp"],
-            }
+            integrations._SERVER_KEY: {"command": str(gpu), "args": ["--mcp"]}
         }
     }
+    assert not integrations._is_enabled(cfg)
+    gpu.parent.mkdir(parents=True)
+    gpu.write_text("")
     assert integrations._is_enabled(cfg)
 
 

@@ -25,7 +25,10 @@ Environment:
 from __future__ import annotations
 
 import functools
+import math
 import os
+import threading
+import time
 
 import anyio
 from loguru import logger
@@ -223,18 +226,127 @@ def _trim(chunk: Hit) -> dict:
 # ── Tools ─────────────────────────────────────────────────────────────
 
 
-def _tool(fn):
+def _idle_unload_seconds() -> float:
+    """``PODCODEX_MCP_IDLE_UNLOAD_MIN`` in seconds: 15 min by default, 1 at least."""
+    raw = os.environ.get("PODCODEX_MCP_IDLE_UNLOAD_MIN", "")
+    try:
+        minutes = float(raw) if raw.strip() else 15.0
+    except ValueError:
+        logger.warning(f"Ignoring PODCODEX_MCP_IDLE_UNLOAD_MIN={raw!r}: not a number")
+        minutes = 15.0
+    if not math.isfinite(minutes):
+        logger.warning(f"Ignoring PODCODEX_MCP_IDLE_UNLOAD_MIN={raw!r}: not finite")
+        minutes = 15.0
+    # Below a minute the idle loop would spin (and 0 would mean "never").
+    return max(minutes, 1.0) * 60
+
+
+# Seconds without a search before the stdio server frees the search model.
+_IDLE_UNLOAD_S = _idle_unload_seconds()
+
+
+class _SearchModel:
+    """Frees the search model after a stretch without searches (stdio only).
+
+    Claude Desktop keeps the stdio server alive for its whole session, so the
+    model a search loads (2.3 GB for bge-m3) would otherwise stay until Claude
+    quits. A search marks it loaded; the idle loop clears the embedder cache
+    after ``_IDLE_UNLOAD_S`` without one, and the next search loads it again.
+    Under the app's ``/mcp`` mount it stays off: the app owns the cache there.
+    """
+
+    def __init__(self) -> None:
+        self.enabled = False
+        self.loaded = False
+        self._lock = threading.Lock()
+        self._searches = 0
+        self._last_use = time.monotonic()
+
+    def enable(self) -> None:
+        self.enabled = True
+        threading.Thread(
+            target=self._idle_loop, name="mcp-idle-unload", daemon=True
+        ).start()
+
+    def begin_search(self) -> None:
+        with self._lock:
+            self._searches += 1
+
+    def end_search(self) -> None:
+        with self._lock:
+            self._searches -= 1
+            self._last_use = time.monotonic()
+
+    def _idle_loop(self) -> None:
+        while True:
+            time.sleep(min(60.0, _IDLE_UNLOAD_S))
+            self.unload_if_idle()
+
+    def unload_if_idle(self) -> bool:
+        """Free the model when no search ran for ``_IDLE_UNLOAD_S``."""
+        from podcodex.core._utils import free_vram
+        from podcodex.rag.embedder import clear_embedder_cache
+
+        with self._lock:
+            idle = time.monotonic() - self._last_use
+            if not self.loaded or self._searches or idle < _IDLE_UNLOAD_S:
+                return False
+            self.loaded = False
+            clear_embedder_cache()
+            free_vram()  # gc, so the dropped model's memory is returned
+        logger.info("mcp: search model unloaded after {:.0f} min idle", idle / 60)
+        return True
+
+
+_search_model = _SearchModel()
+_LOADING_MESSAGE = (
+    "Loading the PodCodex search model, the first search can take up to a minute..."
+)
+
+
+async def _notify(make) -> None:
+    """Send the notification *make* builds; one that cannot be built or
+    delivered (no request context, a client that takes none) is no error."""
+    try:
+        await make()
+    except Exception:
+        logger.opt(exception=True).debug("mcp: notification not delivered")
+
+
+def _tool(fn=None, *, needs_model: bool = False):
     """Register ``fn`` as an MCP tool that runs in a worker thread.
 
     FastMCP calls a sync tool inline on the event loop. Under the desktop
     API's ``/mcp`` mount that loop is the API's own, so a search (or a cold
     embedder load) would stall every request, ``/api/health`` included. The
     module-level name stays the plain function, for direct callers.
+
+    *needs_model* marks a tool that encodes a query: it tells the client when
+    the model has to load first, and keeps it from being unloaded (see
+    :class:`_SearchModel`).
     """
+    if fn is None:
+        return functools.partial(_tool, needs_model=needs_model)
 
     @functools.wraps(fn)
     async def run(*args, **kwargs):
-        return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+        if not needs_model:
+            return await anyio.to_thread.run_sync(
+                functools.partial(fn, *args, **kwargs)
+            )
+        _search_model.begin_search()
+        try:
+            if _search_model.enabled and not _search_model.loaded:
+                await _notify(lambda: mcp.get_context().info(_LOADING_MESSAGE))
+            result = await anyio.to_thread.run_sync(
+                functools.partial(fn, *args, **kwargs)
+            )
+            # Only a search that ran loaded the model: one that failed fast
+            # leaves the notice for the next.
+            _search_model.loaded = True
+            return result
+        finally:
+            _search_model.end_search()
 
     mcp.tool()(run)
     return fn
@@ -262,7 +374,12 @@ def list_shows() -> list[dict]:
         mtime = 0.0
     out: list[dict] = []
     for c in _resolve_collections(None):
-        entry: dict = {"show": c.show, "episodes": store.episode_count(c.name)}
+        count = store.episode_count(c.name)
+        if not count:
+            # A collection emptied by deletes (or never filled) offers the
+            # model a show it cannot search.
+            continue
+        entry: dict = {"show": c.show, "episodes": count}
         key = (c.name, mtime)
         if key in _SHOW_DATE_CACHE:
             range_ = _SHOW_DATE_CACHE[key]
@@ -437,7 +554,7 @@ def get_episode(
     return card
 
 
-@_tool
+@_tool(needs_model=True)
 def search(
     query: str,
     show: str | None = None,
@@ -486,11 +603,14 @@ def search(
         episodes: Alternative to ``episode`` — restrict to a list of
             episode identifiers (from prior results or ``list_episodes``).
             Takes precedence over ``episode`` when both are given.
-        speaker: Restrict to a single speaker (exact name match on
-            ``dominant_speaker``).
+        speaker: Restrict to chunks where this speaker has a turn (exact
+            name match), whether or not they are the chunk's dominant voice.
         pub_date_min: Oldest publication date to include, inclusive.
             Accepts ``YYYY-MM-DD`` (RFC 2822 / ISO 8601 also parsed).
         pub_date_max: Newest publication date to include, inclusive.
+
+    The first search in a while can take up to a minute: the search model
+    loads on demand and is unloaded again after a stretch of no searches.
 
     Returns:
         Ranked chunks, each containing ``show``, ``episode``,
@@ -555,8 +675,8 @@ def exact(
         episode: Restrict to a single episode identifier.
         episodes: Alternative to ``episode`` — restrict to a list of
             episode identifiers.
-        speaker: Restrict to a single speaker (exact name match on
-            ``dominant_speaker``).
+        speaker: Keep only hits inside this speaker's own turns (exact
+            name match), whether or not they are the chunk's dominant voice.
         pub_date_min: Oldest publication date to include, inclusive
             (``YYYY-MM-DD``).
         pub_date_max: Newest publication date to include, inclusive.
@@ -620,7 +740,8 @@ def exact_count(
             count across every indexed show.
         episode: Restrict to a single episode identifier.
         episodes: Alternative to ``episode`` — restrict to a list.
-        speaker: Restrict to a single ``dominant_speaker`` value.
+        speaker: Count only hits inside this speaker's own turns (exact
+            name match), whether or not they are the chunk's dominant voice.
         pub_date_min: Oldest publication date to include, inclusive.
         pub_date_max: Newest publication date to include, inclusive.
         group_by: ``"episode"`` (default) or ``"show"``.
@@ -826,9 +947,10 @@ def main(argv: list[str] | None = None, *, bootstrap: bool = True) -> None:
     install_live_reload(mcp)
     _isolate_transport_stdio()
     logger.info("podcodex-mcp starting (stdio)")
-    # Embedder loads lazily on first tool call — Claude Desktop's
+    # Embedder loads lazily on the first search, not here: Claude Desktop's
     # initialize handshake has a 60s timeout that we'd otherwise blow on
     # cold-starts of the PyInstaller bundle.
+    _search_model.enable()
     mcp.run()
 
 
