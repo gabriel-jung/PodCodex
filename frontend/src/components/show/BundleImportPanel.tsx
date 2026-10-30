@@ -12,6 +12,14 @@ import { errorMessage, parentPath, selectClass, splitPath } from "@/lib/utils";
 
 type Policy = Exclude<NonNullable<ImportRequest["on_conflict"]>, "auto">;
 
+/** True when the import left out an index because the show is a copy of one
+ *  still present: importing it would replace the original show's index. */
+function skippedAnIndex(res: ImportResult): boolean {
+  return Object.entries(res.conflicts_resolved).some(
+    ([key, outcome]) => key.startsWith("collection:") && outcome === "skipped",
+  );
+}
+
 interface Props {
   /** Called once import completes — host modal navigates to the show. */
   onImported: (showsDir: string, finalFolderName: string | null) => void;
@@ -29,6 +37,8 @@ export default function BundleImportPanel({ onImported }: Props) {
   const [policy, setPolicy] = useState<Policy | null>(null);
   const [archivePickerOpen, setArchivePickerOpen] = useState(false);
   const [showsDirPickerOpen, setShowsDirPickerOpen] = useState(false);
+  // Set when the import skipped an index: the panel stays open to say so.
+  const [indexSkipped, setIndexSkipped] = useState<ImportResult | null>(null);
 
   const previewMutation = useMutation({
     mutationFn: (path: string) => previewBundle(path),
@@ -65,12 +75,14 @@ export default function BundleImportPanel({ onImported }: Props) {
       queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
       queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
       queryClient.invalidateQueries({ queryKey: ["search"] });
-      onImported(res.shows_dir, finalFolder);
+      if (skippedAnIndex(res)) setIndexSkipped(res);
+      else onImported(res.shows_dir, finalFolder);
     },
   });
 
   const onArchivePicked = (path: string) => {
     setArchivePickerOpen(false);
+    setIndexSkipped(null);
     setNameOverride("");
     previewMutation.mutate(path);
   };
@@ -203,6 +215,36 @@ export default function BundleImportPanel({ onImported }: Props) {
         </div>
       )}
 
+      {indexSkipped && (
+        <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 p-3 text-xs">
+          <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5 text-warning" />
+          <div className="flex-1 space-y-2">
+            {indexSkipped.shows_imported.length === 1 ? (
+              <p>
+                Imported as a copy, without its search index: you already have this
+                show, and importing the index would replace the original&apos;s. Open the
+                copy and run Index to make it searchable.
+              </p>
+            ) : (
+              <p>
+                Some of these shows were copies of ones you already have, and were
+                imported without their search index: importing it would replace the
+                originals&apos;. Run Index on those copies to make them searchable.
+              </p>
+            )}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                onImported(indexSkipped.shows_dir, indexSkipped.shows_imported[0] ?? null)
+              }
+            >
+              Open show
+            </Button>
+          </div>
+        </div>
+      )}
+
       {importMutation.isError && (
         <p className="text-xs text-destructive">
           {errorMessage(importMutation.error)}
@@ -212,7 +254,7 @@ export default function BundleImportPanel({ onImported }: Props) {
       <div className="flex justify-end">
         <Button
           onClick={() => importMutation.mutate()}
-          disabled={importDisabled}
+          disabled={importDisabled || indexSkipped !== null}
           size="sm"
           className="gap-1.5"
         >

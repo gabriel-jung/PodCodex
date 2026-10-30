@@ -158,7 +158,7 @@ def _batch_transcribe_from_subs(
     audio_path, stem, p, req, cancelled, ep_progress, i, step_offset, pacer=None
 ):
     """Import cached VTT subtitles as a transcript version. Returns True if work was done."""
-    from podcodex.core.subtitles import vtt_to_segments
+    from podcodex.core.subtitles import vtt_import_segments
     from podcodex.core.pipeline_db import mark_step
     from podcodex.core.versions import save_version
 
@@ -193,7 +193,7 @@ def _batch_transcribe_from_subs(
 
     ep_progress(i, step_offset, sw, 0.5, "Parsing subtitles...")
     vtt_text = vtt_path.read_text(encoding="utf-8")
-    segments = vtt_to_segments(vtt_text)
+    segments = vtt_import_segments(vtt_text, vtt_path.name)
     if not segments:
         logger.warning("VTT parsed to zero segments for {}", stem)
         return False

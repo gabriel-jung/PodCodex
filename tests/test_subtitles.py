@@ -1,6 +1,8 @@
 """Tests for podcodex.core.subtitles: the text / SRT / VTT formatters and the
 SRT / VTT parsers the YouTube subtitle import rides on."""
 
+import re
+
 import pytest
 
 from podcodex.core.subtitles import segments_to_srt, segments_to_text, segments_to_vtt
@@ -293,3 +295,77 @@ def test_subtitle_timestamps_round_to_the_millisecond(seconds, expected):
     assert _srt_ts(seconds) == expected
     assert _vtt_ts(seconds) == expected.replace(",", ".")
     assert _parse_ts(expected) == round(seconds, 3)
+
+
+# ── YouTube caption cues ─────────────────────────────────────────────────
+
+
+def _caption(
+    text: str, start: float, end: float, speaker: str = "NoDiarization"
+) -> dict:
+    return {"speaker": speaker, "text": text, "start": start, "end": end}
+
+
+def test_caption_fragments_are_joined_into_one_segment():
+    from podcodex.core.subtitles import join_caption_cues
+
+    cues = [_caption("would take", 0.0, 1.2), _caption("basically a year", 1.3, 2.9)]
+    assert join_caption_cues(cues) == [
+        _caption("would take basically a year", 0.0, 2.9)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("second", "why"),
+    [
+        (_caption("next", 4.0, 5.0), "a pause over max_gap"),
+        (_caption("next", 2.1, 3.0, speaker="Guest"), "another speaker"),
+        (_caption("next", 2.1, 16.5), "past max_duration"),
+    ],
+)
+def test_caption_cues_stay_apart_across(second, why):
+    from podcodex.core.subtitles import join_caption_cues
+
+    assert len(join_caption_cues([_caption("one", 0.0, 2.0), second])) == 2, why
+
+
+def test_a_long_enough_sentence_ends_its_segment():
+    from podcodex.core.subtitles import join_caption_cues
+
+    cues = [_caption("A finished thought.", 0.0, 4.5), _caption("Then more", 4.6, 6.0)]
+    assert len(join_caption_cues(cues)) == 2
+    short = [_caption("Yes.", 0.0, 1.0), _caption("Exactly that", 1.1, 2.0)]
+    assert len(join_caption_cues(short)) == 1
+
+
+def test_only_the_apps_own_caption_cache_is_joined():
+    from podcodex.core.subtitles import is_caption_cache
+
+    assert is_caption_cache("episode.subtitles.en.vtt")
+    assert is_caption_cache("Ep.Subtitles.pt-BR.VTT")
+    assert not is_caption_cache("my_hand_timed_subs.vtt")
+
+
+def test_every_vtt_entry_point_joins_only_the_caption_cache():
+    from podcodex.core.subtitles import vtt_import_segments
+
+    auto = (
+        "WEBVTT\n\n00:00:00.000 --> 00:00:01.200\n"
+        "would<00:00:00.600><c> take</c>\n\n"
+        "00:00:01.300 --> 00:00:02.900\nbasically<00:00:02.000><c> a year</c>\n"
+    )
+    assert len(vtt_import_segments(auto, "ep.subtitles.en.vtt")) == 1
+    assert len(vtt_import_segments(auto, "my_own.vtt")) == 2
+    manual = auto.replace("<c>", "").replace("</c>", "")
+    manual = re.sub(r"<\d\d:\d\d:\d\d\.\d+>", "", manual)
+    assert len(vtt_import_segments(manual, "ep.subtitles.en.vtt")) == 2
+
+
+def test_cjk_sentence_ends_end_a_segment():
+    from podcodex.core.subtitles import join_caption_cues
+
+    cues = [
+        _caption("今日は電気自動車の話です。", 0.0, 4.5),
+        _caption("次に", 4.6, 6.0),
+    ]
+    assert len(join_caption_cues(cues)) == 2

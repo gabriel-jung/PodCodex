@@ -373,3 +373,65 @@ def vtt_to_segments(vtt_text: str) -> list[dict]:
             )
 
     return merge_parsed_cues(cues)
+
+
+# YouTube's caption cache, as ingest/youtube.py names it: {stem}.subtitles.{lang}.vtt
+_CAPTION_CACHE_RE = re.compile(r"\.subtitles\.[\w-]+\.vtt$", re.IGNORECASE)
+_SENTENCE_END_RE = re.compile(r"[.!?…。！？]['\"»)\]」』]*$")
+# Word timing tags (<00:00:01.230><c> word</c>): only automatic captions
+# carry them. Manual tracks are cached under the same name, already timed
+# by a person, and keep their cues.
+_AUTO_CAPTION_TAG = "<c>"
+
+
+def is_caption_cache(filename: str) -> bool:
+    """True for a caption track the app cached from YouTube."""
+    return bool(_CAPTION_CACHE_RE.search(filename))
+
+
+def join_caption_cues(
+    segments: list[dict],
+    max_gap: float = 1.0,
+    max_duration: float = 15.0,
+    min_sentence: float = 4.0,
+) -> list[dict]:
+    """Join a caption track's cues into sentence-sized segments.
+
+    YouTube auto captions come as 1-2 s fragments cut mid-sentence (about
+    1,600 an hour), which the editor, translation and dubbing then treat as
+    that many lines. Consecutive cues of one speaker are joined across gaps
+    up to *max_gap*, ending a segment at *max_duration*, or at a sentence end
+    once it is *min_sentence* long. Unlike ``merge_consecutive_segments`` it
+    adds no ``[BREAK]`` markers and keeps speaker labels as they are.
+    """
+    out: list[dict] = []
+    for seg in segments:
+        prev = out[-1] if out else None
+        if (
+            prev is not None
+            and prev["speaker"] == seg["speaker"]
+            and seg["start"] - prev["end"] <= max_gap
+            and seg["end"] - prev["start"] <= max_duration
+            and not (
+                prev["end"] - prev["start"] >= min_sentence
+                and _SENTENCE_END_RE.search(prev["text"])
+            )
+        ):
+            prev["text"] = f"{prev['text']} {seg['text']}".strip()
+            prev["end"] = seg["end"]
+        else:
+            out.append(dict(seg))
+    return out
+
+
+def vtt_import_segments(vtt_text: str, filename: str) -> list[dict]:
+    """Segments for a VTT imported as a transcript, from any entry point.
+
+    The app's cached YouTube caption tracks (see :func:`is_caption_cache`)
+    are joined into sentence-sized segments when they are automatic ones;
+    any other file, manual captions included, keeps its cues.
+    """
+    segments = vtt_to_segments(vtt_text)
+    if is_caption_cache(filename) and _AUTO_CAPTION_TAG in vtt_text:
+        return join_caption_cues(segments)
+    return segments

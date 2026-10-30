@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import unicodedata
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, fields, replace
@@ -24,6 +25,8 @@ from loguru import logger
 from podcodex.core._utils import mtime_settled
 
 _FEED_CACHE = ".feed_cache.json"
+# Pause before the one retry of a feed fetch that timed out or dropped.
+_FEED_RETRY_DELAY_S = 2.0
 EPISODE_META_FILE = ".episode_meta.json"
 
 
@@ -457,7 +460,15 @@ def _fetch_feed_bytes(url: str, timeout: float = 15.0) -> bytes:
         follow_redirects=True,
         headers={"User-Agent": "podcodex/1.0"},
     ) as client:
-        resp = client.get(url)
+        try:
+            resp = client.get(url)
+        except (httpx.ReadTimeout, httpx.ReadError, httpx.RemoteProtocolError):
+            # One stalled or dropped response (seen from a feed host that
+            # answered the same request in 0.1 s a minute later) should not
+            # fail the show. DNS and connect failures are not retried: offline,
+            # they would double every show's wait.
+            time.sleep(_FEED_RETRY_DELAY_S)
+            resp = client.get(url)
         resp.raise_for_status()
         return resp.content
 

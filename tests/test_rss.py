@@ -650,3 +650,58 @@ def test_redact_urls_handles_ipv6_and_bad_netlocs():
     assert "SECRET" not in redact_urls("see http://[::1]:8000/f?token=SECRET")
     assert "SECRET" not in redact_urls("Follow [https://h/f?token=SECRET] now")
     assert "token=S" not in redact_urls("u https://exa\uff0fmple.com/f?token=S")
+
+
+# ──────────────────────────────────────────────
+# _fetch_feed_bytes: one retry
+# ──────────────────────────────────────────────
+
+
+def _flaky_get(monkeypatch, outcomes):
+    import httpx
+
+    calls = []
+
+    def get(self, url):
+        calls.append(url)
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return httpx.Response(200, content=outcome, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.Client, "get", get)
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    return calls
+
+
+@pytest.mark.parametrize("kind", ["ReadTimeout", "ReadError", "RemoteProtocolError"])
+def test_a_feed_fetch_that_stalls_or_drops_once_is_retried(monkeypatch, kind):
+    import httpx
+
+    from podcodex.ingest import rss as rss_mod
+
+    calls = _flaky_get(monkeypatch, [getattr(httpx, kind)("once"), b"<rss/>"])
+    assert rss_mod._fetch_feed_bytes("https://example.com/feed.xml") == b"<rss/>"
+    assert len(calls) == 2
+
+
+def test_a_feed_that_keeps_timing_out_still_fails(monkeypatch):
+    import httpx
+
+    from podcodex.ingest import rss as rss_mod
+
+    _flaky_get(monkeypatch, [httpx.ReadTimeout("a"), httpx.ReadTimeout("b")])
+    with pytest.raises(httpx.ReadTimeout):
+        rss_mod._fetch_feed_bytes("https://example.com/feed.xml")
+
+
+def test_an_unreachable_feed_host_is_not_retried(monkeypatch):
+    """Offline, a retry would double the wait for every show refreshed."""
+    import httpx
+
+    from podcodex.ingest import rss as rss_mod
+
+    calls = _flaky_get(monkeypatch, [httpx.ConnectError("no route"), b"<rss/>"])
+    with pytest.raises(httpx.ConnectError):
+        rss_mod._fetch_feed_bytes("https://example.com/feed.xml")
+    assert len(calls) == 1
