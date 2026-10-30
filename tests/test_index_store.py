@@ -287,6 +287,79 @@ def test_compact_targets_written_collections_then_clears(tmp_path):
     assert s.collection_exists("c")
 
 
+def test_compact_drops_superseded_versions(tmp_path, monkeypatch):
+    """A re-index replaces an episode; the versions it superseded must go,
+    or every compaction leaves a full copy of the table behind."""
+    from datetime import timedelta
+
+    import podcodex.rag.index_store as index_store
+
+    monkeypatch.setattr(index_store, "_COMPACT_KEEP_HISTORY", timedelta(0))
+    monkeypatch.setattr(index_store, "_PRUNE_MARGIN", timedelta(0))
+    s = _store(tmp_path)
+    s.ensure_collection("c", show="S", model="m", chunker="semantic", dim=8)
+    for _ in range(4):
+        s.save_chunks("c", "ep1", _chunks(3, "ep1"), _rng_embeddings(3))
+        s.compact(["c"])
+
+    # The version each compaction replaced, plus what it committed: bounded,
+    # not one more per re-index.
+    table = s._table("c")
+    assert len(table.list_versions()) <= 3
+    assert table.count_rows() == 3
+    assert s.list_episodes("c") == ["ep1"]
+    old = s._table("c")
+    old.checkout(table.list_versions()[0]["version"])
+    assert old.to_arrow().num_rows == 3  # the kept versions are readable
+
+
+def _versions(*ages_min):
+    """Version rows as Lance lists them, committed *ages_min* minutes ago."""
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+    return [
+        {"version": i + 1, "timestamp": now - timedelta(minutes=age)}
+        for i, age in enumerate(ages_min)
+    ]
+
+
+def test_history_window_keeps_an_idle_tables_latest_version():
+    """Lance ages a version from its own commit: an hour-old version that the
+    compaction just replaced (v3, committed now) must survive it."""
+    from datetime import timedelta
+
+    from podcodex.rag.index_store import _history_window
+
+    window = _history_window(_versions(90, 60, 0), timedelta(minutes=2))
+    assert timedelta(minutes=60) < window < timedelta(minutes=61)
+
+
+def test_history_window_keeps_versions_replaced_recently():
+    from datetime import timedelta
+
+    from podcodex.rag.index_store import _history_window
+
+    # v1 replaced 30 min ago (drop), v2 replaced 1 min ago (keep), v3 latest.
+    window = _history_window(_versions(45, 30, 1), timedelta(minutes=2))
+    assert timedelta(minutes=30) < window < timedelta(minutes=31)
+
+
+def test_compact_keeps_recent_history_by_default(tmp_path):
+    """A reader in another process may be mid-query on the version a
+    compaction supersedes; the default window keeps it readable."""
+    s = _store(tmp_path)
+    s.ensure_collection("c", show="S", model="m", chunker="semantic", dim=8)
+    s.save_chunks("c", "ep1", _chunks(3, "ep1"), _rng_embeddings(3))
+    before = s._table("c").version
+    s.save_chunks("c", "ep1", _chunks(3, "ep1"), _rng_embeddings(3))
+    s.compact(["c"])
+
+    old = s._table("c")
+    old.checkout(before)
+    assert old.to_arrow().num_rows == 3  # reads the data files, not just the manifest
+
+
 def test_compact_ignores_missing_collection(tmp_path):
     s = _store(tmp_path)
     assert s.compact(["nope"]) == []

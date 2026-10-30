@@ -21,7 +21,7 @@ import time
 import unicodedata
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from functools import cache
 from pathlib import Path
@@ -42,6 +42,40 @@ _COLLECTIONS_TABLE = "_collections"
 # Subdirectory a Lance table commits new versions into. Stat'd by index_mtime
 # because the table directory above it never changes on append.
 _LANCE_VERSIONS_DIR = "_versions"
+# How long ``compact`` keeps a version after a newer one replaced it. Every
+# read opens the table afresh at its latest version (``_table``), so a
+# replaced version is only read by a query already in flight when the
+# replacement committed; this outlasts any of those. Lance's own default, a
+# week, kept a full copy of the table per compaction: 6.6 GB of history for
+# a 94 MB table after one show's re-index.
+_COMPACT_KEEP_HISTORY = timedelta(minutes=2)
+_NO_PRUNING = timedelta(days=365 * 100)
+# Lance reads its own clock a moment after ``_history_window`` reads this one;
+# the margin keeps the boundary version through that gap.
+_PRUNE_MARGIN = timedelta(seconds=1)
+
+
+def _history_window(versions: list[dict], keep: timedelta) -> timedelta:
+    """``cleanup_older_than`` that keeps every version replaced within *keep*.
+
+    Lance ages a version from its own commit, not from when a newer one
+    replaced it. A table idle for an hour holds a latest version an hour
+    old, which a compaction then replaces: a plain ``keep`` window would
+    delete it under a reader that opened it a moment ago. So the window
+    stretches back to the oldest version still to keep: the first one whose
+    successor committed within *keep*. Read *versions* after the compaction
+    commits, so the version it replaced counts as just replaced.
+    """
+    ordered = sorted(versions, key=lambda v: v["version"])
+    stamps = [v["timestamp"] for v in ordered]
+    now = datetime.now(stamps[-1].tzinfo)  # Lance's stamps are naive local
+    oldest_kept = stamps[-1]
+    for stamp, successor in zip(stamps, stamps[1:]):
+        if now - successor < keep:
+            oldest_kept = stamp
+            break
+    return now - oldest_kept + _PRUNE_MARGIN
+
 
 # Scalar columns re-applied over the meta blob when a row is inflated into a
 # Hit, and the projection every no-vector read selects (plus "meta"). Keep the
@@ -1535,9 +1569,11 @@ class IndexStore:
 
         Called at the end of an index job, a batch and ``podcodex-reindex``,
         and after an episode delete. Never on the read path: it rewrites
-        data files, so it belongs where a write already happened.
-        ``optimize`` keeps a week of history by default, which is what makes
-        it safe to run while another process holds an open reader.
+        data files, so it belongs where a write already happened. Versions
+        replaced more than ``_COMPACT_KEEP_HISTORY`` ago are dropped (see
+        ``_history_window``), which still covers a reader in another process
+        mid-query. Data files no version references yet (a write in flight)
+        are never touched: Lance only deletes those after a week.
 
         Args:
             collections: Tables to compact. Defaults to the chunk tables this
@@ -1554,7 +1590,17 @@ class IndexStore:
                 continue
             try:
                 with self._write_lock:
-                    self._table(name).optimize()
+                    table = self._table(name)
+                    # Compact first, prune second: pruned in the same call, the
+                    # window would be set before the compaction commits, and
+                    # the version that compaction replaces must count as just
+                    # replaced. The second call has nothing left to merge.
+                    table.optimize(cleanup_older_than=_NO_PRUNING)
+                    table.optimize(
+                        cleanup_older_than=_history_window(
+                            table.list_versions(), _COMPACT_KEEP_HISTORY
+                        )
+                    )
                 done.append(name)
             except Exception:
                 logger.opt(exception=True).warning(f"Compaction skipped for '{name}'")
