@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.3.0] - beta (2026-10-30)
+## [0.3.0] - 2026-10-30
 
 A release of fixes rather than features: every part of the app was reviewed, and what the reviews found is fixed here.
 
