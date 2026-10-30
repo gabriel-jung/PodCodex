@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -55,6 +57,69 @@ def test_legacy_working_directory_state_is_migrated_once(
     (cwd / "server_config.json").write_text(json.dumps({"2": {"top_k": 1}}))
     assert _resolve_state_path(None) == path
     assert json.loads(path.read_text()) == {"1": {"top_k": 7}}
+
+
+@pytest.mark.legacy("bot-state-cwd")
+def test_legacy_database_moves_with_its_wal(
+    isolated_data_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A row committed but not checkpointed lives only in the -wal file.
+    live = tmp_path / "live"
+    live.mkdir()
+    conn = sqlite3.connect(live / "search_cache.db")
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA wal_autocheckpoint=0")
+    conn.execute("CREATE TABLE t (v TEXT)")
+    conn.execute("INSERT INTO t VALUES ('kept')")
+    conn.commit()
+
+    cwd = tmp_path / "app"
+    cwd.mkdir()
+    for f in live.iterdir():
+        shutil.copy(f, cwd / f.name)
+    conn.close()
+    assert (cwd / "search_cache.db-wal").is_file()
+    (cwd / "server_config.json").write_text("{}")
+    monkeypatch.chdir(cwd)
+
+    target = _resolve_state_path(None).parent
+
+    assert not list(cwd.glob("search_cache.db*"))
+    moved = sqlite3.connect(target / "search_cache.db")
+    try:
+        assert moved.execute("SELECT v FROM t").fetchall() == [("kept",)]
+    finally:
+        moved.close()
+
+
+@pytest.mark.legacy("bot-state-cwd")
+def test_a_migration_that_failed_partway_retries_on_the_next_start(
+    isolated_data_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import podcodex.bot.bot as bot_mod
+
+    cwd = tmp_path / "app"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    (cwd / "server_config.json").write_text(json.dumps({"1": {"top_k": 7}}))
+    (cwd / "search_cache.db").write_bytes(b"cache")
+    real_move = shutil.move
+
+    def full_volume(src, dst):
+        if src.endswith("search_cache.db"):
+            raise OSError("No space left on device")
+        return real_move(src, dst)
+
+    monkeypatch.setattr(bot_mod.shutil, "move", full_volume)
+    path = _resolve_state_path(None)
+    assert not path.exists()  # not marked done
+    assert (cwd / "server_config.json").is_file()
+
+    monkeypatch.setattr(bot_mod.shutil, "move", real_move)
+    assert _resolve_state_path(None) == path
+    assert json.loads(path.read_text()) == {"1": {"top_k": 7}}
+    assert (path.parent / "search_cache.db").read_bytes() == b"cache"
+    assert not (cwd / "search_cache.db").exists()
 
 
 def test_bot_bootstrap_loads_dotenv_before_anything_reads_the_environment(

@@ -178,7 +178,7 @@ Share your archive with a small community. Drop the bot into any Discord server 
 
 ```bash
 uv sync --extra bot --extra rag --extra cpu --no-dev
-DISCORD_TOKEN=... uv run --no-dev podcodex-bot
+DISCORD_TOKEN=... uv run --no-sync podcodex-bot
 ```
 
 Full deploy guide (uv + Docker, systemd, password rotation, VPS rsync) in [`deploy/BOT.md`](deploy/BOT.md).

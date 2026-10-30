@@ -462,6 +462,24 @@ def _claim_index_cli(index_path: str | None) -> None:
 _STATE_FILES = ("server_config.json", "search_cache.db", "announce_state.db")
 
 
+def _checkpoint_sqlite(path: Path) -> None:
+    """Fold a WAL-mode database's ``-wal`` into its main file.
+
+    Closing the last connection after a full checkpoint also removes the
+    ``-wal`` and ``-shm`` files, so the database is one file again.
+    """
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(path)
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        logger.warning(f"Could not checkpoint {path.name} before moving it: {exc}")
+
+
 def _resolve_state_path(override: str | None) -> Path:
     """Return the server-config path, defaulting to ``<data_dir>/bot/``.
 
@@ -477,7 +495,12 @@ def _resolve_state_path(override: str | None) -> Path:
     legacy files in the working directory are moved into the new location
     once, on the first run that finds them. ``shutil.move``, not ``replace``,
     because the two can sit on different filesystems (a container layer and
-    a mounted volume).
+    a mounted volume). Both databases run in WAL mode, so committed rows not
+    yet checkpointed live only in the ``-wal`` file: each is checkpointed
+    into its main file before the move, and nothing is left behind to pair
+    with a fresh database later. ``server_config.json`` moves last, since
+    its presence at the target is what marks the migration done: a run that
+    failed partway retries on the next start.
     """
     if override:
         return Path(override)
@@ -487,9 +510,11 @@ def _resolve_state_path(override: str | None) -> Path:
     legacy = Path.cwd() / "server_config.json"
     if not target.exists() and legacy.is_file():
         try:
-            for filename in _STATE_FILES:
+            for filename in sorted(_STATE_FILES, key=lambda f: f == target.name):
                 source = Path.cwd() / filename
                 if source.is_file() and not (target_dir / filename).exists():
+                    if filename.endswith(".db"):
+                        _checkpoint_sqlite(source)
                     shutil.move(str(source), str(target_dir / filename))
             logger.info(f"Migrated bot state from {Path.cwd()} to {target_dir}")
         except OSError as exc:

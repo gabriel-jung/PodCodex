@@ -83,7 +83,9 @@ This creates `.venv/` with all runtime dependencies (~1.5 GB).
 Both trailing flags matter on a typical GPU-less VPS:
 
 - `--extra cpu` pulls the CPU-only PyTorch wheel. Without it, torch resolves from PyPI, which on Linux means the CUDA build plus ~6 GB of `nvidia-*` and `triton` packages the host can never use.
-- `--no-dev` skips the dev dependency group (Jupyter, pre-commit, pytest), which `uv sync` installs by default. `uv run` syncs before it runs and would add the group back, so the commands below pass `--no-dev` to it too.
+- `--no-dev` skips the dev dependency group (Jupyter, pre-commit, pytest), which `uv sync` installs by default.
+
+The commands below start the bot with `uv run --no-sync`. A plain `uv run` syncs the environment before it runs, without the flags above, so it would add the dev group back and, after a `git pull` that changed the lockfile, rebuild the environment on its own. With `--no-sync`, this `uv sync` command is the only thing that changes the environment: re-run it after each `git pull`, then restart the bot.
 
 The bot encodes search queries on CPU whatever the host has: one query takes milliseconds, so a GPU buys it nothing. Keep `--extra cpu` even on a GPU host, unless the same environment also runs indexing, which does use the GPU (`--extra gpu`, or `--extra gpu-pascal` on GTX 10xx / P40 / P100, see [PASCAL.md](PASCAL.md)). The extras are mutually exclusive.
 
@@ -115,7 +117,7 @@ The bot finds the index as described in [An index to serve](#3-an-index-to-serve
 ### 4. Start the bot
 
 ```bash
-uv run --no-dev podcodex-bot
+uv run --no-sync podcodex-bot
 ```
 
 The first search downloads the BGE-M3 model (~2.5 GB), so it takes a while; later searches, and later starts, are fast.
@@ -142,7 +144,7 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/PodCodex
 EnvironmentFile=/home/ubuntu/PodCodex/.env
-ExecStart=/home/ubuntu/.local/bin/uv run --no-dev podcodex-bot
+ExecStart=/home/ubuntu/.local/bin/uv run --no-sync podcodex-bot
 Restart=always
 RestartSec=5
 
@@ -234,7 +236,7 @@ On the machine that owns the index, stop the bot, then run:
 
 ```bash
 # Path A (uv)
-uv run --no-dev podcodex-bot --manage-passwords
+uv run --no-sync podcodex-bot --manage-passwords
 
 # Path B (Docker)
 docker compose run --rm bot --manage-passwords
