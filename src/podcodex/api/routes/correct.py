@@ -79,6 +79,7 @@ def start_correct(req: LLMRequest) -> TaskResponse:
     """Start the correct pipeline as a background task."""
     # Resolve profile + key up front so a bad pick fails the request, not
     # the background task. Ollama mode tolerates an empty key_name.
+    require_audio_or_output(req.audio_path, req.output_dir)
     from podcodex.core.llm_resolver import LLMResolutionError, resolve_llm_run
 
     try:
@@ -125,6 +126,7 @@ def start_correct(req: LLMRequest) -> TaskResponse:
 @router.post("/manual-prompts")
 def generate_manual_prompts(req: ManualPromptsRequest) -> list[dict]:
     """Generate batched prompts for manual LLM correction."""
+    require_audio_or_output(req.audio_path, req.output_dir)
     from podcodex.core.correct import build_manual_prompts_batched
 
     try:
@@ -170,6 +172,7 @@ def dismiss_correct_failures(
 @router.post("/apply-manual")
 def apply_manual_corrections(req: ApplyManualRequest) -> dict:
     """Apply manually-obtained LLM corrections and save as raw."""
+    require_audio_or_output(req.audio_path, req.output_dir)
     from podcodex.core.llm import validate_manual
     from podcodex.core.correct import save_corrected
 
@@ -210,6 +213,7 @@ def apply_batches_correction(req: ApplyBatchesRequest) -> dict:
     One new version for all fixes (not one per batch); provenance keeps the
     original run's model so the version does not read as a manual edit.
     """
+    require_audio_or_output(req.audio_path, req.output_dir)
     from podcodex.core.correct import save_corrected
     from podcodex.core.llm_failures import resolve_batches
 

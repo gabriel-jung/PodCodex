@@ -373,7 +373,7 @@ def batch_index_source(
     a stale one or ``force`` triggers, would silently replace the choice.
     """
     from podcodex.core._utils import AudioPaths
-    from podcodex.core.versions import version_meta_by_id, version_path
+    from podcodex.core.versions import pinned_version_live
     from podcodex.ingest.show_registry import show_id_for_folder
     from podcodex.rag.index_store import get_index_store
 
@@ -390,11 +390,9 @@ def batch_index_source(
                 continue
             if record["ref"] == "pinned" and record.get("version"):
                 vid = record["version"]
-                meta = version_meta_by_id(p.base, vid)
-                live = bool(meta) and version_path(p.base, meta["step"], vid).exists()
                 # A deleted pin falls back to the canonical source rather
                 # than failing the episode on "Source version not found".
-                if live:
+                if pinned_version_live(p.base, vid):
                     return "auto", vid, "pinned"
             elif record["ref"] == "step" and record["step"]:
                 return record["step"], None, "step"

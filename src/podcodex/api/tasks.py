@@ -337,6 +337,11 @@ class TaskManager:
             self.update_progress(task_id, progress, message)
 
         progress_cb.cancel_event = info.cancel_event  # type: ignore[attr-defined]
+        # A running count (bytes downloaded) rather than a milestone: shown as
+        # the current message, kept out of the step list.
+        progress_cb.tick = lambda progress, message: self.update_progress(  # type: ignore[attr-defined]
+            task_id, progress, message, tick=True
+        )
 
         # log_cb: opt-in forwarder for child-subprocess loguru lines so the
         # in-app expander shows live transcribe/diarize/correct output rather
@@ -447,11 +452,13 @@ class TaskManager:
         r"^(Batch|Segment|Chunk|Downloading|\[\d+/\d+\])\s*", re.IGNORECASE
     )
 
-    def update_progress(self, task_id: str, progress: float, message: str) -> None:
+    def update_progress(
+        self, task_id: str, progress: float, message: str, *, tick: bool = False
+    ) -> None:
         """Update a task's progress and broadcast the change.
 
-        Milestone messages are recorded as steps; tick-level messages
-        (matching ``_TICK_RE``) are sent to the debug log only.
+        Milestone messages are recorded as steps; tick-level messages (sent
+        with ``tick``, or matching ``_TICK_RE``) go to the debug log only.
 
         Args:
             task_id: Task to update.
@@ -462,7 +469,7 @@ class TaskManager:
         if info:
             if message and message != info.message:
                 # Steps = milestone messages; ticks go to log only
-                if self._TICK_RE.match(message):
+                if tick or self._TICK_RE.match(message):
                     info.add_log(message)
                 else:
                     info.add_step(message)
@@ -678,9 +685,13 @@ def _add_loguru_sink(
             _last_broadcast["t"] = now
             manager._broadcast_sync(info.task_id)
 
-    filter_fn = (
-        (lambda r: r["thread"].id == thread_id) if thread_id is not None else None
-    )
+    # Records forwarded from stdlib logging are skipped: `_TaskLogHandler`
+    # captures those itself, so keeping both logged every httpx line twice.
+    def filter_fn(record: Any) -> bool:
+        if record["extra"].get("stdlib"):
+            return False
+        return thread_id is None or record["thread"].id == thread_id
+
     return logger.add(sink, level="INFO", format="{name}: {message}", filter=filter_fn)
 
 

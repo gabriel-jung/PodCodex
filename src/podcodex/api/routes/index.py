@@ -291,6 +291,7 @@ def start_index(req: IndexRequest) -> TaskResponse:
     The heavy work (embedding encode, LanceDB writes) runs in a spawned
     subprocess so the FastAPI event loop stays responsive.
     """
+    require_audio_or_output(req.audio_path, req.output_dir)
     from podcodex.ingest.folder import note_episode_indexed
 
     def _refresh_indexed_cache(result: dict) -> None:

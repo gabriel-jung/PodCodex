@@ -297,6 +297,7 @@ def start_transcribe(req: TranscribeRequest) -> TaskResponse:
     FastAPI event loop stays responsive to other requests.
     """
 
+    require_audio_or_output(req.audio_path, req.output_dir)
     return submit_subprocess_task(
         "transcribe",
         req.audio_path,

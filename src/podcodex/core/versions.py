@@ -791,6 +791,16 @@ def version_meta_by_id(base: Path, version_id: str) -> dict | None:
     return _get_db(base).get_version(version_id, stem=base.name)
 
 
+def pinned_version_live(base: Path, version_id: str) -> bool:
+    """Whether a pinned index source still exists: its row *and* its file.
+
+    The one rule for both the batch's source pick and the cleanup after a
+    version delete; a delete whose row removal failed leaves the row behind.
+    """
+    meta = version_meta_by_id(base, version_id)
+    return bool(meta) and version_path(base, meta["step"], version_id).exists()
+
+
 def load_version_by_id(base: Path, version_id: str) -> tuple[list[dict], str] | None:
     """Resolve a version_id to ``(segments, step)``, or None if unknown.
 
@@ -1110,11 +1120,28 @@ def delete_version(base: Path, step: str, version_id: str) -> bool:
     if found:
         logger.info("Deleted version {} for step '{}'", version_id, step)
         _refresh_status_after_delete(base, step)
+        _drop_sourceless_chunks(base, step)
         if deleted_meta:
             deleted_hash = deleted_meta.get("content_hash")
             if deleted_hash:
                 _delete_speaker_maps_where(base, input_hash=deleted_hash)
     return found
+
+
+def _drop_sourceless_chunks(base: Path, step: str) -> None:
+    """Take the episode out of any index whose source this delete removed.
+
+    Never fails the delete: the version is already gone, and a chunk that
+    survives a failure here is what happened before this existed.
+    """
+    try:
+        from podcodex.core.delete_episode import drop_sourceless_chunks
+
+        drop_sourceless_chunks(base, step)
+    except Exception:
+        logger.opt(exception=True).warning(
+            "Could not drop {}'s chunks after deleting a {} version", base.name, step
+        )
 
 
 def _delete_speaker_maps_where(

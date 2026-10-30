@@ -353,3 +353,28 @@ def test_the_chunker_reuses_the_e5_embedders_model(monkeypatch):
     chonkie.SentenceTransformerEmbeddings.assert_called_once_with(e5._model)
     emb.clear_embedder_cache()
     assert "chunker|cpu" not in emb._embedder_cache
+
+
+def test_e5_reuses_the_copy_the_old_chunker_cached(monkeypatch, isolated_data_dir):
+    """Up to 0.2.x the chunker cached e5-small under SENTENCE_TRANSFORMERS_HOME;
+    loading it from there spares upgraders a second download."""
+    import podcodex.core.cache as cache
+
+    legacy = str(cache.get_sentence_transformers_dir())
+    seen: list[str] = []
+
+    def snapshot(repo, *, cache_dir=None, revision=None):
+        seen.append(str(cache_dir))
+        return f"{cache_dir}/snap" if str(cache_dir) == legacy else None
+
+    monkeypatch.setattr(cache, "cached_snapshot", snapshot)
+    st_mock = _make_e5_mock()
+    with _mock_modules("sentence_transformers"):
+        sys.modules["sentence_transformers"] = st_mock
+        from importlib import reload
+        import podcodex.rag.embedder as emb_mod
+
+        reload(emb_mod)
+        emb_mod.E5Embedder("e5-small")
+    assert st_mock.SentenceTransformer.call_args.args[0] == f"{legacy}/snap"
+    assert seen[0] == str(cache.get_hf_cache_dir())

@@ -414,3 +414,106 @@ def test_a_result_can_close_with_its_own_summary(tm):
     _run_to_completion(tm, summary)
     assert plain.message == "Done"
     assert summary.message == "Done, 1 of 1 rejected"
+
+
+def test_download_ticks_stay_out_of_the_steps(tm):
+    """A download reports once per MB; as steps that grew the polled task
+    payload by thousands of lines. Ticks go to the bounded log only."""
+
+    def work(progress_cb):
+        progress_cb(0.0, "Fetching manifest…")
+        for mb in range(1, 301):
+            progress_cb.tick(mb / 300, f"server core: {mb} / 300 MB")
+        progress_cb(0.9, "Extracting server core…")
+        progress_cb.tick(0.95, "Extracting server core… 50%")
+        progress_cb(0.97, "Model downloaded: 512 MB")
+        progress_cb(1.0, "Installed.")
+        return {}
+
+    info = tm.submit("gpu_download", "gpu_backend", work)
+    _run_to_completion(tm, info)
+
+    assert info.steps == [
+        "Fetching manifest…",
+        "Extracting server core…",
+        "Model downloaded: 512 MB",
+        "Installed.",
+    ]
+    assert len(info.log) <= 200
+
+
+@pytest.fixture
+def stdlib_intercept():
+    """The app's stdlib-to-loguru routing, undone afterwards: it rewires the
+    root logger and several named ones for the whole process."""
+    import logging
+
+    from podcodex import bootstrap
+
+    names = (
+        "",
+        "uvicorn",
+        "uvicorn.error",
+        "uvicorn.access",
+        "fastapi",
+        "mcp",
+        "FastMCP",
+        "mcp.server.streamable_http_manager",
+        "mcp.server.lowlevel",
+        "httpx",
+        "httpcore",
+    )
+    saved = {
+        n: (
+            logging.getLogger(n).handlers[:],
+            logging.getLogger(n).propagate,
+            logging.getLogger(n).level,
+        )
+        for n in names
+    }
+    bootstrap._install_stdlib_intercept()
+    yield
+    for n, (handlers, propagate, level) in saved.items():
+        lg = logging.getLogger(n)
+        lg.handlers[:] = handlers
+        lg.propagate = propagate
+        lg.setLevel(level)
+
+
+@pytest.mark.usefixtures("stdlib_intercept")
+def test_a_stdlib_log_line_reaches_the_task_log_once(tm):
+    """The app forwards stdlib logging into loguru, and a task captures both:
+    httpx's request lines used to show up twice."""
+    import logging
+
+    info = tm.submit(
+        "correct",
+        "/ep.mp3",
+        lambda _cb: logging.getLogger("podcodex.x").info("HTTP Request: GET /api/tags"),
+    )
+    _run_to_completion(tm, info)
+
+    lines = [line for line in info.log if "HTTP Request" in line]
+    assert lines == ["podcodex.x: HTTP Request: GET /api/tags"]
+
+
+@pytest.mark.usefixtures("stdlib_intercept")
+def test_a_non_propagating_logger_still_reaches_the_task_log(tm):
+    """uvicorn and mcp loggers skip root, so loguru is their only way in."""
+    import logging
+
+    info = tm.submit(
+        "correct", "/ep.mp3", lambda _cb: logging.getLogger("mcp").info("mcp says hi")
+    )
+    _run_to_completion(tm, info)
+
+    assert sum("mcp says hi" in line for line in info.log) == 1
+
+
+@pytest.mark.usefixtures("stdlib_intercept")
+def test_httpx_request_lines_are_not_logged():
+    """httpx logs full request URLs at INFO, a private feed's token included."""
+    import logging
+
+    assert not logging.getLogger("httpx").isEnabledFor(logging.INFO)
+    assert not logging.getLogger("httpcore").isEnabledFor(logging.INFO)

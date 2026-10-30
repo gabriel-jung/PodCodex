@@ -211,3 +211,69 @@ def test_delete_cached_model_refuses_anything_but_one_model_dir(
 
     assert cache.delete_cached_model(model_id) is False
     assert (hf_root / "hub" / "models--x--y").is_dir()
+
+
+def _write(path: Path, size: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x" * size)
+
+
+def test_list_cached_models_merges_a_model_cached_in_several_layouts(
+    isolated_data_dir: Path,
+) -> None:
+    """An empty hub stub must not hide the copy another loader downloaded,
+    and a pre-``cache_folder`` sentence-transformers copy is listed too."""
+    hf_root = cache.get_hf_cache_dir()
+    name = "models--intfloat--multilingual-e5-small"
+    _write(hf_root / "hub" / name / "refs" / "main", 40)
+    _write(hf_root / name / "blobs" / "w", 1000)
+    _write(cache.get_cache_dir() / "sentence-transformers" / name / "blobs" / "w", 500)
+
+    [model] = cache.list_cached_models()
+    assert model["name"] == "intfloat/multilingual-e5-small"
+    assert model["size_bytes"] == 1540
+    assert model["path"] == str(hf_root / name)
+
+    assert cache.delete_cached_model(name) is True
+    assert cache.list_cached_models() == []
+
+
+def test_list_cached_models_counts_snapshot_copies_but_not_links(
+    isolated_data_dir: Path,
+) -> None:
+    """Without symlinks (Windows) each snapshot file is a second full copy and
+    takes the space twice; a symlinked snapshot takes none."""
+    hub = cache.get_hf_cache_dir() / "hub"
+    copied = hub / "models--a--copied"
+    _write(copied / "blobs" / "abc", 100)
+    _write(copied / "snapshots" / "rev" / "model.bin", 100)
+    linked = hub / "models--a--linked"
+    _write(linked / "blobs" / "abc", 100)
+    (linked / "snapshots" / "rev").mkdir(parents=True)
+    (linked / "snapshots" / "rev" / "model.bin").symlink_to(linked / "blobs" / "abc")
+
+    sizes = {m["name"]: m["size_bytes"] for m in cache.list_cached_models()}
+    assert sizes == {"a/copied": 200, "a/linked": 100}
+
+
+def test_a_sentence_transformers_home_outside_the_cache_is_never_scanned(
+    isolated_data_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A user-set home may hold other tools' models, and the list feeds a delete."""
+    shared = tmp_path / "shared-st"
+    _write(shared / "models--other--tool" / "blobs" / "w", 10)
+    monkeypatch.setenv("SENTENCE_TRANSFORMERS_HOME", str(shared))
+
+    assert cache.list_cached_models() == []
+    assert cache.delete_cached_model("models--other--tool") is False
+    assert (shared / "models--other--tool").exists()
+
+
+def test_a_sentence_transformers_home_on_the_hub_is_not_counted_twice(
+    isolated_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hub = cache.get_hf_cache_dir() / "hub"
+    _write(hub / "models--a--b" / "blobs" / "w", 10)
+    monkeypatch.setenv("SENTENCE_TRANSFORMERS_HOME", str(hub))
+
+    assert [m["size_bytes"] for m in cache.list_cached_models()] == [10]

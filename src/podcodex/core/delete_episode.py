@@ -301,3 +301,75 @@ def episode_has_leftovers(show_dir: Path, stem: str) -> bool:
             "delete_episode: leftover check failed for {!r}", stem
         )
         return True
+
+
+def drop_sourceless_chunks(base: Path, step: str, store=None) -> list[str]:
+    """Remove the episode's chunks from collections whose source is gone.
+
+    Called after a version delete. Chunks cut from a version that no longer
+    exists kept answering searches with text the user deleted, and the
+    outdated flag cannot help: with nothing to re-index from, it could never
+    be cleared. A source is gone when the index's record can no longer be
+    resolved: a pinned version deleted, a picked step left with no version,
+    or (canonical, or chunks from before records) no transcript at all. The
+    ``indexed`` flag is demoted once no collection holds the episode, as the
+    unindex route does. Returns the collections the episode was removed from.
+    """
+    from podcodex.core._utils import show_dir_of
+    from podcodex.core.versions import PARQUET_STEPS, WAV_STEPS
+
+    # Steps no index reads from: deleting one never strands chunks.
+    if step in PARQUET_STEPS | WAV_STEPS | {"speaker_map"}:
+        return []
+    from podcodex.rag import rag_available
+
+    if not rag_available():
+        return []
+    from podcodex.core.pipeline_db import mark_step
+    from podcodex.ingest.show import show_display, show_id
+    from podcodex.rag.index_store import get_index_store
+
+    show_dir = show_dir_of(base)
+    stem = base.name
+    store = store or get_index_store()
+    # Strict, like every other app-side lookup: a show without an id must not
+    # claim a same-named show's collections by label.
+    cols = store.collections_for_show(
+        show_id(show_dir), show_label=show_display(show_dir), strict=True
+    )
+    indexed = [c for c in cols if store.episode_is_indexed(c, stem)]
+    gone = [
+        c
+        for c in indexed
+        if not _source_exists(base, store.episode_source_record(c, stem))
+    ]
+    for col in gone:
+        store.delete_episode(col, stem)
+    if gone:
+        store.compact(gone)
+        if len(gone) == len(indexed):
+            mark_step(show_dir, stem, indexed=False)
+        logger.info(
+            "Removed {!r} from {} collection(s): its index source was deleted",
+            stem,
+            len(gone),
+        )
+    return gone
+
+
+def _source_exists(base: Path, record: dict | None) -> bool:
+    """Whether the version an index record points at can still be resolved.
+
+    A pin by `pinned_version_live`, the rule the batch's source pick uses.
+    """
+    from podcodex.core.versions import (
+        default_source_version,
+        pinned_version_live,
+        resolve_canonical_ref,
+    )
+
+    if record and record["ref"] == "pinned" and record["version"]:
+        return pinned_version_live(base, record["version"])
+    if record and record["ref"] == "step" and record["step"]:
+        return default_source_version(base, record["step"]) is not None
+    return resolve_canonical_ref(base) is not None

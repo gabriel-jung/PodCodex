@@ -11,9 +11,13 @@ from tests.fixtures.episodes import audio_and_output_dir
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    from podcodex.core.app_config import AppConfig
     from tests.fixtures.api_client import make_client
 
-    return make_client(tmp_path, monkeypatch)
+    # The show folders audio_and_output_dir and _episode create: episode
+    # routes only take paths inside a registered show.
+    folders = [str(tmp_path / "s"), str(tmp_path / "show")]
+    return make_client(tmp_path, monkeypatch, config=AppConfig(show_folders=folders))
 
 
 def test_get_transcript_segments_404_when_missing(client, tmp_path):
@@ -126,6 +130,26 @@ def test_verified_rejects_invalid_step(client, tmp_path):
     )
     assert r.status_code == 400
     assert "transcript" in r.text or "corrected" in r.text
+
+
+def test_verified_rejects_a_traversing_version_id(client, tmp_path):
+    """A 400, not the 500 an uncaught ValueError from version_path gave."""
+    audio, _ = audio_and_output_dir(tmp_path)
+    r = client.put(
+        "/api/shows/verified",
+        params={"audio_path": audio},
+        json={"step": "transcript", "version_id": "../../show"},
+    )
+    assert r.status_code == 400, r.text
+
+
+@pytest.mark.parametrize("method", ["get", "delete"])
+def test_synthesize_version_routes_reject_a_traversing_id(client, tmp_path, method):
+    audio, _ = audio_and_output_dir(tmp_path)
+    r = getattr(client, method)(
+        "/api/synthesize/versions/..%5C..%5Cshow", params={"audio_path": audio}
+    )
+    assert r.status_code == 400, r.text
 
 
 def test_episode_speakers_airtime(client, tmp_path):
@@ -419,3 +443,126 @@ def test_voice_sample_extraction_refuses_an_empty_or_reversed_span(
         },
     )
     assert r.status_code == 422
+
+
+def test_episode_paths_outside_a_registered_show_are_refused(client, tmp_path):
+    """No folder, pipeline.db or task appears for a path outside the shows:
+    resolving an episode used to create its output folder wherever it pointed."""
+    from urllib.parse import quote
+
+    stray = tmp_path / "elsewhere"
+    stray.mkdir()
+    (tmp_path / "s").mkdir()  # registered; the batch's episode is what is not
+    audio = str(stray / "win.mp3")
+
+    calls = [
+        client.get("/api/transcribe/segments", params={"audio_path": audio}),
+        client.post("/api/transcribe/start", json={"audio_path": audio}),
+        client.post("/api/correct/start", json={"audio_path": audio}),
+        client.post("/api/translate/start", json={"audio_path": audio}),
+        client.post("/api/index/start", json={"audio_path": audio, "show": "x"}),
+        client.post(
+            "/api/synthesize/extract-selected",
+            json={
+                "audio_path": audio,
+                "selections": [{"speaker": "A", "start": 0, "end": 1}],
+            },
+        ),
+        client.post(
+            "/api/batch/start",
+            json={"show_folder": str(tmp_path / "s"), "audio_paths": [audio]},
+        ),
+        client.get(f"/api/shows/{quote(str(stray), safe='')}/unified"),
+        client.get(f"/api/shows/{quote(str(stray), safe='')}/episodes"),
+        client.get(f"/api/shows/{quote(str(stray), safe='')}/speakers/roster"),
+        client.get(f"/api/shows/{quote(str(stray), safe='')}/broadcast-preview"),
+        client.get(f"/api/shows/{quote(str(stray), safe='')}/episode/win/speakers"),
+    ]
+    assert [r.status_code for r in calls] == [403] * len(calls)
+    assert list(stray.iterdir()) == []
+
+
+def test_a_symlinked_episode_inside_a_show_is_accepted(client, tmp_path):
+    """The folder scan lists symlinked audio; its target lives outside."""
+    elsewhere = tmp_path / "nas"
+    elsewhere.mkdir()
+    (elsewhere / "ep.mp3").write_bytes(b"")
+    show = tmp_path / "s"
+    show.mkdir()
+    (show / "ep.mp3").symlink_to(elsewhere / "ep.mp3")
+
+    r = client.get(
+        "/api/transcribe/segments", params={"audio_path": str(show / "ep.mp3")}
+    )
+    assert r.status_code == 404  # no transcript yet, but not refused
+
+
+def test_a_batch_refuses_an_episode_of_another_show(client, tmp_path):
+    """Locked and indexed under its own show, a batch must not take another's."""
+    (tmp_path / "s").mkdir()
+    other = tmp_path / "show"  # registered too, by the fixture
+    other.mkdir()
+    r = client.post(
+        "/api/batch/start",
+        json={
+            "show_folder": str(tmp_path / "s"),
+            "audio_paths": [str(other / "x.mp3")],
+        },
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_dot_dot_cannot_walk_out_of_a_show(client, tmp_path):
+    """The ancestor walk is over the resolved path: textually starting with a
+    registered show is not being inside it."""
+    show = tmp_path / "s"
+    show.mkdir()
+    (tmp_path / "show").mkdir()
+    escape = str(show / ".." / "elsewhere" / "x")
+    (tmp_path / "elsewhere").mkdir()
+
+    r = client.get("/api/transcribe/segments", params={"output_dir": escape})
+    assert r.status_code == 403
+    r = client.get(
+        "/api/transcribe/segments",
+        params={"audio_path": str(show / ".." / "elsewhere" / "ep.mp3")},
+    )
+    assert r.status_code == 403
+    # One show's batch, another show's episode reached through "..".
+    r = client.post(
+        "/api/batch/start",
+        json={
+            "show_folder": str(show),
+            "audio_paths": [str(show / ".." / "show" / "ep.mp3")],
+        },
+    )
+    assert r.status_code == 403
+    assert list((tmp_path / "elsewhere").iterdir()) == []
+
+
+def test_an_output_dir_must_sit_below_a_show(client, tmp_path):
+    """Without audio, an output dir's parent is its show: a show root as the
+    output dir would write pipeline.db into the folder above it."""
+    show = tmp_path / "s"
+    show.mkdir()
+    r = client.get("/api/transcribe/segments", params={"output_dir": str(show)})
+    assert r.status_code == 403
+    r = client.get("/api/transcribe/segments", params={"output_dir": str(show / "ep")})
+    assert r.status_code == 404  # inside the show: allowed, just empty
+
+
+def test_a_relative_output_dir_is_checked_where_it_is_written(client, tmp_path):
+    """Relative to the audio's folder, as AudioPaths resolves it, not the cwd."""
+    show = tmp_path / "s"
+    show.mkdir()
+    (tmp_path / "elsewhere").mkdir()
+    audio = str(show / "ep.mp3")
+    r = client.get(
+        "/api/transcribe/segments",
+        params={"audio_path": audio, "output_dir": "../elsewhere/ep"},
+    )
+    assert r.status_code == 403
+    r = client.get(
+        "/api/transcribe/segments", params={"audio_path": audio, "output_dir": "ep"}
+    )
+    assert r.status_code == 404

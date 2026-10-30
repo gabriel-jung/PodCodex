@@ -582,7 +582,7 @@ def delete_artwork(show_folder: str = Query(...)) -> dict:
 @router.get("/artwork")
 async def get_artwork(show_folder: str = Query(...)):
     """Serve cached artwork for a show, downloading it if needed."""
-    path = require_show_folder(show_folder)
+    path = require_registered_show(show_folder)  # it caches the download there
     meta = load_show_meta(path)
     artwork_url = (meta.artwork_url if meta else "") or ""
 
@@ -1065,7 +1065,7 @@ async def broadcast_preview(show_folder: str, pattern: str = Query("")) -> dict:
     """
     import asyncio
 
-    path = require_show_folder(show_folder)
+    path = require_registered_show(show_folder)
     return await asyncio.get_running_loop().run_in_executor(
         None, _compute_broadcast_preview, path, pattern
     )
@@ -1077,7 +1077,7 @@ async def broadcast_preview(show_folder: str, pattern: str = Query("")) -> dict:
 @router.get("/{show_folder:path}/episodes", response_model=list[EpisodeOut])
 def list_episodes(show_folder: str) -> list[dict]:
     """List locally scanned episodes for a show folder."""
-    path = require_show_folder(show_folder)
+    path = require_registered_show(show_folder)
     episodes = scan_folder(path)
     return [_episode_to_dict(ep) for ep in episodes]
 
@@ -1113,7 +1113,7 @@ def unified_episodes(show_folder: str) -> list[dict]:
     server config, with show-level overrides merged on top. On first
     access the DB is populated from a filesystem scan.
     """
-    path = require_show_folder(show_folder)
+    path = require_registered_show(show_folder)  # it writes pipeline.db
     ctx = load_status_context(path)
 
     rss = load_feed_cache(path) or []
@@ -1250,7 +1250,7 @@ def episode_statuses(show_folder: str) -> list[dict]:
     reads. Feed-only episodes with no local footprint are omitted — they have
     no status to report, and the client already holds their static fields.
     """
-    path = require_show_folder(show_folder)
+    path = require_registered_show(show_folder)  # it writes pipeline.db
     ctx = load_status_context(path)
     return [
         build_status_out(
@@ -1416,7 +1416,7 @@ async def speakers_roster(show_folder: str) -> SpeakerRosterResponse:
     """
     import asyncio
 
-    path = require_show_folder(show_folder)
+    path = require_registered_show(show_folder)
     return await asyncio.get_running_loop().run_in_executor(
         None, _compute_speaker_roster, path
     )
@@ -1473,7 +1473,7 @@ async def episode_speakers(show_folder: str, stem: str) -> EpisodeSpeakersRespon
     """
     import asyncio
 
-    path = require_show_folder(show_folder)
+    path = require_registered_show(show_folder)
     return await asyncio.get_running_loop().run_in_executor(
         None, _compute_episode_speakers, path, stem
     )
@@ -1662,6 +1662,7 @@ def set_verified_version(
     Singleton: replaces any previous pointer for the episode.
     """
     from podcodex.api.routes._helpers import require_audio_or_output
+    from podcodex.api.routes._versions import check_version_id
     from podcodex.core._utils import AudioPaths
     from podcodex.core.versions import VERIFIABLE_STEPS, version_path
 
@@ -1682,6 +1683,7 @@ def set_verified_version(
             400,
             f"step must be one of {sorted(VERIFIABLE_STEPS)}, got {req.step!r}",
         )
+    check_version_id(req.version_id)
     if not version_path(p.base, req.step, req.version_id).exists():
         raise HTTPException(
             404,

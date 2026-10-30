@@ -74,6 +74,7 @@ class ExtractSelectedRequest(BaseModel):
 @router.post("/extract-selected")
 def extract_selected(req: ExtractSelectedRequest) -> dict:
     """Extract specific user-chosen segments as voice samples."""
+    require_audio_or_output(req.audio_path, req.output_dir)
     from podcodex.core.synthesize import extract_selected_samples
 
     if not req.audio_path:
@@ -374,8 +375,10 @@ def get_synthesize_version(
 ) -> dict:
     """Return the on-disk path + duration for a specific synth version."""
     from podcodex.api.routes._helpers import require_audio_or_output
+    from podcodex.api.routes._versions import check_version_id
     from podcodex.core.versions import synthesize_version_path
 
+    check_version_id(version_id)
     require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     path = synthesize_version_path(p.base, version_id)
@@ -395,8 +398,10 @@ def remove_synthesize_version(
 ) -> dict:
     """Delete a synth version (.wav + DB row)."""
     from podcodex.api.routes._helpers import require_audio_or_output
+    from podcodex.api.routes._versions import check_version_id
     from podcodex.core.versions import delete_version
 
+    check_version_id(version_id)
     require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     removed = delete_version(p.base, "synthesize", version_id)

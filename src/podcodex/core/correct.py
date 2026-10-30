@@ -100,7 +100,7 @@ output:
   [{"text": "Euh, ouais, c'est ça."}, {"text": "[music]"}]""",
         context=context,
         context_extra=(
-            "and must be used to fix phonetically similar but misspelled versions in the transcript "
+            "Use them to fix phonetically similar but misspelled versions in the transcript "
             "(e.g. if the context says 'DeepMind', fix 'Deep Mind' → 'DeepMind')."
         ),
     )

@@ -154,6 +154,10 @@ def test_a_folder_without_an_id_does_not_claim_a_same_named_show(twins, tmp_path
     loose.mkdir()
     (loose / "show.toml").write_text('name = "Twin"\n', encoding="utf-8")
     (loose / "ep_a.mp3").write_bytes(b"fake")
+    # Registered in config directly: the register route would mint it an id.
+    from podcodex.core.app_config import mutate_config
+
+    mutate_config(lambda cfg: cfg.show_folders.append(str(loose)))
 
     r = client.get(
         "/api/index/episode-collections", params={"audio_path": str(loose / "ep_a.mp3")}

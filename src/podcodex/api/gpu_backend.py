@@ -499,11 +499,11 @@ def _download_once(
                 if total > 0:
                     span = progress_end - progress_start
                     frac = progress_start + span * (read / total)
-                    progress_cb(
+                    _tick(progress_cb)(
                         frac, f"{label}: {mb_done:.0f} / {total / 1024**2:.0f} MB"
                     )
                 else:
-                    progress_cb(progress_start, f"{label}: {mb_done:.0f} MB")
+                    _tick(progress_cb)(progress_start, f"{label}: {mb_done:.0f} MB")
         if total > 0 and read < total:
             # A short body: raised as the retryable error it is.
             import http.client
@@ -543,8 +543,18 @@ def _extract_archive(
             pct = min(99, raw.tell() * 100 // total)
             if pct >= shown + 5:
                 shown = pct
-                progress_cb(frac, f"Extracting {label}… {pct}%")
+                _tick(progress_cb)(frac, f"Extracting {label}… {pct}%")
     return sorted(files)
+
+
+def _tick(progress_cb):
+    """The callback's tick form, for a running count rather than a milestone.
+
+    A task's callback has one (``TaskManager.submit``): a download reports
+    once per MB, and as milestones those filled the task's step list. Any
+    other callable is used as is.
+    """
+    return getattr(progress_cb, "tick", progress_cb)
 
 
 def _resolve_artifact_url(manifest_url: str, archive_name: str) -> str:

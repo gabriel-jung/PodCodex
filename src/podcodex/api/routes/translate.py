@@ -89,6 +89,7 @@ class TranslateRequest(LLMRequest):
 @router.post("/start", response_model=TaskResponse)
 def start_translate(req: TranslateRequest) -> TaskResponse:
     """Start the translate pipeline as a background task."""
+    require_audio_or_output(req.audio_path, req.output_dir)
     from podcodex.core.llm_resolver import LLMResolutionError, resolve_llm_run
 
     try:
@@ -144,6 +145,7 @@ def start_translate(req: TranslateRequest) -> TaskResponse:
 @router.post("/manual-prompts")
 def generate_manual_prompts(req: ManualPromptsRequest) -> list[dict]:
     """Generate batched prompts for manual translation."""
+    require_audio_or_output(req.audio_path, req.output_dir)
     from podcodex.core.translate import build_manual_prompts_batched
 
     try:
@@ -189,6 +191,7 @@ def dismiss_translate_failures(
 @router.post("/apply-manual")
 def apply_manual_corrections(req: ApplyManualRequest) -> dict:
     """Apply manually-obtained translation corrections and save as raw."""
+    require_audio_or_output(req.audio_path, req.output_dir)
     from podcodex.core.llm import validate_manual
     from podcodex.core.translate import save_translation
 
@@ -230,6 +233,7 @@ def apply_batches_translation(req: ApplyBatchesRequest) -> dict:
     One new version for all fixes (not one per batch); provenance keeps the
     original run's model so the version does not read as a manual edit.
     """
+    require_audio_or_output(req.audio_path, req.output_dir)
     from podcodex.core.llm_failures import resolve_batches
     from podcodex.core.translate import save_translation
 

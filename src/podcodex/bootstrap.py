@@ -815,6 +815,10 @@ def _install_stdlib_intercept() -> None:
     """
 
     class _InterceptHandler(logging.Handler):
+        def __init__(self, *, via_root: bool = False) -> None:
+            super().__init__()
+            self.via_root = via_root
+
         def emit(self, record: logging.LogRecord) -> None:
             try:
                 level = logger.level(record.levelname).name
@@ -824,11 +828,17 @@ def _install_stdlib_intercept() -> None:
             while frame and frame.f_code.co_filename == logging.__file__:
                 frame = frame.f_back
                 depth += 1
-            logger.opt(depth=depth, exception=record.exc_info).log(
-                level, record.getMessage()
-            )
+            # Tagged when it came through root, so a task's loguru sink can
+            # skip it: the task's root-level handler already captured it under
+            # its own name. The non-propagating loggers below never reach that
+            # handler, so theirs stay untagged.
+            logger.bind(stdlib=self.via_root).opt(
+                depth=depth, exception=record.exc_info
+            ).log(level, record.getMessage())
 
-    logging.basicConfig(handlers=[_InterceptHandler()], level=logging.INFO, force=True)
+    logging.basicConfig(
+        handlers=[_InterceptHandler(via_root=True)], level=logging.INFO, force=True
+    )
     for _name in (
         "uvicorn",
         "uvicorn.error",
@@ -842,3 +852,8 @@ def _install_stdlib_intercept() -> None:
         _lg = logging.getLogger(_name)
         _lg.handlers = [_InterceptHandler()]
         _lg.propagate = False
+    # httpx logs every request URL at INFO, query string included: a private
+    # feed's subscriber token landed in server.log and the task log the UI
+    # shows. Our own request logging goes through `loggable_url` instead.
+    for _name in ("httpx", "httpcore"):
+        logging.getLogger(_name).setLevel(logging.WARNING)

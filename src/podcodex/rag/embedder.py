@@ -194,9 +194,21 @@ class E5Embedder:
 
         hf_model = MODELS[model_key].hf_model
         from podcodex.core._hf_logging import timed_load
-        from podcodex.core.cache import get_hf_cache_dir
+        from podcodex.core.cache import (
+            cached_snapshot,
+            get_hf_cache_dir,
+            get_sentence_transformers_dir,
+        )
 
         cache_dir = str(get_hf_cache_dir())
+        # Up to 0.2.x the semantic chunker loaded e5-small by name, so
+        # sentence-transformers cached it under SENTENCE_TRANSFORMERS_HOME.
+        # Reuse that copy rather than download the model again here.
+        legacy = get_sentence_transformers_dir()
+        if cached_snapshot(hf_model, cache_dir=cache_dir) is None and cached_snapshot(
+            hf_model, cache_dir=legacy
+        ):
+            cache_dir = str(legacy)
         with timed_load(f"E5Embedder {hf_model} on {device}"):
             self._model = load_cached(
                 lambda source: SentenceTransformer(

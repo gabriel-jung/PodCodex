@@ -8,6 +8,7 @@ so this module stays cheap to import at the top level.
 import functools
 import gc
 import json
+import math
 import os
 import re
 import stat
@@ -679,12 +680,24 @@ def seg_key(seg: dict) -> str:
     Timestamps are rounded to integer milliseconds so the key is stable
     across Python / JS float stringification: JS ``(1).toString()`` yields
     ``"1"`` while Python ``f"{1.0}"`` yields ``"1.0"``, and the mismatch
-    would silently drop segments on integer-second boundaries.
+    would silently drop segments on integer-second boundaries. Rounded the
+    way ``Math.round`` does (half up), not with ``round``, which rounds a half
+    to even: ``0.0125`` s would key as 12 here and 13 there.
     """
     speaker = seg.get("speaker") or ""
     start = seg.get("start") or 0
     end = seg.get("end") or 0
-    return f"{speaker}:{round(start * 1000)}:{round(end * 1000)}"
+    return f"{speaker}:{_js_round(start * 1000)}:{_js_round(end * 1000)}"
+
+
+def _js_round(x: float) -> int:
+    """JavaScript's ``Math.round``: halves go up, toward +inf.
+
+    Not ``floor(x + 0.5)``: that addition can itself round up
+    (``0.49999999999999994`` gives 1, ``Math.round`` gives 0).
+    """
+    r = math.floor(x)
+    return r + 1 if x - r >= 0.5 else r
 
 
 def real_speakers(segments: list[dict]) -> list[str]:

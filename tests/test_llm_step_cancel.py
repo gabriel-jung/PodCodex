@@ -21,8 +21,12 @@ SEGS = [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "hi"}]
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    from podcodex.core.app_config import AppConfig
+
     stub_llm_resolver(monkeypatch)
-    return make_client(tmp_path, monkeypatch)
+    # Episode routes only take paths inside a registered show.
+    config = AppConfig(show_folders=[str(tmp_path / "show")])
+    return make_client(tmp_path, monkeypatch, config=config)
 
 
 @pytest.mark.parametrize("step", ["correct", "translate"])

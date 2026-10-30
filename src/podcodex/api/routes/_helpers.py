@@ -196,30 +196,100 @@ def require_registered_show(show_folder: str) -> Path:
     confining ``rmtree``/``move`` to real shows.
     """
     path = require_show_folder(show_folder)
-    from podcodex.api.routes.config import _load as _load_cfg
-
-    # samefile() compares device+inode, so it is correct across case-insensitive
-    # filesystems (macOS/Windows) and symlinks, where a resolved-string compare
-    # would false-negative and 403 a legitimately registered show.
-    for folder in _load_cfg().show_folders:
-        try:
-            if path.samefile(Path(folder)):
-                return path
-        except OSError:
-            continue  # a registered root that no longer exists on disk
+    if _show_root_of(path, ancestors=False) is not None:
+        return path
     raise HTTPException(403, "Not a registered show folder")
 
 
 def require_audio_or_output(audio_path: str | None, output_dir: str | None) -> None:
-    """Raise 422 unless at least one of ``audio_path`` / ``output_dir`` is set.
+    """Validate an episode's paths: 422 unless one is set, 403 outside the shows.
 
     Most pipeline routes accept either: an audio file (real episode) or just
     an output dir (e.g. YouTube subtitle imports without audio). Backend's
     ``AudioPaths.from_audio`` already raises ``ValueError`` when both are
     None, but it surfaces as a 500 — this gives a proper 422 to clients.
+
+    Each given path must lie inside a registered show folder, as for the
+    routes that stream, export or delete files: resolving an episode creates
+    its output folder (``AudioPaths.from_audio``), and a step writes there and
+    into the show's ``pipeline.db``, so a stray path used to scatter folders
+    and databases wherever it pointed.
     """
     if not audio_path and not output_dir:
         raise HTTPException(status_code=422, detail="audio_path or output_dir required")
+    from podcodex.core._utils import AudioPaths
+
+    if audio_path:
+        # The audio file's folder, not the file: a symlinked episode (the
+        # folder scan accepts them) resolves to wherever its target lives.
+        _require_inside(_resolved(Path(audio_path).parent))
+    if output_dir:
+        # The folder the step writes into, located as AudioPaths locates it
+        # (a relative one is under the audio's folder, not the server's cwd).
+        # Without audio, its parent is taken as the show, so the folder must
+        # sit strictly below a show root: one that *is* a root would put the
+        # writes and pipeline.db in the folder above it.
+        root = (
+            AudioPaths.output_dir(Path(audio_path), output_dir)
+            if audio_path
+            else Path(output_dir)
+        )
+        root = _resolved(root)
+        _require_inside(root if audio_path else root.parent)
+
+
+def _resolved(path: Path) -> Path:
+    """*path* made absolute with ``..`` and symlinks resolved. A lexical
+    ancestor walk let ``<show>/../../elsewhere`` pass as inside the show."""
+    return path.expanduser().resolve()
+
+
+def _show_root_of(
+    path: Path, *, ancestors: bool = True, only: Path | None = None
+) -> Path | None:
+    """The registered show folder (*only* that one, when given) that *path*
+    is, or with *ancestors* sits under; ``None`` if none.
+
+    By device and inode rather than by string, so a registered show is found
+    on a case-insensitive filesystem (macOS, Windows) whatever the client's
+    casing, and through a symlinked show folder. Pass a resolved *path*: the
+    walk is over its parents. Ancestors that do not exist yet (an episode
+    folder about to be created) are skipped.
+    """
+    from podcodex.api.routes.config import _load as _load_cfg
+
+    roots: dict[tuple[int, int], Path] = {}
+    for folder in [only] if only is not None else _load_cfg().show_folders:
+        try:
+            st = Path(folder).stat()
+        except OSError:
+            continue  # a registered root that no longer exists on disk
+        roots[(st.st_dev, st.st_ino)] = Path(folder)
+    for candidate in (path, *path.parents) if ancestors else (path,):
+        try:
+            st = candidate.stat()
+        except OSError:
+            continue
+        root = roots.get((st.st_dev, st.st_ino))
+        if root is not None:
+            return root
+    return None
+
+
+def _require_inside(path: Path, only: Path | None = None) -> None:
+    """403 unless resolved *path* is, or sits under, a registered show."""
+    if _show_root_of(path, only=only) is None:
+        raise HTTPException(
+            403,
+            "Path is not inside this show's folder"
+            if only is not None
+            else "Path is not inside a registered show folder",
+        )
+
+
+def require_episode_in_show(audio_path: str, show: Path) -> None:
+    """403 unless the episode at *audio_path* belongs to the show folder *show*."""
+    _require_inside(_resolved(Path(audio_path).parent), only=show)
 
 
 def llm_run_outcome(
@@ -269,10 +339,8 @@ def resolve_inside_show_root(path: str) -> Path:
     requiring the resolved path to live under a registered show folder.
 
     Defense in depth, not the boundary: the loopback token is (see
-    ARCHITECTURE.md, "The token is the API's security boundary"). This and
-    ``require_registered_show`` guard only routes that delete, move, stream
-    or export files or rewrite ``show.toml``; pipeline routes take their
-    paths as given.
+    ARCHITECTURE.md, "The token is the API's security boundary"). Episode
+    routes use ``require_audio_or_output`` instead.
     """
     from podcodex.api.routes.config import _load as _load_cfg
 
@@ -416,12 +484,12 @@ def load_version_or_404(base, step: str, version_id: str) -> list[dict]:
     """Segments of one version, validated and mapped to HTTP errors.
 
     A version id becomes a filename, so it must be one path component (400);
-    a version gone from disk is a 404. The single place routes do this.
+    a version gone from disk is a 404.
     """
+    from podcodex.api.routes._versions import check_version_id
     from podcodex.core.versions import load_version
 
-    if bad_path_component(version_id):
-        raise HTTPException(400, f"Invalid version id: {version_id!r}")
+    check_version_id(version_id)
     try:
         return load_version(base, step, version_id)
     except FileNotFoundError:

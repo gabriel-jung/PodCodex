@@ -51,6 +51,16 @@ def get_hf_cache_dir() -> Path:
     return hf_dir
 
 
+def get_sentence_transformers_dir() -> Path:
+    """``SENTENCE_TRANSFORMERS_HOME``: set by the user, else under the model cache.
+
+    Where sentence-transformers caches a model loaded by name, which is how the
+    semantic chunker fetched e5-small up to 0.2.x.
+    """
+    override = os.environ.get("SENTENCE_TRANSFORMERS_HOME", "").strip()
+    return Path(override) if override else get_cache_dir() / "sentence-transformers"
+
+
 def get_hf_hub_dir() -> Path:
     """The hub snapshot store (``HF_HUB_CACHE``), for loaders taking a cache dir.
 
@@ -181,7 +191,7 @@ def wire_model_caches() -> None:
     os.environ.setdefault("TRANSFORMERS_CACHE", hub)
     os.environ.setdefault("TORCH_HOME", str(models_dir / "torch"))
     os.environ.setdefault(
-        "SENTENCE_TRANSFORMERS_HOME", str(models_dir / "sentence-transformers")
+        "SENTENCE_TRANSFORMERS_HOME", str(get_sentence_transformers_dir())
     )
 
     # Cap HF Hub network calls so a flaky uplink (VPN, captive portal,
@@ -198,52 +208,91 @@ def wire_model_caches() -> None:
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 
-def list_cached_models() -> list[dict]:
-    """List models currently in the cache with disk usage info.
+def _model_cache_parents() -> list[Path]:
+    """Every directory a loader may put a ``models--<org>--<name>`` tree in.
 
-    Scans both layouts HF Hub uses depending on which entrypoint downloaded:
-      - ``<hf_root>/hub/models--<org>--<name>``  (when ``HF_HOME`` is set;
-        used by pyannote.audio.Pipeline.from_pretrained, etc.)
-      - ``<hf_root>/models--<org>--<name>``      (when ``cache_dir=`` is
-        passed directly; used by faster-whisper's WhisperModel)
+    - ``<hf_root>/hub``: ``HF_HUB_CACHE``, where pyannote, Qwen3-TTS and
+      ``snapshot_download`` write
+    - ``<hf_root>``: where a loader given ``cache_dir=<hf_root>`` writes
+      (faster-whisper, the E5 embedder)
+    - ``SENTENCE_TRANSFORMERS_HOME`` (`get_sentence_transformers_dir`),
+      where the semantic chunker's e5-small went up to 0.2.x
+
+    A model fetched through two of them has a copy in each. A
+    ``SENTENCE_TRANSFORMERS_HOME`` set outside the model cache is left out:
+    it may be shared with other tools, and this list feeds a delete.
     """
     hf_root = get_hf_cache_dir()
-    candidates = [hf_root / "hub", hf_root]
+    parents = [hf_root / "hub", hf_root]
+    st_home = get_sentence_transformers_dir()
+    if st_home.resolve().is_relative_to(get_cache_dir().resolve()):
+        parents.append(st_home)
+    # Resolved once each: an override pointing at <hf> or <hf>/hub would
+    # otherwise count every model in it twice.
+    unique: dict[Path, Path] = {}
+    for p in parents:
+        unique.setdefault(p.resolve(), p)
+    return list(unique.values())
 
-    models: list[dict] = []
-    seen: set[str] = set()
-    for parent in candidates:
+
+def _disk_usage(root: Path) -> int:
+    """Bytes *root* takes on disk, each file counted once.
+
+    Symlinks are skipped and hard links deduplicated by inode, so a POSIX hub
+    cache (snapshots link to blobs) counts its blobs once, while on Windows
+    without symlink rights, where every snapshot file is a full copy of its
+    blob, both copies count: they both take space.
+    """
+    seen: set[tuple[int, int]] = set()
+    total = 0
+    for f in root.rglob("*"):
+        try:
+            if f.is_symlink() or not f.is_file():
+                continue
+            st = f.stat()
+        except OSError:
+            continue
+        ident = (st.st_dev, st.st_ino)
+        if st.st_ino and ident in seen:
+            continue
+        seen.add(ident)
+        total += st.st_size
+    return total
+
+
+def list_cached_models() -> list[dict]:
+    """List cached models with the disk space they take.
+
+    One entry per model, its copies in every layout of
+    `_model_cache_parents` summed; ``path`` is the largest copy, so an empty
+    stub left by one loader does not hide the copy another one downloaded.
+    """
+    by_name: dict[str, dict] = {}
+    for parent in _model_cache_parents():
         if not parent.is_dir():
             continue
         for entry in sorted(parent.iterdir()):
-            if not entry.is_dir() or entry.name.startswith("."):
+            if not entry.is_dir() or not entry.name.startswith("models--"):
                 continue
-            if not entry.name.startswith("models--"):
-                continue
-            if entry.name in seen:
-                continue
-            seen.add(entry.name)
-            blobs_dir = entry / "blobs"
-            if blobs_dir.is_dir():
-                size = sum(
-                    f.stat().st_size for f in blobs_dir.rglob("*") if f.is_file()
-                )
-            else:
-                size = sum(
-                    f.stat().st_size
-                    for f in entry.rglob("*")
-                    if f.is_file() and not f.is_symlink()
-                )
-            name = entry.name.replace("models--", "").replace("--", "/")
-            models.append(
-                {
+            size = _disk_usage(entry)
+            cur = by_name.get(entry.name)
+            if cur is None:
+                by_name[entry.name] = cur = {
                     "id": entry.name,
-                    "name": name,
-                    "size_bytes": size,
-                    "size_mb": round(size / (1024 * 1024), 1),
+                    "name": entry.name.replace("models--", "").replace("--", "/"),
+                    "size_bytes": 0,
                     "path": str(entry),
+                    "_largest": -1,
                 }
-            )
+            cur["size_bytes"] += size
+            if size > cur["_largest"]:
+                cur["_largest"] = size
+                cur["path"] = str(entry)
+    models = []
+    for m in by_name.values():
+        del m["_largest"]
+        m["size_mb"] = round(m["size_bytes"] / (1024 * 1024), 1)
+        models.append(m)
     return models
 
 
@@ -258,11 +307,10 @@ def delete_cached_model(model_id: str) -> bool:
 
     if bad_path_component(model_id) or not model_id.startswith("models--"):
         return False
-    hf_root = get_hf_cache_dir()
     deleted = False
-    # Both layouts: a model fetched once through each kind of loader has a
-    # copy in each, and removing one left the other on disk.
-    for parent in (hf_root / "hub", hf_root):
+    # Every layout: a model fetched once through each kind of loader has a
+    # copy in each, and removing one left the others on disk.
+    for parent in _model_cache_parents():
         target = parent / model_id
         if target.is_dir() and not target.is_symlink():
             shutil.rmtree(target)

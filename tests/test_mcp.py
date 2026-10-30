@@ -426,6 +426,73 @@ def test_exact_count_batch():
     assert out["chunk 4"] == {"ep1": 1}
 
 
+def test_exact_count_counts_occurrences_not_chunks():
+    """A chunk saying the phrase three times counts three, accents folded,
+    and a speaker filter counts only that speaker's turns."""
+    store = rag_index_store.get_index_store()
+    add_show(
+        store,
+        "Count Show",
+        {
+            "ep2": [
+                chunk(
+                    "BSD here, BSD there, more BSD", show="Count Show", episode="ep2"
+                ),
+                chunk("one BSD, no BSDs", show="Count Show", episode="ep2", start=10.0),
+                chunk("l'ete et l'ete", show="Count Show", episode="ep2", start=20.0),
+                chunk(
+                    "Москва 2020, Paris 2020",
+                    show="Count Show",
+                    episode="ep2",
+                    start=25.0,
+                ),
+                chunk(
+                    "jail jail jail",
+                    show="Count Show",
+                    episode="ep2",
+                    start=30.0,
+                    end=40.0,
+                    speakers=[
+                        {
+                            "speaker": "Alice",
+                            "start": 30.0,
+                            "end": 35.0,
+                            "text": "jail jail",
+                        },
+                        {"speaker": "Bob", "start": 35.0, "end": 40.0, "text": "jail"},
+                    ],
+                ),
+            ]
+        },
+    )
+    out = mcp_server.exact_count(
+        queries=["BSD", "été", "jail", "Москва 2020"], show="Count Show"
+    )
+    # Whole words: "BSDs" is not a "BSD". "été" matches "ete" through the
+    # accent tier. "Москва 2020" is not every "2020" (folding drops the
+    # Cyrillic, which an exact hit's count must not).
+    assert out == {
+        "BSD": {"ep2": 4},
+        "été": {"ep2": 2},
+        "jail": {"ep2": 3},
+        "Москва 2020": {"ep2": 1},
+    }
+    by_bob = mcp_server.exact_count(queries=["jail"], show="Count Show", speaker="Bob")
+    assert by_bob == {"jail": {"ep2": 1}}
+    first = mcp_server.exact_count(queries=["BSD"], show="Count Show", first_hit=True)
+    assert first["BSD"]["ep2"]["count"] == 4
+
+
+def test_occurrences_in_a_script_without_spaces_count_each_one():
+    """Whole-word boundaries never match between Japanese words, so every
+    chunk would count 1. (The FTS prefilter does not split such a run into
+    words either, so this is the counting rule alone.)"""
+    from podcodex.rag.retriever import _occurrences, _whole_word
+
+    hit = Hit(text="東京都と東京駅、そして東京")
+    assert _occurrences(hit, (_whole_word("東京"), None), None) == 3
+
+
 def test_exact_count_omits_empty_groups():
     out = mcp_server.exact_count(queries=["nonexistent phrase zzz"])
     assert out["nonexistent phrase zzz"] == {}

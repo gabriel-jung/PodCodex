@@ -218,9 +218,10 @@ def test_undeletable_audio_keeps_the_row(client, show, monkeypatch):
             raise PermissionError("file is open")
         return real_unlink(self, *a, **k)
 
-    monkeypatch.setattr(Path, "unlink", refuse)
-    body = _delete(client, show, "ep1").json()
-    monkeypatch.undo()
+    # Scoped: a bare undo() would also revert the client's config patch.
+    with monkeypatch.context() as m:
+        m.setattr(Path, "unlink", refuse)
+        body = _delete(client, show, "ep1").json()
 
     assert body["status"] == "partial"
     assert body["audio_removed"] is False

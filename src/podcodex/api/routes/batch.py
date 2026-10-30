@@ -90,6 +90,16 @@ def start_batch(req: BatchRequest) -> TaskResponse:
     """Start a batch pipeline run across multiple episodes."""
     if not req.audio_paths:
         raise HTTPException(400, "No episodes selected")
+    from podcodex.api.routes._helpers import (
+        require_episode_in_show,
+        require_registered_show,
+    )
+
+    # Every episode of the show the batch is locked and indexed under: one
+    # from another show would land in this show's collections.
+    show = require_registered_show(req.show_folder)
+    for ap in req.audio_paths:
+        require_episode_in_show(ap, show)
     if req.transcribe_source == "subtitles":
         from podcodex.api.routes._helpers import require_subtitle_lang
 

@@ -11,9 +11,14 @@ from tests.fixtures.episodes import audio_and_output_dir
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    from podcodex.core.app_config import AppConfig
     from tests.fixtures.api_client import make_client
 
-    return make_client(tmp_path, monkeypatch)
+    # The show folder audio_and_output_dir creates: episode routes only take
+    # paths inside a registered show.
+    return make_client(
+        tmp_path, monkeypatch, config=AppConfig(show_folders=[str(tmp_path / "s")])
+    )
 
 
 def _register_show_folder(ep_dir: str) -> None:
@@ -35,6 +40,9 @@ def test_export_outside_show_root_is_refused(client, tmp_path):
         Path(ep_dir) / "ep", "transcript", segs, {"step": "transcript", "type": "raw"}
     )
     # No show folder registered at all.
+    from podcodex.core.app_config import AppConfig, save_config
+
+    save_config(AppConfig())
     r = client.get(
         "/api/export/text", params={"audio_path": audio, "source": "transcript"}
     )
@@ -45,8 +53,6 @@ def test_export_outside_show_root_is_refused(client, tmp_path):
     # Registering an unrelated folder does not open the door either.
     other = tmp_path / "other"
     other.mkdir()
-    from podcodex.core.app_config import AppConfig, save_config
-
     save_config(AppConfig(show_folders=[str(other)]))
     r = client.get("/api/export/zip", params={"audio_path": audio})
     assert r.status_code == 403

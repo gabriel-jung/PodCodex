@@ -240,7 +240,13 @@ def test_assembled_audio_records_its_source_and_real_durations(
 
     base, audio = episode
     _run(audio, _FakeTTS(), monkeypatch=monkeypatch)
-    client = make_client(tmp_path / "cfg", monkeypatch)
+    from podcodex.core.app_config import AppConfig
+
+    client = make_client(
+        tmp_path / "cfg",
+        monkeypatch,
+        config=AppConfig(show_folders=[str(audio.parent)]),
+    )
 
     listed = client.get(
         "/api/synthesize/generated-segments",
@@ -288,3 +294,14 @@ def test_a_legacy_manifest_keeps_its_model_per_entry(tmp_path):
 
     assert manifest["segments"]["a.wav"]["model"] == "0.6B"
     assert manifest["segments"]["b.wav"]["model"] == "1.7B"
+
+
+def test_seg_key_rounds_halves_like_math_round():
+    """``frontend/src/lib/segKey.ts`` uses ``Math.round`` (half up); Python's
+    ``round`` sends a half to even, so a kept segment's key could miss."""
+    from podcodex.core import _utils
+
+    key = _utils.seg_key({"speaker": "A", "start": 0.0125, "end": 2.0625})
+    assert key == "A:13:2063"
+    assert _utils._js_round(0.49999999999999994) == 0
+    assert _utils._js_round(-2.5) == -2

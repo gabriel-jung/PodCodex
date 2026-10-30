@@ -12,6 +12,7 @@ column.
 from __future__ import annotations
 
 import random
+import re
 from collections import defaultdict
 from functools import lru_cache
 
@@ -20,7 +21,12 @@ from loguru import logger
 
 from podcodex.rag.defaults import DEFAULT_MODEL
 from podcodex.rag.hit import Hit
-from podcodex.rag.index_store import IndexStore, chunk_row_key, get_index_store
+from podcodex.rag.index_store import (
+    IndexStore,
+    chunk_row_key,
+    fold_text,
+    get_index_store,
+)
 
 
 class Retriever:
@@ -230,9 +236,12 @@ class Retriever:
         pub_date_min: str | None = None,
         pub_date_max: str | None = None,
     ) -> dict[str, dict[str, dict | int]]:
-        """Count literal matches per query, grouped by episode or show.
+        """Count literal occurrences per query, grouped by episode or show.
 
-        No chunk text is marshalled. ``group_by`` is ``"episode"`` (default)
+        Occurrences, not matching chunks: a chunk saying the phrase three
+        times counts three. With ``speaker`` only that speaker's turns are
+        counted. The counting reads each hit's text (`_occurrences`), so the
+        hits must carry it; none of it is returned. ``group_by`` is ``"episode"`` (default)
         or ``"show"``. Empty groups are omitted, so a query with zero hits
         yields ``{}``. With ``first_hit`` each group value becomes
         ``{"count": n, "first": {"chunk_index", "start", "start_hms"}}`` where
@@ -252,6 +261,9 @@ class Retriever:
         key = "episode" if group_by == "episode" else "show"
         out: dict[str, dict[str, dict | int]] = {}
         for q in queries:
+            # Exact hits matched on query.lower() as typed (search_literal);
+            # count on the same form.
+            patterns = (_whole_word(q.lower()), _whole_word(_folded(q)))
             hits = self.exact(
                 q,
                 collection,
@@ -268,6 +280,7 @@ class Retriever:
                 g = getattr(h, key)
                 if not g:
                     continue
+                n = _occurrences(h, patterns, speaker)
                 if first_hit:
                     start = h.start
                     entry = {
@@ -277,13 +290,13 @@ class Retriever:
                     }
                     cur = groups.get(g)
                     if cur is None:
-                        groups[g] = {"count": 1, "first": entry}
+                        groups[g] = {"count": n, "first": entry}
                     else:
-                        cur["count"] += 1
+                        cur["count"] += n
                         if start < cur["first"]["start"]:
                             cur["first"] = entry
                 else:
-                    groups[g] = int(groups.get(g, 0)) + 1
+                    groups[g] = int(groups.get(g, 0)) + n
             out[q] = groups
         return out
 
@@ -495,6 +508,57 @@ class Retriever:
 def _chunk_key(chunk: Hit) -> str:
     """Deduplication key for merging dense + FTS hits, across shows."""
     return f"{chunk.show}|{chunk_row_key(chunk.episode, chunk.chunk_index)}"
+
+
+# Scripts written without spaces between words (CJK ideographs, kana, Thai):
+# a word there has letters on both sides, so whole-word lookarounds never
+# match and every chunk would count 1.
+_UNSPACED = re.compile(
+    r"[\u0e00-\u0e7f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]"
+)
+
+
+def _whole_word(needle: str) -> re.Pattern[str] | None:
+    """*needle* as a whole-word pattern (a plain one in an unspaced script),
+    ``None`` for an empty one."""
+    if not needle:
+        return None
+    if _UNSPACED.search(needle):
+        return re.compile(re.escape(needle))
+    return re.compile(rf"(?<!\w){re.escape(needle)}(?!\w)")
+
+
+def _folded(text: str) -> str:
+    """``fold_text`` with runs of spaces collapsed: folding turns punctuation
+    into spaces, so "AI." would otherwise need a trailing one."""
+    return " ".join(fold_text(text).split())
+
+
+def _occurrences(
+    hit: Hit,
+    patterns: tuple[re.Pattern[str] | None, re.Pattern[str] | None],
+    speaker: str | None,
+) -> int:
+    """How many whole-word occurrences of the query *hit* holds.
+
+    By the rule the hit's tier matched on: an exact hit counts the lowercased
+    query in the lowercased text, an accent hit its folded form in folded
+    text (folding drops what it cannot transliterate, so "Москва 2020" folds
+    to "2020" and would count every year). Whole words only, or "AI" would
+    count the "ai" in "said". With *speaker*, only that speaker's turns are
+    read (a speaker-chunked row has no turns: the whole chunk is theirs). At
+    least 1, since the hit matched: one that matched only inside a word
+    counts once, as it did before.
+    """
+    exact, folded = patterns
+    pattern, norm = (folded, _folded) if hit.accent_match else (exact, str.lower)
+    if pattern is None:
+        return 1
+    if speaker and hit.speakers:
+        texts = [t.text for t in hit.speakers if t.speaker == speaker]
+    else:
+        texts = [hit.text]
+    return max(1, sum(len(pattern.findall(norm(t))) for t in texts))
 
 
 def rank_normalize(results: list[Hit]) -> list[Hit]:
