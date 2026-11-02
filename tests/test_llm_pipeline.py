@@ -402,6 +402,40 @@ def test_echoed_position_markers_are_stripped(answer, source, expected):
     assert out[0]["text"] == expected
 
 
+@pytest.mark.parametrize(
+    ("answer", "source", "expected"),
+    [
+        (
+            "because **GRUB** supports **slash-boot**",
+            "because Grubb supports slash boot",
+            "because GRUB supports slash-boot",
+        ),
+        ("then call __init__", "then call dunder init", "then call __init__"),
+        ("x**2 + y**2", "x squared plus y squared", "x**2 + y**2"),
+        ("(**LUKS**) encrypted", "(Lux) encrypted", "(LUKS) encrypted"),
+        ("because *GRUB* supports", "because Grubb supports", "because GRUB supports"),
+        ("2*3*4 = 24", "two times three times four", "2*3*4 = 24"),
+        ("a **b** c", "a **b** c", "a **b** c"),
+        ("2 ** 3 = 8", "2 ** 3 = 8", "2 ** 3 = 8"),
+        ("calls __init__ here", "calls __init__ here", "calls __init__ here"),
+    ],
+)
+def test_emphasis_the_model_added_is_stripped(answer, source, expected):
+    out = llm.apply_corrections([_seg(source, 0.0)], {0: {"text": answer}}, 0)
+    assert out[0]["text"] == expected
+
+
+def test_typed_fixes_keep_their_emphasis():
+    """A fix the user types in the reconcile dialog is meant as written."""
+    out = llm.apply_corrections(
+        [_seg("use kwargs here", 0.0)],
+        {0: {"text": "use **kwargs** here"}},
+        0,
+        strip_emphasis=False,
+    )
+    assert out[0]["text"] == "use **kwargs** here"
+
+
 def test_a_failed_run_leaves_the_failure_record_alone(ollama, monkeypatch):
     """No version is saved when the run raises, so llm_failures.json must
     keep describing the version on disk: the batch-fix flow patches that

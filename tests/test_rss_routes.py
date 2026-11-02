@@ -192,3 +192,23 @@ def test_rss_download_unregistered_show_forbidden(client, tmp_path):
     victim.mkdir()
     r = client.post(f"/api/shows/{victim}/rss/download")
     assert r.status_code == 403
+
+
+def test_only_feed_rows_are_marked_in_feed(client, show):
+    """A file dropped into a feed show's folder is listed too, but it has no
+    source to download from again; the frontend's delete wording and Download
+    actions key on this flag."""
+    from urllib.parse import quote
+
+    from podcodex.core.pipeline_db import close_pipeline_db, mark_step
+
+    save_feed_cache(show, _EPISODES)
+    (show / "my_own_recording.mp3").write_bytes(b"")
+    mark_step(show, "my_own_recording", transcribed=True)
+    try:
+        eps = client.get(f"/api/shows/{quote(str(show), safe='')}/unified").json()
+    finally:
+        close_pipeline_db(show)
+    in_feed = {e["stem"] or e["id"]: e["in_feed"] for e in eps}
+    assert in_feed["my_own_recording"] is False
+    assert [e["in_feed"] for e in eps if e["id"] in ("a", "b")] == [True, True]

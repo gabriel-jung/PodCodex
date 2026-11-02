@@ -147,6 +147,9 @@ def run_generate(
     check_vram(f"TTS ({model_size})", TTS_VRAM_MB.get(model_size, 4000))
     model = load_tts_model(model_size=model_size)
     clone_prompts = build_clone_prompts(model, voice_samples)
+    # A milestone, so the step list moves past "Loading TTS model" while the
+    # per-segment ticks below only drive the progress bar.
+    progress_cb(0.1, f"Generating {len(to_generate)} segments...")
 
     # The manifest is what lets finished segments be reused. Saved at most
     # every few seconds (a full rewrite per segment is quadratic in writes on

@@ -145,6 +145,9 @@ class UnifiedEpisodeOut(EpisodeStatusOut):
     removed: bool = False  # no longer present in the live feed
     feed_order: int | None = None  # position in source feed (0 = newest)
     artwork_url: str = ""
+    # From the show's feed cache, not a local-only file in the folder: only
+    # these have a source the audio can be downloaded from again.
+    in_feed: bool = False
 
 
 class SpeakerEpisodeEntry(BaseModel):

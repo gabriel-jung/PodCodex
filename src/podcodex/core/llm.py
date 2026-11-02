@@ -333,7 +333,8 @@ Output format — CRITICAL RULES:
 3. The Nth output element corresponds to the Nth input segment. Position is the only mapping.
 4. If a segment is empty, trivial, or {when_unchanged}, copy the original text verbatim — never omit the entry.
 5. Reply ONLY with valid JSON. No surrounding text, no markdown fences, no commentary.
-6. Format: `[{{"text": "..."}}, {{"text": "..."}}, ...]`"""
+6. Each `text` is plain text: no markdown, never bold or italics markers around the words you changed.
+7. Format: `[{{"text": "..."}}, {{"text": "..."}}, ...]`"""
 
 
 def build_llm_prompt(
@@ -517,11 +518,32 @@ def _strip_echoed_markers(text: str, original: str) -> str:
     return _ECHOED_MARKERS.sub("", text, count=1)
 
 
+# Markdown bold or italics some models wrap around the words they changed
+# ("because **GRUB** supports", "*GRUB*"). Saved verbatim it reaches the
+# translation, the search index and the TTS input. Asterisks only: `__x__`
+# is a real token a correction may legitimately restore ("dunder init" ->
+# "__init__"). The markers must sit at word edges, so an operator such as
+# "x**2 + y**2" or "2*3*4" is not a span.
+_EMPHASIS = re.compile(r"(?<![\w*])(\*\*?)(?=\S)([^*]+?)(?<=\S)\1(?![\w*])")
+
+
+def _strip_added_emphasis(text: str, original: str) -> str:
+    """*text* without ``**word**`` / ``*word*`` wrappers the source did not have.
+
+    Left alone when the source itself contains an asterisk, so a transcript
+    that really holds one is not rewritten.
+    """
+    if not isinstance(text, str) or "*" not in text or "*" in original:
+        return text
+    return _EMPHASIS.sub(r"\2", text)
+
+
 def apply_corrections(
     batch: list[dict],
     by_index: dict[int, dict],
     min_length_ratio: float = 0.7,
     reverted: list[int] | None = None,
+    strip_emphasis: bool = True,
 ) -> list[dict]:
     """Apply LLM corrections to a batch of segments.
 
@@ -540,6 +562,9 @@ def apply_corrections(
         reverted         : when given, receives the batch position of every
                            segment that kept its original text because the
                            LLM output was empty or too short.
+        strip_emphasis   : drop markdown emphasis the model added (see
+                           ``_strip_added_emphasis``). False for text the user
+                           typed, which is meant as written.
 
     Returns:
         List of segments with text field updated.
@@ -554,6 +579,8 @@ def apply_corrections(
         corrected_text = _strip_echoed_markers(
             item.get("text", original_text), original_text
         )
+        if strip_emphasis:
+            corrected_text = _strip_added_emphasis(corrected_text, original_text)
 
         if not corrected_text:
             logger.warning(f"Segment [{i}] has no corrected text, keeping original")

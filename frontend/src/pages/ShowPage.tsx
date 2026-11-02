@@ -22,6 +22,7 @@ import { dateCmp } from "@/lib/episodeSort";
 import type { PipelineInputStep } from "@/lib/pipelineInputs";
 import { episodeCanRunStep, matchesStepFilter } from "@/lib/stepStatus";
 import { getEpisodeBatchPath, getEpisodeSourceRef, getEpisodeStem } from "@/lib/episodeRef";
+import { canRedownloadAudio } from "@/lib/episodeAudio";
 import { FeedRefreshButton } from "@/components/common/FeedRefreshButton";
 import { useEpisodeStatusPoll } from "@/hooks/useEpisodeStatusPoll";
 import { useFeedRefresh, useFeedRefreshing } from "@/hooks/useFeedRefresh";
@@ -311,6 +312,9 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   // Replaces five separate .filter() walks.
   const selectionDerived = useMemo(() => {
     const downloadable: Episode[] = [];
+    // Audio that can be fetched again, downloaded or not: what the bulk
+    // Download (and its re-download confirm) may act on.
+    const refetchable: Episode[] = [];
     const subtitleable: Episode[] = [];
     const missingSubs: Episode[] = [];
     const batchable: Episode[] = [];
@@ -318,18 +322,19 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     for (const e of filtered) {
       const isSel = selected.has(e.id);
       if (!isSel) { allSelected = false; continue; }
+      if (canRedownloadAudio(e, meta)) refetchable.push(e);
       if (!e.removed) {
         subtitleable.push(e);
         if (!e.has_subtitles) missingSubs.push(e);
-        if (!e.downloaded) downloadable.push(e);
+        if (!e.downloaded && canRedownloadAudio(e, meta)) downloadable.push(e);
       }
       // Runnable for some step, with a path the batch route can address.
       if (getEpisodeBatchPath(e) && BATCH_STEPS.some((s) => episodeCanRunStep(e, s))) {
         batchable.push(e);
       }
     }
-    return { downloadable, subtitleable, missingSubs, batchable, allSelected };
-  }, [filtered, selected]);
+    return { downloadable, refetchable, subtitleable, missingSubs, batchable, allSelected };
+  }, [filtered, selected, meta]);
 
   const downloadableSelected = selectionDerived.downloadable;
   const subtitleableSelected = selectionDerived.subtitleable;
@@ -347,9 +352,11 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
 
   const confirmDeleteAudio = useCallback((ep: Episode) => {
     if (!ep.audio_path) return;
-    const description = ep.removed
-      ? `This will remove the downloaded audio for "${ep.title}". This episode is no longer in the live feed, so re-downloading won't be possible.`
-      : `This will remove the downloaded audio for "${ep.title}". You can re-download it later from ${isYouTube ? "YouTube" : "RSS"}.`;
+    const description = canRedownloadAudio(ep, meta)
+      ? `This will remove the downloaded audio for "${ep.title}". You can re-download it later from ${isYouTube ? "YouTube" : "RSS"}.`
+      : ep.removed
+        ? `This will remove the downloaded audio for "${ep.title}". This episode is no longer in the live feed, so re-downloading won't be possible.`
+        : `This will permanently delete the audio file of "${ep.title}" from the show folder (${ep.audio_path}). PodCodex has no source to download it again, so if this is your only copy it is gone for good. Transcripts and other versions are kept.`;
     confirmDialog.open({
       title: "Delete episode audio?",
       description,
@@ -357,19 +364,19 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       variant: "destructive",
       onConfirm: () => deleteMutate(ep.audio_path!),
     });
-  }, [isYouTube, deleteMutate]);
+  }, [isYouTube, meta, deleteMutate]);
 
   const deleteEpisodeMutate = deleteEpisodeMutation.mutate;
 
   const confirmDeleteEpisode = useCallback((ep: Episode) => {
     confirmDialog.open({
       title: `Delete "${ep.title}"?`,
-      content: <DeleteEpisodeSummary ep={ep} isFeedBacked={!ep.removed && !!ep.audio_url} />,
+      content: <DeleteEpisodeSummary ep={ep} redownloadable={canRedownloadAudio(ep, meta)} />,
       confirmLabel: "Delete episode",
       variant: "destructive",
       onConfirm: () => deleteEpisodeMutate(ep),
     });
-  }, [deleteEpisodeMutate]);
+  }, [meta, deleteEpisodeMutate]);
 
   const filteredRef = useRef(filtered);
   // The anchor is an index into the list as it was when the row was clicked.
@@ -463,13 +470,8 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
 
   const playEpisode = useCallback((ep: Episode) => {
     if (!ep.audio_path) return;
-    const audio = useAudioStore.getState();
-    if (ep.audio_path === audio.audioPath) {
-      if (audio.isPlaying) audio.pauseAudio();
-      else audio.resumeAudio();
-      return;
-    }
-    audio.playEpisode(ep.audio_path, 0, {
+    const path = ep.audio_path;
+    useAudioStore.getState().toggleTrack(path, () => useAudioStore.getState().playEpisode(path, 0, {
       title: ep.title,
       // Never pass raw meta.artwork_url: it can hold the "local" marker,
       // which is not a fetchable URL. showArtworkSrc resolves it.
@@ -477,7 +479,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       showName,
       folder,
       stem: ep.stem || ep.id,
-    });
+    }));
   }, [meta?.artwork_url, showName, folder, artworkEpoch]);
 
   const downloadEpisode = useCallback((id: string) => {
@@ -573,10 +575,10 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
         <SelectionActions
           hidden={selected.size === 0}
           selected={selected}
-          filtered={filtered}
           buckets={{
             batchable: batchableSelected,
             downloadable: downloadableSelected,
+            refetchable: selectionDerived.refetchable,
             subtitleable: subtitleableSelected,
             missingSubs: missingSubsSelected,
           }}
@@ -644,7 +646,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
                   onToggle={toggleSelect}
                   onOpen={goEpisode}
                   onPlay={playEpisode}
-                  onDownload={downloadEpisode}
+                  onDownload={canRedownloadAudio(ep, meta) ? downloadEpisode : undefined}
                   onDelete={confirmDeleteAudio}
                   onDeleteEpisode={confirmDeleteEpisode}
                   downloading={rowDownloading}
@@ -668,7 +670,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
                   ep={ep}
                   onOpen={goEpisode}
                   onPlay={playEpisode}
-                  onDownload={downloadEpisode}
+                  onDownload={canRedownloadAudio(ep, meta) ? downloadEpisode : undefined}
                   onDelete={confirmDeleteAudio}
                   onDeleteEpisode={confirmDeleteEpisode}
                   downloading={rowDownloading}
@@ -964,10 +966,10 @@ function FilterControls({ hidden, search, setSearch, filter, setFilter, filterCo
 interface SelectionActionsProps {
   hidden: boolean;
   selected: Set<string>;
-  filtered: Episode[];
   buckets: {
     batchable: Episode[];
     downloadable: Episode[];
+    refetchable: Episode[];
     subtitleable: Episode[];
     missingSubs: Episode[];
   };
@@ -991,7 +993,6 @@ interface SelectionActionsProps {
 function SelectionActions({
   hidden,
   selected,
-  filtered,
   buckets,
   isYouTube,
   folder,
@@ -1002,7 +1003,7 @@ function SelectionActions({
   onImportSubs,
   onRun,
 }: SelectionActionsProps) {
-  const { batchable, downloadable, subtitleable, missingSubs } = buckets;
+  const { batchable, downloadable, refetchable, subtitleable, missingSubs } = buckets;
   return (
     <div className={`flex items-center gap-2 ${hidden ? "hidden" : ""}`}>
       <span className="text-muted-foreground shrink-0">
@@ -1018,16 +1019,15 @@ function SelectionActions({
         isYouTube={isYouTube}
         showLanguage={language}
         onDownload={() => {
-          const selectedFiltered = filtered.filter((e) => selected.has(e.id));
           if (downloadable.length > 0) {
             onDownload({ guids: downloadable.map((e) => e.id) });
-          } else if (selectedFiltered.length > 0) {
-            const alreadyCount = selectedFiltered.length;
+          } else if (refetchable.length > 0) {
+            const alreadyCount = refetchable.length;
             confirmDialog.open({
               title: "Re-download?",
               description: `${alreadyCount} selected episode${alreadyCount !== 1 ? "s are" : " is"} already downloaded. This will re-download and overwrite the existing files.`,
               confirmLabel: "Re-download",
-              onConfirm: () => onDownload({ guids: selectedFiltered.map((e) => e.id), force: true }),
+              onConfirm: () => onDownload({ guids: refetchable.map((e) => e.id), force: true }),
             });
           }
         }}
@@ -1041,8 +1041,8 @@ function SelectionActions({
         }
         subsEnabled={subtitleable.length > 0}
         audioLabel={`Audio${downloadable.length > 0 ? ` (${downloadable.length})` : ""}`}
-        showAudio={true}
-        audioEnabled={downloadable.length > 0 || selected.size > 0}
+        showAudio={refetchable.length > 0}
+        audioEnabled={refetchable.length > 0}
         disabled={busy.downloadTask || busy.download || busy.importSubs}
         className="text-xs h-7 px-2 shrink-0"
       />

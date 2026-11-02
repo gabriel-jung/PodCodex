@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { formatBytes, formatDate, formatDuration, formatTime, languageToISO, stripHtml } from "./utils";
+import { formatBytes, formatDate, formatDuration, formatTime, episodeSourceLanguage, isoToLanguage, languageToISO, stripHtml } from "./utils";
 
 describe("formatTime", () => {
   it("carries rounded hundredths into the next second", () => {
@@ -62,6 +62,44 @@ describe("languageToISO", () => {
     expect(languageToISO("Polish")).toBe("pl");
     expect(languageToISO(" French ")).toBe("fr");
     expect(languageToISO("xx")).toBe("xx");
+    expect(languageToISO("constructor")).toBe("constructor");
+  });
+});
+
+describe("isoToLanguage", () => {
+  it("maps codes to the picker names and passes anything else through", () => {
+    expect(isoToLanguage("en")).toBe("English");
+    expect(isoToLanguage(" FR ")).toBe("French");
+    expect(isoToLanguage("English")).toBe("English");
+    expect(isoToLanguage("french")).toBe("French");
+    expect(isoToLanguage("xx")).toBe("xx");
+    expect(isoToLanguage("Lithuanian")).toBe("Lithuanian");
+  });
+});
+
+describe("episodeSourceLanguage", () => {
+  const ep = (params: Record<string, unknown>) => ({ provenance: { transcript: { params } } });
+
+  it("prefers the language transcription was forced to, even over the show's", () => {
+    expect(episodeSourceLanguage(ep({ language: "fr", meta: { language: "en" } }), "German")).toBe("French");
+  });
+
+  it("puts the show's language above Whisper's guess", () => {
+    expect(episodeSourceLanguage(ep({ language: null, meta: { language: "en" } }), "fr")).toBe("French");
+  });
+
+  it("falls back to the detected language when the show has none", () => {
+    expect(episodeSourceLanguage(ep({ language: null, meta: { language: "en-US" } }), "")).toBe("English");
+  });
+
+  it("skips codes it does not know instead of showing them raw", () => {
+    expect(episodeSourceLanguage(ep({ meta: { language: "lt" } }), "")).toBe("");
+    expect(episodeSourceLanguage(ep({ meta: { language: "constructor" } }), null)).toBe("");
+  });
+
+  it("is empty when nothing is known", () => {
+    expect(episodeSourceLanguage(ep({ source: "srt" }))).toBe("");
+    expect(episodeSourceLanguage(null)).toBe("");
   });
 });
 

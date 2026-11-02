@@ -392,9 +392,12 @@ def llm_run_outcome(
     total = int(section.get("total_batches") or rejected)
     return {
         "rejected": rejected,
+        # Neutral on what was kept: a whole-batch rejection kept every source
+        # line, a partial one only the lines the check reverted (the rest of
+        # the batch is applied), and the per-batch reasons say which.
         "message": (
-            f"Done, {rejected} of {total} batches rejected by the LLM "
-            "(their source text was kept)"
+            f"Done, {rejected} of {total} batches need a manual fix "
+            "(the LLM output failed a check)"
         ),
     }
 
@@ -737,7 +740,10 @@ def reconcile_batches(
             raise HTTPException(404, "No segments found for this step")
         patched_meta, segments = found
 
-    patched = apply_corrections(segments, by_index, min_length_ratio=0)
+    # Fixes are typed in the reconcile dialog: kept exactly as written.
+    patched = apply_corrections(
+        segments, by_index, min_length_ratio=0, strip_emphasis=False
+    )
     # The fix is the same pipeline as the version it patches: same inputs,
     # so the same source chain.
     chain = (patched_meta.get("params") or {}).get("source_chain")

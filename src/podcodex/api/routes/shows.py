@@ -1124,6 +1124,7 @@ def unified_episodes(show_folder: str) -> list[dict]:
         ep_files: list[str],
         removed: bool = False,
         feed_order: int | None = None,
+        in_feed: bool = False,
     ) -> dict:
         status = build_status_out(
             stem=stem,
@@ -1144,6 +1145,7 @@ def unified_episodes(show_folder: str) -> list[dict]:
             "artwork_url": artwork_url,
             "removed": removed,
             "feed_order": feed_order,
+            "in_feed": in_feed,
             **status,
         }
 
@@ -1185,6 +1187,7 @@ def unified_episodes(show_folder: str) -> list[dict]:
                 ep_files=ctx.episode_files.get(stem, []) if stem else [],
                 removed=r.removed,
                 feed_order=r.feed_order,
+                in_feed=True,
             )
         )
 

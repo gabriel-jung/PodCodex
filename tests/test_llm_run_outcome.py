@@ -23,7 +23,7 @@ def test_a_fully_rejected_run_says_so(tmp_path):
     audio = _record(tmp_path, ["rejected"], "v1")
     out = llm_run_outcome(audio, None, "french", "v1")
     assert out["rejected"] == 1
-    assert "1 of 1 batches rejected" in out["message"]
+    assert "1 of 1 batches need a manual fix" in out["message"]
 
 
 def test_a_clean_run_adds_nothing(tmp_path):

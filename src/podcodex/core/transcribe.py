@@ -34,6 +34,7 @@ from podcodex.core._utils import (
 from podcodex.core.constants import DEFAULT_WHISPER_MODEL, DIARIZATION_MODEL
 from podcodex.core.pipeline_db import mark_step
 from podcodex.core.versions import (
+    current_version,
     get_latest_provenance,
     has_matching_version,
     load_latest,
@@ -612,13 +613,28 @@ def export_transcript(
     """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
+    # The language Whisper detected (or was told), recorded on the segments
+    # version. The transcript's own `language` param is the *requested* one,
+    # empty for auto-detect; carrying the detected one in meta lets the
+    # correct / translate / synthesize panels pre-fill the right language.
     if diarized:
         segments = load_diarized_segments(audio_path, output_dir=output_dir)
         mapping = load_speaker_map(audio_path, output_dir=output_dir)
+        # The diarized segments were assigned from an earlier segments run. A
+        # newer one (a re-transcribe that never reached assign) may be in
+        # another language, so record none rather than a wrong one.
+        seg_head = current_version(p.base, "segments") or {}
+        dia_head = current_version(p.base, "diarized_segments") or {}
+        detected_lang = (
+            (seg_head.get("params") or {}).get("language") or ""
+            if seg_head.get("timestamp", "") <= dia_head.get("timestamp", "")
+            else ""
+        )
     else:
         raw = load_segments(audio_path, output_dir=output_dir)
         segments = raw["segments"]
         mapping = {}
+        detected_lang = raw["language"] or ""
 
     def _resolve_speaker(raw) -> str:
         # NaN from parquet is a float that is truthy — coerce to "" first.
@@ -647,6 +663,7 @@ def export_transcript(
             "speakers": sorted({s["speaker"] for s in segs}),
             "duration": round(max((s["end"] for s in segs), default=0.0), 3),
             "word_count": sum(len(s["text"].split()) for s in segs),
+            "language": detected_lang,
         }
 
     def _make_prov(
