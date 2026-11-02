@@ -10,13 +10,20 @@ import { langLabel } from "@/lib/utils";
  */
 export function DeleteEpisodeSummary({
   ep,
-  isFeedBacked,
+  redownloadable,
 }: {
   ep: Episode;
-  isFeedBacked: boolean;
+  /** `canRedownloadAudio`: the episode is a live entry of the show's feed. */
+  redownloadable: boolean;
 }) {
   const items: string[] = [];
-  if (ep.audio_path) items.push("The downloaded audio file");
+  if (ep.audio_path) {
+    items.push(
+      redownloadable
+        ? "The downloaded audio file"
+        : "The audio file in the show folder, which cannot be downloaded again",
+    );
+  }
   if (ep.transcribed) items.push("The transcript and every saved version of it");
   if (ep.corrected) items.push("The corrected transcript");
   if (ep.translations.length)
@@ -38,10 +45,13 @@ export function DeleteEpisodeSummary({
         ))}
       </ul>
       <p className="text-destructive">This cannot be undone.</p>
-      {ep.audio_path && (
-        <p>The file you originally imported from is not touched.</p>
+      {ep.audio_path && !redownloadable && (
+        <p>
+          If this audio was imported from elsewhere on your computer, that
+          original file is not touched.
+        </p>
       )}
-      {isFeedBacked && (
+      {redownloadable && (
         <p>
           This episode is still in the feed, so it will reappear as an
           undownloaded episode on the next refresh.

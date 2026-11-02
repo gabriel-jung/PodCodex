@@ -257,20 +257,60 @@ export function isUnderPath(p: string, base: string): boolean {
   return p === b || p.startsWith(`${b}/`) || p.startsWith(`${b}\\`);
 }
 
+const LANGUAGE_ISO: Record<string, string> = {
+  english: "en", french: "fr", german: "de", spanish: "es",
+  italian: "it", portuguese: "pt", dutch: "nl", russian: "ru",
+  japanese: "ja", chinese: "zh", korean: "ko", arabic: "ar",
+  hindi: "hi", turkish: "tr", polish: "pl", swedish: "sv",
+  danish: "da", norwegian: "no", finnish: "fi", greek: "el",
+  czech: "cs", romanian: "ro", hungarian: "hu", ukrainian: "uk",
+  catalan: "ca", hebrew: "he", thai: "th", vietnamese: "vi",
+  indonesian: "id", malay: "ms",
+};
+
 /** Map a language name to its ISO 639-1 code for WhisperX. */
 export function languageToISO(lang: string): string {
-  const map: Record<string, string> = {
-    english: "en", french: "fr", german: "de", spanish: "es",
-    italian: "it", portuguese: "pt", dutch: "nl", russian: "ru",
-    japanese: "ja", chinese: "zh", korean: "ko", arabic: "ar",
-    hindi: "hi", turkish: "tr", polish: "pl", swedish: "sv",
-    danish: "da", norwegian: "no", finnish: "fi", greek: "el",
-    czech: "cs", romanian: "ro", hungarian: "hu", ukrainian: "uk",
-    catalan: "ca", hebrew: "he", thai: "th", vietnamese: "vi",
-    indonesian: "id", malay: "ms",
-  };
   const lower = lang.toLowerCase().trim();
-  return map[lower] || lower;
+  return Object.hasOwn(LANGUAGE_ISO, lower) ? LANGUAGE_ISO[lower] : lower;
+}
+
+/** Map an ISO 639-1 code (region suffix allowed: "en-US") or a language
+ *  name in any case to the name the pickers use ("en", "french" →
+ *  "English", "French"). Anything unknown passes through unchanged, so a
+ *  free-text show language such as "Lithuanian" survives. */
+export function isoToLanguage(code: string): string {
+  return knownLanguage(code) || code;
+}
+
+/** Like {@link isoToLanguage}, but "" for anything not in the table. */
+function knownLanguage(code: string): string {
+  const lower = code.toLowerCase().trim();
+  const base = lower.split(/[-_]/)[0];
+  const name = Object.hasOwn(LANGUAGE_ISO, lower)
+    ? lower
+    : Object.keys(LANGUAGE_ISO).find((k) => LANGUAGE_ISO[k] === base);
+  return name ? name[0].toUpperCase() + name.slice(1) : "";
+}
+
+/** The language an episode's text is in, as a picker name, for pre-filling
+ *  the correct / translate / synthesize pickers. In order: the language
+ *  transcription was forced to (a fact), the show's configured language,
+ *  then the one Whisper detected (a guess from the first 30 seconds, which
+ *  an intro in another language can mislead). Codes the table does not
+ *  know are skipped rather than shown raw. "" when nothing is known. */
+export function episodeSourceLanguage(
+  ep: { provenance?: Record<string, unknown> } | null | undefined,
+  showLanguage?: string | null,
+): string {
+  const prov = ep?.provenance?.transcript as { params?: Record<string, unknown> } | undefined;
+  const params = prov?.params ?? {};
+  const meta = (params.meta ?? {}) as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+  return (
+    knownLanguage(str(params.language) || str(params.lang)) ||
+    (showLanguage ? isoToLanguage(showLanguage) : "") ||
+    knownLanguage(str(meta.language))
+  );
 }
 
 // ── Subtitle languages (shared by download dropdowns) ────

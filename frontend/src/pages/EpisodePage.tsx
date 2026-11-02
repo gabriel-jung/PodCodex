@@ -17,6 +17,7 @@ import { PANEL_STATUS_META, type PanelStatus } from "@/lib/stepStatus";
 import { useEpisodeStatusPoll } from "@/hooks/useEpisodeStatusPoll";
 import { isSoloDefaultSpeaker } from "@/lib/speakers";
 import { getEpisodeSourceRef } from "@/lib/episodeRef";
+import { canRedownloadAudio } from "@/lib/episodeAudio";
 import { useEpisodeOverview } from "@/hooks/useEpisodeOverview";
 import {
   TRANSCRIBE_INTERMEDIATE_STEPS,
@@ -49,6 +50,7 @@ import { speakerColor } from "@/lib/speakerColor";
 import { byDefaultOrder } from "@/lib/episodeSort";
 import {
   Play,
+  Pause,
   Download,
   Search,
   FolderOpen,
@@ -112,6 +114,8 @@ export default function EpisodePage({
   const artworkEpoch = useArtworkEpoch();
   const seekTo = useAudioStore((s) => s.seekTo);
   const registerMeta = useAudioStore((s) => s.registerMeta);
+  const currentAudioPath = useAudioStore((s) => s.audioPath);
+  const audioIsPlaying = useAudioStore((s) => s.isPlaying);
   const activeStep: ActiveStep = (initialTab as ActiveStep) || "overview";
 
   const setActiveStep = useCallback((step: ActiveStep) => {
@@ -215,6 +219,18 @@ export default function EpisodePage({
     });
   }, [episode?.audio_path, episode?.title, artwork, meta?.name, folder, episode?.stem, registerMeta]);
 
+  // The header button toggles like the episode rows: start this episode, or
+  // pause / resume it once it is the loaded track. It used to always seek to
+  // 0, so a click (or Space, which activates the still-focused button)
+  // restarted playback instead of pausing it.
+  const episodeAudioPath = episode?.audio_path ?? null;
+  const isCurrentTrack = !!episodeAudioPath && episodeAudioPath === currentAudioPath;
+  const toggleHeaderPlay = useCallback(() => {
+    if (!episodeAudioPath) return;
+    useAudioStore.getState().toggleTrack(episodeAudioPath, () => seekTo(episodeAudioPath, 0));
+  }, [episodeAudioPath, seekTo]);
+  const headerPlayLabel = isCurrentTrack && audioIsPlaying ? "Pause" : isCurrentTrack ? "Resume" : "Play";
+
   const setEpisode = useEpisodeStore((s) => s.setEpisode);
   const setShowMeta = useEpisodeStore((s) => s.setShowMeta);
   useEffect(() => {
@@ -317,7 +333,7 @@ export default function EpisodePage({
         nav={headerNav}
         actions={
           <div className="flex items-center gap-1.5">
-            {!episode.downloaded && (
+            {!episode.downloaded && canRedownloadAudio(episode, meta) && (
               <Button
                 onClick={() => episodeDownloadMutation.mutate({ guids: [episode.id] })}
                 variant="outline"
@@ -331,13 +347,14 @@ export default function EpisodePage({
             )}
             {episode.audio_path && (
               <Button
-                onClick={() => seekTo(episode.audio_path!, 0)}
+                onClick={toggleHeaderPlay}
                 variant="outline"
                 size="icon"
                 className="h-8 w-8"
-                title="Play"
+                title={headerPlayLabel}
+                aria-label={headerPlayLabel}
               >
-                <Play className="w-3.5 h-3.5" />
+                {isCurrentTrack && audioIsPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
               </Button>
             )}
           </div>
@@ -763,7 +780,11 @@ function OverviewSourceCard({
   const durationLabel = episode.duration > 0 ? formatDuration(episode.duration) : "";
   const audioMeta = [formatLabel, durationLabel].filter(Boolean).join(" · ");
 
-  const showsDownloadButton = !episode.downloaded || isYouTube;
+  // Audio only where there is a source to download it from again. YouTube
+  // subtitles stay on offer regardless: a video dropped from the playlist (so
+  // `removed`) usually still exists.
+  const canDownloadAudio = canRedownloadAudio(episode, meta);
+  const showsDownloadButton = (canDownloadAudio && !episode.downloaded) || isYouTube;
 
   return (
     <section className="space-y-2">
@@ -805,7 +826,7 @@ function OverviewSourceCard({
           />
         ))}
 
-        {(showsDownloadButton || isYouTube) && (
+        {showsDownloadButton && (
           <div className="border-t border-border/40 px-3 py-2">
             <DownloadDropdown
               isYouTube={isYouTube}
@@ -815,7 +836,7 @@ function OverviewSourceCard({
               subsLabel={episode.transcribed ? "Re-download subtitles" : "Download subtitles"}
               subsEnabled={true}
               audioLabel={episode.downloaded ? "Re-download audio" : "Download audio"}
-              showAudio={true}
+              showAudio={canDownloadAudio}
               audioEnabled={true}
               disabled={downloadDisabled}
               variant={episode.downloaded ? "outline" : "default"}

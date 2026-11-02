@@ -48,6 +48,9 @@ interface AudioState {
   currentTime: number;
   /** Whether audio is currently playing — updated by AudioBar. */
   isPlaying: boolean;
+  /** Whether the loaded track played to its end — updated by AudioBar. A
+   *  resume then restarts it instead of seeking to the very end. */
+  ended: boolean;
   /** Set metadata for the current audio (call once when episode is known). */
   setAudioMeta: (path: string, meta: AudioMeta) => void;
   /**
@@ -64,8 +67,13 @@ interface AudioState {
   /** Set metadata then seek — atomic version of setAudioMeta + seekTo. */
   playEpisode: (path: string, time: number, meta: AudioMeta) => void;
   pauseAudio: () => void;
-  /** Resume current track from where it was paused. */
+  /** Resume current track from where it was paused (from the start once it
+   *  has ended). */
   resumeAudio: () => void;
+  /** Play / pause toggle for an episode's track: pause or resume it when it
+   *  is the loaded one, otherwise call *start* to load it. The one rule the
+   *  episode rows and the episode header share. */
+  toggleTrack: (path: string, start: () => void) => void;
   consumeSeek: () => void;
   stopAudio: () => void;
 }
@@ -91,8 +99,15 @@ export const useAudioStore = create<AudioState>((set, get) => ({
   pendingSeek: null,
   currentTime: 0,
   isPlaying: false,
+  ended: false,
   pauseAudio: () => set({ pendingSeek: -1 }),
-  resumeAudio: () => set({ pendingSeek: get().currentTime }),
+  resumeAudio: () => set({ pendingSeek: get().ended ? 0 : get().currentTime }),
+  toggleTrack: (path, start) => {
+    const state = get();
+    if (path !== state.audioPath) start();
+    else if (state.isPlaying) state.pauseAudio();
+    else state.resumeAudio();
+  },
   setAudioMeta: (path, meta) => {
     // Always write. An earlier guard ("only update if state.audioPath ===
     // path or unset") produced null titles when navigating between episodes:
@@ -157,6 +172,7 @@ export const useAudioStore = create<AudioState>((set, get) => ({
         audioFolder: meta?.folder ?? null,
         audioStem: meta?.stem ?? null,
         pendingSeek: time,
+        ended: false,
       });
     }
   },
@@ -169,6 +185,7 @@ export const useAudioStore = create<AudioState>((set, get) => ({
       audioFolder: meta.folder || null,
       audioStem: meta.stem || null,
       pendingSeek: time,
+      ended: false,
       // Seed the map so a later seekTo to this path (e.g. from a segment row)
       // reuses this meta instead of blanking the bar.
       metaByPath: { ...state.metaByPath, [path]: meta },
@@ -176,5 +193,5 @@ export const useAudioStore = create<AudioState>((set, get) => ({
   },
   consumeSeek: () => set({ pendingSeek: null }),
   stopAudio: () =>
-    set({ audioPath: null, audioTitle: null, audioArtwork: null, audioShowName: null, audioFolder: null, audioStem: null, pendingSeek: null }),
+    set({ audioPath: null, audioTitle: null, audioArtwork: null, audioShowName: null, audioFolder: null, audioStem: null, pendingSeek: null, ended: false }),
 }));

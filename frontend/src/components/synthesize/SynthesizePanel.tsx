@@ -21,7 +21,7 @@ import { invalidateAfterStep } from "@/api/cacheInvalidation";
 import { Button } from "@/components/ui/button";
 import { ErrorAlert } from "@/components/ui/error-alert";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
-import { versionOption } from "@/lib/utils";
+import { episodeSourceLanguage, isoToLanguage, versionOption } from "@/lib/utils";
 import { useCapabilities } from "@/hooks/useCapabilities";
 import MissingDependency from "@/components/common/MissingDependency";
 import ProgressBar from "@/components/editor/ProgressBar";
@@ -48,16 +48,11 @@ export default function SynthesizePanel() {
 
   const [extractTaskId, setExtractTaskId] = useState<string | null>(null);
   const [generateTaskId, setGenerateTaskId] = useState<string | null>(null);
-  // Seed language from showMeta on first render; if showMeta arrives later
-  // (panel mounts before the meta query resolves), sync via the effect below.
-  const [language, setLanguage] = useState(showMeta?.language || "English");
-  const languageInitRef = useRef(!!showMeta?.language);
-  useEffect(() => {
-    if (!languageInitRef.current && showMeta?.language) {
-      setLanguage(showMeta.language);
-      languageInitRef.current = true;
-    }
-  }, [showMeta?.language]);
+  // The voice speaks the source's language: a translation's target, else the
+  // episode's language (episodeSourceLanguage: forced, then the show's, then
+  // the detected one). The user's pick overrides it until the source changes
+  // (reset with the other source-keyed state below).
+  const [languageOverride, setLanguage] = useState<string | null>(null);
   const [modelSize, setModelSize] = useState("1.7B");
   const [maxChunkDuration, setMaxChunkDuration] = useState(20);
   const [force, setForce] = useState(false);
@@ -113,6 +108,7 @@ export default function SynthesizePanel() {
     lastSourceFingerprintRef.current = sourceFingerprint;
     setSelected(new Set());
     setSpeakerOverrides({});
+    setLanguage(null);
     setShowCount({});
     setExpandedSeg(null);
   }, [sourceFingerprint]);
@@ -151,6 +147,12 @@ export default function SynthesizePanel() {
     }
     return { allSpeakers: [...original].sort(), segmentsBySpeaker: grouped };
   }, [sourceSegments, speakerOverrides]);
+
+  const sourceLanguage =
+    resolvedSource.step === "translate"
+      ? isoToLanguage(resolvedSource.lang)
+      : episodeSourceLanguage(episode, showMeta?.language);
+  const language = languageOverride ?? (sourceLanguage || "English");
 
   const resolvedVersionId = resolvedSource.sourceVersionId ?? null;
   // Sent with every synth call so the listings and assemble read the same

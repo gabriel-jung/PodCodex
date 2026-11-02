@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { sourceRefFor, type EpisodeSourceRef } from "@/lib/episodeRef";
 import { useQuery } from "@tanstack/react-query";
 import { getAllVersions } from "@/api/search";
 import { getBestSegments } from "@/api/segments";
 import { queryKeys } from "@/api/queryKeys";
-import { buildDefaultContext } from "@/lib/utils";
+import { buildDefaultContext, episodeSourceLanguage } from "@/lib/utils";
 import { llmRunFields } from "@/lib/runRequests";
 import { filterVersionsForStep, sortVersionsForDefault, type PipelineInputStep } from "@/lib/pipelineInputs";
 import type { LLMConfig, LLMPresetKey } from "@/stores/pipelineConfigStore";
@@ -39,16 +39,32 @@ export function useLLMConfig(
   // title/description are merged fresh. The user's per-run edits last until
   // they switch episodes; the show-level part lives in show.toml and is
   // edited from ShowSettings, never from here.
+  //
+  // Source language: see episodeSourceLanguage for the order. Nothing known
+  // keeps the persisted value, so a mixed bucket like Files only falls back
+  // to the last-used language when nothing better is known.
   const episodeId = episode?.id;
   const showName = showMeta?.name;
+  const episodeLang = episodeSourceLanguage(episode, showMeta?.language);
   useEffect(() => {
     if (!episode) return;
     const patches: Partial<LLMConfig> = {};
-    if (showMeta?.language) patches.sourceLang = showMeta.language;
+    if (episodeLang) patches.sourceLang = episodeLang;
     const ctx = buildDefaultContext(episode, showMeta);
     if (ctx) patches.context = ctx;
     if (Object.keys(patches).length > 0) setLLM(patches);
   }, [episodeId, showName]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A language that only becomes known later in the session (the episode was
+  // transcribed while open) fills the picker once. Only the unknown -> known
+  // step: a change between two known values (show meta arriving after the
+  // detected guess) must not overwrite a pick the user made meanwhile.
+  const prevEpisodeLangRef = useRef(episodeLang);
+  useEffect(() => {
+    const prev = prevEpisodeLangRef.current;
+    prevEpisodeLangRef.current = episodeLang;
+    if (!prev && episodeLang) setLLM({ sourceLang: episodeLang });
+  }, [episodeLang, setLLM]);
 
   // One-shot: when the user has never chosen a preset but their pool
   // contains a key with a known provider hint, switch to cloud + that

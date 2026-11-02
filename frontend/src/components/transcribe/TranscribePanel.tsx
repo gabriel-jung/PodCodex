@@ -25,6 +25,7 @@ import { Button } from "@/components/ui/button";
 import { FileAudio, FileText, Upload } from "lucide-react";
 import { errorMessage, languageToISO, selectClass, SUB_LANGUAGES } from "@/lib/utils";
 import { reviewStatus } from "@/lib/stepStatus";
+import { canRedownloadAudio } from "@/lib/episodeAudio";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
 import { useCapabilities } from "@/hooks/useCapabilities";
 import FormGrid from "@/components/common/FormGrid";
@@ -181,19 +182,42 @@ export default function TranscribePanel() {
         title: "Downloading audio…",
         description: "The audio is downloading; this view will refresh when it's ready.",
       }
-    : {
-        title: "No audio file yet",
-        description:
-          "Download the audio file to transcribe it, or upload an existing transcript (JSON, SRT, VTT).",
-        action: {
-          label: "Download audio",
-          onClick: () => episodeDownloadMutation.mutate({ guids: [episode.id] }),
-        },
-        secondaryAction: {
-          label: "Upload transcript",
-          onClick: () => fileInputRef.current?.click(),
-        },
-      };
+    : !showMeta
+      ? {
+          // Show meta still loading: whether a download is possible is not
+          // known yet, so claim neither way and offer only the upload.
+          title: "No audio file yet",
+          description: "Upload an existing transcript (JSON, SRT, VTT), or add the audio first.",
+          action: {
+            label: "Upload transcript",
+            onClick: () => fileInputRef.current?.click(),
+          },
+        }
+      : canRedownloadAudio(episode, showMeta)
+      ? {
+          title: "No audio file yet",
+          description:
+            "Download the audio file to transcribe it, or upload an existing transcript (JSON, SRT, VTT).",
+          action: {
+            label: "Download audio",
+            onClick: () => episodeDownloadMutation.mutate({ guids: [episode.id] }),
+          },
+          secondaryAction: {
+            label: "Upload transcript",
+            onClick: () => fileInputRef.current?.click(),
+          },
+        }
+      : {
+          // A local episode (or one gone from the feed) has nowhere to
+          // download from: put the file back in the show folder, or upload.
+          title: "No audio file",
+          description:
+            "This episode's audio is not in the show folder and there is no feed to download it from. Put the file back in the folder, or upload an existing transcript (JSON, SRT, VTT).",
+          action: {
+            label: "Upload transcript",
+            onClick: () => fileInputRef.current?.click(),
+          },
+        };
 
   return (
     <PipelinePanel

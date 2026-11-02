@@ -14,6 +14,7 @@
 - `frontend/src/lib/showCounts.ts`: episode count label formatting
 - `frontend/src/lib/runRequests.ts`: `llmRunFields`, `transcribeRunFields` for every run request, episode panel and batch alike
 - `frontend/src/lib/episodeRef.ts`: `getEpisodeSourceRef` for every per-episode query key, `getEpisodeBatchPath` for batch keys
+- `frontend/src/lib/episodeAudio.ts`: `canRedownloadAudio`, the one rule for whether an episode's audio can be fetched again (gates Download actions and delete-audio wording)
 - `frontend/src/lib/speakerColor.ts`: speaker hues; `frontend/src/lib/speakers.ts`: unattributed-speaker constants
 
 ## 1. Visual Theme & Atmosphere

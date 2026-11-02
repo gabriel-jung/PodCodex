@@ -201,9 +201,9 @@ export default function AudioBar() {
       <audio
         ref={audioRef}
         src={audioFileUrl(audioPath)}
-        onPlay={() => { setPlaying(true); useAudioStore.setState({ isPlaying: true }); }}
+        onPlay={() => { setPlaying(true); useAudioStore.setState({ isPlaying: true, ended: false }); }}
         onPause={() => { setPlaying(false); useAudioStore.setState({ isPlaying: false }); }}
-        onEnded={() => { setPlaying(false); useAudioStore.setState({ isPlaying: false }); }}
+        onEnded={() => { setPlaying(false); useAudioStore.setState({ isPlaying: false, ended: true }); }}
         onLoadedMetadata={(e) => {
           setDuration(e.currentTarget.duration);
           e.currentTarget.playbackRate = speed;
@@ -219,7 +219,9 @@ export default function AudioBar() {
         onTimeUpdate={(e) => {
           const t = e.currentTarget.duration > 0 ? e.currentTarget.currentTime : 0;
           setCurrentTime(t);
-          useAudioStore.setState({ currentTime: t });
+          // The element's own flag: a seek away from the end (scrub, arrow
+          // keys) clears it, so a later resume continues from there.
+          useAudioStore.setState({ currentTime: t, ended: e.currentTarget.ended });
         }}
       />
 
