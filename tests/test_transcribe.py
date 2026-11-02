@@ -228,6 +228,68 @@ def test_export_transcript_no_diarization(tmp_path):
     assert full["meta"]["show"] == "S"
 
 
+def test_export_transcript_records_detected_language(tmp_path):
+    """An auto-detect run requests no language; the detected one, recorded on
+    the segments version, is carried onto the transcript's meta so the
+    correct / translate panels can pre-fill it."""
+    from podcodex.core.correct import transcript_provenance_info
+    from podcodex.core.transcribe import export_transcript
+    from podcodex.core.versions import get_latest_provenance
+
+    audio = tmp_path / "ep.mp3"
+    base = tmp_path / "ep" / "ep"
+    base.parent.mkdir()
+    _save_parquet_version(
+        base, "segments", [{"start": 0.0, "end": 2.0, "text": "Hi"}], language="en"
+    )
+    _save_parquet_version(
+        base,
+        "diarized_segments",
+        [{"start": 0.0, "end": 2.0, "speaker": "SPEAKER_00", "text": "Hi"}],
+    )
+
+    export_transcript(
+        audio, provenance={"step": "transcript", "params": {"language": None}}
+    )
+
+    prov = get_latest_provenance(base, "transcript")
+    assert prov["params"]["meta"]["language"] == "en"
+    # A guess, not a fact: it must not override the user's pick in the panel.
+    assert transcript_provenance_info(prov)["language"] is None
+
+
+def test_a_newer_unassigned_run_records_no_language(tmp_path):
+    """A re-transcribe that never reached assign leaves a newer segments run,
+    possibly in another language, beside the diarized segments the export
+    reads: recording its language would pre-fill the wrong one."""
+    from podcodex.core.transcribe import export_transcript
+    from podcodex.core.versions import get_latest_provenance
+
+    audio = tmp_path / "ep.mp3"
+    base = tmp_path / "ep" / "ep"
+    base.parent.mkdir()
+    seg = [{"start": 0.0, "end": 2.0, "text": "Hi"}]
+    _save_parquet_version(base, "segments", seg, language="en")
+    _save_parquet_version(
+        base,
+        "diarized_segments",
+        [{"start": 0.0, "end": 2.0, "speaker": "SPEAKER_00", "text": "Hi"}],
+    )
+    _save_parquet_version(base, "segments", seg, language="fr")
+
+    export_transcript(audio)
+
+    meta = get_latest_provenance(base, "transcript")["params"]["meta"]
+    assert meta["language"] == ""
+
+
+def test_transcript_language_prefers_the_requested_one():
+    from podcodex.core.correct import transcript_provenance_info
+
+    prov = {"params": {"language": "fr", "meta": {"language": "en"}}}
+    assert transcript_provenance_info(prov)["language"] == "French"
+
+
 # ──────────────────────────────────────────────
 # clean_transcript integration with export
 # ──────────────────────────────────────────────

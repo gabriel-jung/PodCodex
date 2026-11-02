@@ -64,7 +64,10 @@ def transcript_provenance_info(provenance: dict | None) -> dict:
     params = provenance.get("params", {})
     source = params.get("source", "whisper")
     model = provenance.get("model")
-    # Normalize: both "language" and legacy "lang" keys
+    # Normalize: both "language" and legacy "lang" keys. Only a language the
+    # transcription was forced to counts here: it is a fact about the text.
+    # The detected one (meta.language) is a guess, so it only pre-fills the
+    # panel's picker and never overrides what the user chose there.
     lang_code = params.get("language") or params.get("lang")
     language = iso_to_language(lang_code) if lang_code else None
     return {"source": source, "model": model, "language": language}

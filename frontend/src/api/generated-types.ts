@@ -125,6 +125,7 @@ export interface UnifiedEpisodeOut {
   removed: boolean;
   feed_order?: number | null;
   artwork_url: string;
+  in_feed: boolean;
 }
 
 export interface SpeakerEpisodeEntry {
